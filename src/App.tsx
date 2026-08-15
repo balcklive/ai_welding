@@ -28,6 +28,7 @@ const bars = [46, 58, 52, 67, 61, 78, 74, 92, 81, 88, 72, 96];
 
 function App() {
   const [workspace, setWorkspace] = useState<Workspace>('overview');
+  const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
   const [activeProject, setActiveProject] = useState(0);
   const [query, setQuery] = useState('');
   const [isTraining, setIsTraining] = useState(false);
@@ -42,10 +43,10 @@ function App() {
       <div className="workspace-label">工作空间</div><nav className="main-nav">{navItems.map((item) => { const Icon = item.icon; return <button key={item.id} className={`nav-item ${workspace === item.id ? 'active' : ''}`} onClick={() => setWorkspace(item.id)}><Icon size={18} /><span>{item.label}</span>{workspace === item.id && <span className="nav-pip" />}</button>; })}</nav>
       <div className="sidebar-bottom"><button className="nav-item"><Settings2 size={18} /><span>系统设置</span></button><div className="user-card"><div className="avatar">林</div><div><strong>林工</strong><span>管理员</span></div><MoreHorizontal size={16} /></div></div>
     </aside>
-    <main className="main-content"><header className="topbar"><div className="breadcrumbs"><span>工作空间</span><ChevronDown size={14} /><strong>{navItems.find((item) => item.id === workspace)?.label}</strong></div><div className="top-actions"><div className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索数据集、模型..." /></div><button className="icon-button"><Bell size={18} /><i /></button><div className="top-avatar">L</div></div></header>
+    <main className="main-content">
       {workspace === 'overview' && <Overview activeProject={activeProject} filteredProjects={filteredProjects} setWorkspace={setWorkspace} />}
-      {workspace === 'data-center' && <DataCenter setWorkspace={setWorkspace} />}
-      {workspace === 'analysis' && <AnalysisWorkspace />}
+      {workspace === 'data-center' && <DataCenter setWorkspace={setWorkspace} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />}
+      {workspace === 'analysis' && <AnalysisWorkspace selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />}
       {workspace === 'model-center' && <ModelCenter />}
     </main>
   </div>;
@@ -112,7 +113,7 @@ const modalities = [
 ];
 
 function Overview({ activeProject, filteredProjects, setWorkspace }: { activeProject: number; filteredProjects: typeof projects; setWorkspace: (workspace: Workspace) => void }) {
-  return <div className="page-wrap"><PageIntro eyebrow="数据资产中心" title="数据总览" description="全面掌握焊接数据资产的规模、来源与质量分布。" action={<button className="primary-button" onClick={() => setWorkspace('analysis')}><Tag size={16} />开始标注</button>} />
+  return <div className="page-wrap"><PageIntro eyebrow="数据资产中心" title="数据总览" description="全面掌握焊接数据资产的规模、来源与质量分布。" />
     <div className="stat-grid"><StatCard icon={Database} label="数据总量" value="12,847" sub="条焊缝数据" /><StatCard icon={Factory} label="厂商总量" value="18" sub="家合作厂商" /><StatCard icon={Box} label="单条焊缝最大容量" value="2.4 GB" sub="含缺陷样本 3,624 条" /><StatCard icon={FileCheck2} label="已标注样本" value="10,038" sub="完成度 78.1%" /></div>
 
     <div className="attr-grid">
@@ -153,23 +154,33 @@ type DataCenterTab = 'list' | 'registration' | 'validation' | 'versions';
 type AnalysisTab = 'select' | 'alignment' | 'analysis' | 'split' | 'annotation';
 type ModelCenterTab = 'repository' | 'training' | 'testing' | 'inference';
 
-function WorkspaceTabs<T extends string>({ items, active, onChange }: { items: { id: T; label: string }[]; active: T; onChange: (id: T) => void }) {
-  return <div className="workspace-tabs">{items.map((item) => <button className={active === item.id ? 'active' : ''} onClick={() => onChange(item.id)} key={item.id}>{item.label}</button>)}</div>;
+function WorkspaceTabs<T extends string>({ items, active, onChange }: { items: { id: T; label: string; disabled?: boolean }[]; active: T; onChange: (id: T) => void }) {
+  return <div className="workspace-tabs">{items.map((item) => <button className={active === item.id ? 'active' : ''} disabled={item.disabled} onClick={() => onChange(item.id)} key={item.id}>{item.label}</button>)}</div>;
 }
 
-function DataCenter({ setWorkspace }: { setWorkspace: (workspace: Workspace) => void }) {
+function SelectionContext({ dataId }: { dataId: string }) {
+  const row = weldRows.find((item) => item.id === dataId) ?? weldRows[0];
+  return <div className="selection-context"><div><span>当前选中数据</span><strong>{row.id}</strong></div><div><span>数据来源</span><strong>{row.source}</strong></div><div><span>焊机</span><strong>{row.machine}</strong></div><div><span>当前版本</span><strong>{row.version}</strong></div><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill></div>;
+}
+
+function SelectionRequired({ onBack }: { onBack: () => void }) {
+  return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择一条数据</h2><p>该功能需要基于具体焊缝数据执行，请返回数据列表选择后继续。</p><button className="outline-button" onClick={onBack}><ChevronLeft size={14} />返回数据列表</button></div>;
+}
+
+function DataCenter({ setWorkspace, selectedDataId, setSelectedDataId }: { setWorkspace: (workspace: Workspace) => void; selectedDataId: string | null; setSelectedDataId: (id: string) => void }) {
   const [tab, setTab] = useState<DataCenterTab>('list');
-  const items = [{ id: 'list' as const, label: '数据列表' }, { id: 'registration' as const, label: '数据登记' }, { id: 'validation' as const, label: '数据核验' }, { id: 'versions' as const, label: '数据版本' }];
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />数据资产中心</div><h1>数据中心</h1><p>统一管理焊缝数据、登记台账、质量核验与数据版本。</p></div><Toolbar action={tab === 'registration' ? '保存登记' : '上传数据'} /></div><WorkspaceTabs items={items} active={tab} onChange={setTab} />{tab === 'list' && <Management setWorkspace={setWorkspace} embedded />}{tab === 'registration' && <Registration embedded />}{tab === 'validation' && <Validation embedded />}{tab === 'versions' && <VersionPanel />}</div>;
+  const items = [{ id: 'list' as const, label: '数据列表' }, { id: 'registration' as const, label: '数据登记', disabled: !selectedDataId }, { id: 'validation' as const, label: '数据核验', disabled: !selectedDataId }, { id: 'versions' as const, label: '数据版本', disabled: !selectedDataId }];
+  const content = tab === 'list' ? <ManagementFiltered setWorkspace={setWorkspace} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} /> : selectedDataId ? <>{tab === 'registration' && <Registration embedded />}{tab === 'validation' && <Validation embedded />}{tab === 'versions' && <VersionPanel />}</> : <SelectionRequired onBack={() => setTab('list')} />;
+  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />数据资产中心</div><h1>数据中心</h1><p>以单条焊缝数据为单位，管理登记信息、质量核验和版本链路。</p></div><Toolbar action="上传数据" /></div><WorkspaceTabs items={items} active={tab} onChange={setTab} />{selectedDataId && <SelectionContext dataId={selectedDataId} />}{content}</div>;
 }
 
-function AnalysisWorkspace() {
+function AnalysisWorkspace({ selectedDataId, setSelectedDataId }: { selectedDataId: string | null; setSelectedDataId: (id: string) => void }) {
   const [tab, setTab] = useState<AnalysisTab>('select');
   const [saved, setSaved] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState(['焊瘤', '气孔']);
   const toggleLabel = (label: string) => setSelectedLabels((current) => current.includes(label) ? current.filter((item) => item !== label) : [...current, label]);
-  const items = [{ id: 'select' as const, label: '选择数据' }, { id: 'alignment' as const, label: '多模态对齐' }, { id: 'analysis' as const, label: '信号分析' }, { id: 'split' as const, label: '数据切分' }, { id: 'annotation' as const, label: '数据标注' }];
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />多模态数据生产线</div><h1>分析与标注</h1><p>从焊缝选择、时间对齐到信号分析和标注，完成训练数据生产。</p></div><Toolbar action={tab === 'annotation' ? '保存标注' : '开始处理'} secondary="导出结果" /></div><WorkspaceTabs items={items} active={tab} onChange={setTab} />{tab === 'select' && <AnalysisSelect onContinue={() => setTab('alignment')} />}{tab === 'alignment' && <Alignment embedded />}{tab === 'analysis' && <WeldAnalysis embedded />}{tab === 'split' && <Alignment embedded splitOnly />}{tab === 'annotation' && <Annotation saved={saved} setSaved={setSaved} selectedLabels={selectedLabels} toggleLabel={toggleLabel} embedded />}</div>;
+  const items = [{ id: 'select' as const, label: '选择数据' }, { id: 'alignment' as const, label: '多模态对齐', disabled: !selectedDataId }, { id: 'analysis' as const, label: '信号分析', disabled: !selectedDataId }, { id: 'split' as const, label: '数据切分', disabled: !selectedDataId }, { id: 'annotation' as const, label: '数据标注', disabled: !selectedDataId }];
+  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />多模态数据生产线</div><h1>分析与标注</h1><p>选择一条焊缝后，完成对齐、信号分析、切分与标注。</p></div><Toolbar action={tab === 'annotation' ? '保存标注' : '开始处理'} secondary="导出结果" /></div><WorkspaceTabs items={items} active={tab} onChange={setTab} />{selectedDataId && <SelectionContext dataId={selectedDataId} />}{tab === 'select' && <AnalysisSelect onContinue={(id) => { setSelectedDataId(id); setTab('alignment'); }} />}{!selectedDataId && tab !== 'select' && <SelectionRequired onBack={() => setTab('select')} />}{selectedDataId && tab === 'alignment' && <Alignment embedded />}{selectedDataId && tab === 'analysis' && <WeldAnalysis embedded />}{selectedDataId && tab === 'split' && <Alignment embedded splitOnly />}{selectedDataId && tab === 'annotation' && <Annotation saved={saved} setSaved={setSaved} selectedLabels={selectedLabels} toggleLabel={toggleLabel} embedded />}</div>;
 }
 
 function ModelCenter() {
@@ -179,8 +190,8 @@ function ModelCenter() {
   return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />模型研发中心</div><h1>模型中心</h1><p>统一管理模型版本、训练任务、测试评估与推理验证。</p></div><Toolbar action={tab === 'training' ? '开始训练' : '新建模型'} secondary="导出报告" /></div><WorkspaceTabs items={items} active={tab} onChange={setTab} />{tab === 'repository' && <ModelRepository />}{tab === 'training' && <Training isTraining={isTraining} setIsTraining={setIsTraining} embedded />}{tab === 'testing' && <ModelTest embedded />}{tab === 'inference' && <InferencePanel />}</div>;
 }
 
-function AnalysisSelect({ onContinue }: { onContinue: () => void }) {
-  return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择一条焊缝开始分析</h2><p>选择已登记且核验通过的数据，进入多模态分析流程。</p></div><button className="primary-button" onClick={onContinue}>打开示例焊缝 <ArrowUpRight size={14} /></button></div><div className="selection-grid">{weldRows.slice(0, 3).map((row, index) => <button className={`selection-card ${index === 0 ? 'selected' : ''}`} onClick={onContinue} key={row.id}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{index === 0 ? 'MAG 短路过渡 · 典型稳定样本' : index === 1 ? '熔池异常 · 待复核样本' : '红外多模态 · 工艺验证样本'}</h3><p>{row.machine} · {row.types}</p></div><StatusPill tone={index === 1 ? 'orange' : 'green'}>{index === 1 ? '待复核' : '核验通过'}</StatusPill></button>)}</div></div>;
+function AnalysisSelect({ onContinue }: { onContinue: (id: string) => void }) {
+  return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择一条焊缝开始分析</h2><p>选择已登记且核验通过的数据，进入多模态分析流程。</p></div></div><div className="selection-grid">{weldRows.slice(0, 3).map((row, index) => <button className={`selection-card ${index === 0 ? 'selected' : ''}`} onClick={() => onContinue(row.id)} key={row.id}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{index === 0 ? 'MAG 短路过渡 · 典型稳定样本' : index === 1 ? '熔池异常 · 待复核样本' : '红外多模态 · 工艺验证样本'}</h3><p>{row.machine} · {row.types}</p></div><StatusPill tone={index === 1 ? 'orange' : 'green'}>{index === 1 ? '待复核' : '核验通过'}</StatusPill></button>)}</div></div>;
 }
 
 function VersionPanel() {
@@ -211,13 +222,34 @@ const weldRows = [
   { id: 'WLD-20260814-0245', time: '2026-08-14 16:07', source: '实训线 · 01号', machine: 'Panasonic YD-500', types: '视频 / 声音', quality: '异常', version: 'v1.0' },
 ];
 
-function Management({ setWorkspace, embedded = false }: { setWorkspace: (workspace: Workspace) => void; embedded?: boolean }) {
+function Management({ setWorkspace, selectedDataId, setSelectedDataId, embedded = false }: { setWorkspace: (workspace: Workspace) => void; selectedDataId: string | null; setSelectedDataId: (id: string) => void; embedded?: boolean }) {
   const [selected, setSelected] = useState<string[]>([]);
+  const [query, setQuery] = useState('');
+  const [source, setSource] = useState('全部来源');
+  const [brand, setBrand] = useState('全部品牌');
   const toggle = (id: string) => setSelected((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
+  const filteredRows = useMemo(() => weldRows.filter((row) => {
+    const normalizedQuery = query.trim().toLowerCase();
+    const matchesQuery = !normalizedQuery || `${row.id} ${row.source} ${row.machine}`.toLowerCase().includes(normalizedQuery);
+    const matchesSource = source === '全部来源' || row.source.includes(source);
+    const matchesBrand = brand === '全部品牌' || row.machine.startsWith(brand);
+    return matchesQuery && matchesSource && matchesBrand;
+  }), [query, source, brand]);
   return <div className={embedded ? 'embedded-page' : 'page-wrap'}><PageIntro eyebrow="数据资产中心" title="数据管理" description="统一管理焊缝原始数据、处理版本与标注资产，保持每一条数据可追溯。" action={<Toolbar action="上传数据" />} />
     <div className="stat-grid compact-stats"><StatCard icon={Database} label="登记数据" value="12,847" sub="较上月 +8.4%" /><StatCard icon={CheckCircle2} label="质量通过" value="11,362" sub="通过率 88.4%" /><StatCard icon={GitBranch} label="数据版本" value="38,219" sub="原始与加工数据" /><StatCard icon={AlertTriangle} label="待处理异常" value="126" sub="需要人工复核" /></div>
     <section className="panel table-panel"><div className="table-toolbar"><div className="filter-tabs"><button className="active">全部数据 <b>12,847</b></button><button>待核验 <b>126</b></button><button>已归档 <b>8,204</b></button></div><div className="table-actions"><div className="inline-search"><Search size={14} /><input placeholder="搜索焊缝ID、设备、来源" /></div><button className="select-button">更多筛选 <ChevronDown size={14} /></button></div></div><div className="selection-bar">已选 {selected.length} 条<span>支持批量导出、归档与删除</span><button className="ghost-button">批量操作 <ChevronDown size={14} /></button></div><div className="data-table"><div className="table-row table-head"><span><input type="checkbox" aria-label="全选" /></span><span>焊缝 / 登记编号</span><span>采集时间</span><span>数据来源</span><span>焊机型号</span><span>数据模态</span><span>核验状态</span><span>版本</span><span>操作</span></div>{weldRows.map((row) => <div className="table-row" key={row.id}><span><input type="checkbox" checked={selected.includes(row.id)} onChange={() => toggle(row.id)} aria-label={`选择 ${row.id}`} /></span><span className="id-cell"><strong>{row.id}</strong><small>登记台账 · 自动生成</small></span><span>{row.time}</span><span>{row.source}</span><span>{row.machine}</span><span>{row.types}</span><span><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill></span><span className="mono">{row.version}</span><span><button className="table-icon" onClick={() => setWorkspace('analysis')} aria-label="查看详情"><Eye size={15} /></button><button className="table-icon" aria-label="更多操作"><MoreHorizontal size={15} /></button></span></div>)}</div><div className="table-footer"><span>显示 1-4 条，共 12,847 条数据</span><div className="pagination"><button><ChevronLeft size={14} /></button><span>1 / 3212</span><button><ChevronRight size={14} /></button></div></div></section>
   </div>;
+}
+
+function ManagementFiltered({ setWorkspace, selectedDataId, setSelectedDataId }: { setWorkspace: (workspace: Workspace) => void; selectedDataId: string | null; setSelectedDataId: (id: string) => void }) {
+  const [query, setQuery] = useState('');
+  const [source, setSource] = useState('全部来源');
+  const [brand, setBrand] = useState('全部品牌');
+  const filteredRows = useMemo(() => weldRows.filter((row) => {
+    const search = query.trim().toLowerCase();
+    return (!search || `${row.id} ${row.source} ${row.machine}`.toLowerCase().includes(search)) && (source === '全部来源' || row.source.includes(source)) && (brand === '全部品牌' || row.machine.startsWith(brand));
+  }), [query, source, brand]);
+  return <section className="panel table-panel"><div className="data-filter-strip"><label className="filter-field keyword">关键词<div className="inline-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="焊缝ID、登记编号" /></div></label><label className="filter-field">数据来源<select value={source} onChange={(event) => setSource(event.target.value)}><option>全部来源</option><option>产线相机</option><option>实训线</option></select></label><label className="filter-field">焊机品牌<select value={brand} onChange={(event) => setBrand(event.target.value)}><option>全部品牌</option><option>Fronius</option><option>OTC</option><option>Kemppi</option><option>Panasonic</option></select></label><button className="outline-button filter-reset" onClick={() => { setQuery(''); setSource('全部来源'); setBrand('全部品牌'); }}><RefreshCw size={13} />重置</button></div><div className="latest-version-note"><GitBranch size={14} />列表按焊缝 ID 去重，仅显示每条数据的最新版本</div><div className="table-toolbar"><div className="filter-tabs"><button className="active">全部最新数据 <b>{filteredRows.length}</b></button><button>待核验 <b>126</b></button><button>已归档 <b>8,204</b></button></div><div className="table-actions"><button className="select-button" onClick={() => { setQuery(''); setSource('全部来源'); setBrand('全部品牌'); }}><RefreshCw size={14} />重置筛选</button></div></div><div className="selection-bar">{selectedDataId ? <>当前选中：<strong>{selectedDataId}</strong><span>登记、核验、版本和分析操作将基于此数据</span></> : <>尚未选择数据<span>点击任意数据行即可选择</span></>}<button className="ghost-button" onClick={() => selectedDataId && setWorkspace('analysis')}>进入分析与标注 <ArrowUpRight size={14} /></button></div><div className="data-table"><div className="table-row table-head"><span>状态</span><span>焊缝 / 登记编号</span><span>采集时间</span><span>数据来源</span><span>焊机品牌 / 型号</span><span>数据模态</span><span>核验状态</span><span>最新版本</span><span>操作</span></div>{filteredRows.map((row) => <div className={`table-row ${selectedDataId === row.id ? 'selected-row' : ''}`} onClick={() => setSelectedDataId(row.id)} key={row.id}><span><input type="radio" checked={selectedDataId === row.id} onChange={() => setSelectedDataId(row.id)} aria-label={`选择 ${row.id}`} /></span><span className="id-cell"><strong>{row.id}</strong><small>登记台账 · 最新版本</small></span><span>{row.time}</span><span>{row.source}</span><span>{row.machine}</span><span>{row.types}</span><span><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill></span><span className="mono">{row.version}</span><span><button className="table-icon" onClick={(event) => { event.stopPropagation(); setSelectedDataId(row.id); setWorkspace('analysis'); }} aria-label="进入分析"><Eye size={15} /></button></span></div>)}</div><div className="table-footer"><span>显示 {filteredRows.length} 条最新数据，共 12,847 条数据</span><div className="pagination"><button><ChevronLeft size={14} /></button><span>1 / 3212</span><button><ChevronRight size={14} /></button></div></div></section>;
 }
 
 function Registration({ embedded = false }: { embedded?: boolean }) {
