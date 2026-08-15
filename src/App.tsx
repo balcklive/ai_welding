@@ -144,8 +144,6 @@ function Overview({ activeProject, filteredProjects, setWorkspace }: { activePro
       <section className="panel wordcloud-panel"><div className="panel-heading"><div><h2>焊接厂商词云</h2><p>按数据量大小排列厂商名称</p></div></div><div className="wordcloud">{wordCloud.map((word, index) => <span className="wordcloud-item" style={{ fontSize: `${word.size}px`, opacity: 0.45 + word.size / 50, color: index < 3 ? '#2c9caf' : index < 6 ? '#5fb8a6' : '#7a9b9d' }} key={word.name}>{word.name}</span>)}</div></section>
     </div>
 
-    <section className="panel waveform-panel"><div className="panel-heading"><div><h2>焊接数据示例</h2><p>时序波形 · 电流 / 电压信号</p></div><button className="select-button">全部示例 <ChevronDown size={14} /></button></div><div className="waveform-grid">{[0, 1, 2, 3].map((index) => <WaveformCard index={index} key={index} />)}</div></section>
-
     <div className="section-title"><div><h2>数据项目</h2><p>共 {filteredProjects.length} 个项目正在协作</p></div><button className="ghost-button"><Filter size={15} />筛选</button></div><div className="dataset-grid">{filteredProjects.map((project, index) => <div className={`dataset-card ${index === activeProject ? 'current' : ''}`} key={project.name}><div className="dataset-top"><div className={`dataset-icon ${project.tone}`}><Box size={18} /></div><span className={`status ${project.tone}`}>{project.status}</span><MoreHorizontal size={17} className="muted-icon" /></div><h3>{project.name}</h3><p>最近更新于今天 09:42 · 多模态数据</p><div className="progress-meta"><span>标注进度</span><strong>{index === 0 ? '100%' : index === 1 ? '68%' : '24%'}</strong></div><div className="progress"><span style={{ width: `${index === 0 ? 100 : index === 1 ? 68 : 24}%` }} /></div><div className="dataset-footer"><span><Layers3 size={14} />{project.count} 条样本</span><button onClick={() => setWorkspace('annotation')}>查看详情 <ArrowUpRight size={14} /></button></div></div>)}</div>
     <img className="hidden-reference" src={overviewImage} alt="" />
   </div>;
@@ -157,13 +155,6 @@ function DonutChart({ data }: { data: { name: string; value: number; tone: strin
   let offset = 0;
   const radius = 72; const circumference = 2 * Math.PI * radius;
   return <div className="donut-wrap"><div className="donut-chart"><svg viewBox="0 0 180 180" role="img" aria-label="占比图">{data.map((item) => { const dash = (item.value / total) * circumference; const seg = <circle key={item.name} cx="90" cy="90" r={radius} fill="none" stroke={item.tone} strokeWidth="22" strokeDasharray={`${dash} ${circumference - dash}`} strokeDashoffset={-offset} transform="rotate(-90 90 90)" style={{ transition: 'stroke-dasharray .6s' }} />; offset += dash; return seg; })}<text x="90" y="86" textAnchor="middle" className="donut-total">{total}%</text><text x="90" y="102" textAnchor="middle" className="donut-label">总计</text></svg></div><div className="donut-legend">{data.map((item) => <div className="donut-legend-row" key={item.name}><span><i style={{ background: item.tone }} />{item.name}</span><strong>{item.value}%</strong></div>)}</div></div>;
-}
-
-function WaveformCard({ index }: { index: number }) {
-  const labels = ['短路过渡 · 电流波形', '射流过渡 · 电压波形', 'CMT · 电流波形', '脉冲过渡 · 电压波形'];
-  const colors = ['#2c9caf', '#5fb8a6', '#f0a34a', '#e88d6c'];
-  const generatePath = (seed: number) => { let path = 'M 0 50'; for (let i = 1; i <= 60; i++) { const x = i * 5; const base = Math.sin(i * 0.5 + seed) * 18; const noise = Math.sin(i * 2.3 + seed * 3) * 8; const spike = i % 7 === 0 ? (seed % 2 ? -22 : 22) : 0; const y = 50 + base + noise + spike; path += ` L ${x} ${y.toFixed(1)}`; } return path; };
-  return <div className="waveform-card"><div className="waveform-header"><span><i style={{ background: colors[index] }} />{labels[index]}</span><span className="waveform-meta">{(index + 1) * 10} kHz</span></div><svg viewBox="0 0 300 100" preserveAspectRatio="none" className="waveform-svg" role="img" aria-label={labels[index]}><path d={generatePath(index)} fill="none" stroke={colors[index]} strokeWidth="1.8" /><path d={generatePath(index + 2)} fill="none" stroke={colors[index]} strokeWidth="1" opacity="0.3" /></svg><div className="waveform-footer"><span>采样点: {(index + 1) * 2400}</span><span>时长: {(index + 1) * 0.5}s</span></div></div>;
 }
 
 function Annotation({ saved, setSaved, selectedLabels, toggleLabel }: { saved: boolean; setSaved: (saved: boolean) => void; selectedLabels: string[]; toggleLabel: (label: string) => void }) {
