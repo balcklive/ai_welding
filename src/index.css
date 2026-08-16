@@ -20,6 +20,17 @@ button { border: 0; cursor: pointer; }
 .nav-item:hover, .nav-item.active { background: #1b4650; color: #e9fffa; }
 .nav-item.active { box-shadow: inset 2px 0 #83dcc5; }
 .nav-pip { width: 5px; height: 5px; background: #83dcc5; border-radius: 50%; margin-left: auto; }
+.nav-group { display: grid; gap: 0; }
+.nav-chevron { margin-left: auto; color: #5a787e; transition: transform .25s; }
+.nav-chevron.expanded { transform: rotate(180deg); }
+.nav-submenu { display: grid; gap: 2px; padding: 4px 0 6px 14px; margin-left: 10px; border-left: 1px solid #1f444d; }
+.nav-subitem { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px 10px; color: #81989c; background: transparent; border-radius: 6px; font-size: 11.5px; text-align: left; transition: .2s; }
+.nav-subitem:hover { color: #c2dfe0; background: #163c44; }
+.nav-subitem.active { color: #8edcc7; background: #1b4650; }
+.nav-subitem:disabled { color: #4a666c; cursor: not-allowed; opacity: .55; }
+.nav-subitem:disabled:hover { background: transparent; }
+.nav-sub-dot { width: 5px; height: 5px; border-radius: 50%; background: #3a5d63; flex-shrink: 0; transition: .2s; }
+.nav-subitem.active .nav-sub-dot { background: #83dcc5; }
 .sidebar-divider { height: 1px; background: #24464e; margin: 20px 10px 0; }
 .project-list { display: grid; gap: 3px; }
 .project-item { display: grid; grid-template-columns: 8px 1fr auto; gap: 9px; align-items: center; padding: 9px 11px; color: #8ea8ac; background: transparent; border-radius: 7px; font-size: 11px; text-align: left; }
