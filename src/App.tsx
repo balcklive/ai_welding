@@ -12,7 +12,7 @@ const labelImage = 'https://images.pexels.com/photos/13296053/pexels-photo-13296
 const modelImage = 'https://images.pexels.com/photos/11951215/pexels-photo-11951215.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const detailImage = 'https://images.pexels.com/photos/36522029/pexels-photo-36522029.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 
-type Route = 'overview' | 'data-center/list' | 'data-center/datasets' | 'data-center/registration' | 'data-center/validation' | 'data-center/versions' | 'analysis/select' | 'analysis/alignment' | 'analysis/analysis' | 'analysis/split' | 'analysis/annotation' | 'model-center/repository' | 'model-center/training' | 'model-center/testing' | 'model-center/inference';
+type Route = 'overview' | 'data-center/list' | 'data-center/datasets' | 'data-center/registration' | 'data-center/validation' | 'data-center/versions' | 'analysis/select' | 'analysis/alignment' | 'analysis/analysis' | 'analysis/split' | 'analysis/annotation' | 'analysis/features' | 'model-center/repository' | 'model-center/training' | 'model-center/testing' | 'model-center/inference';
 
 const workspaceHeaders: Record<string, { eyebrow: string; title: string; description: string }> = {
   'data-center': { eyebrow: '数据资产中心', title: '数据中心', description: '以单条焊缝数据为单位，管理登记信息、质量核验和版本链路。' },
@@ -35,6 +35,7 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
     { route: 'analysis/analysis', label: '信号分析' },
     { route: 'analysis/split', label: '数据切分' },
     { route: 'analysis/annotation', label: '数据标注' },
+    { route: 'analysis/features', label: '特征提取' },
   ] },
   { id: 'model-center', label: '模型中心', icon: TrainFront, children: [
     { route: 'model-center/repository', label: '模型仓库' },
@@ -44,7 +45,7 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
   ] },
 ];
 
-const routesRequiringData: Route[] = ['data-center/registration', 'data-center/validation', 'data-center/versions', 'analysis/alignment', 'analysis/analysis', 'analysis/split', 'analysis/annotation'];
+const routesRequiringData: Route[] = ['data-center/registration', 'data-center/validation', 'data-center/versions', 'analysis/alignment', 'analysis/analysis', 'analysis/split', 'analysis/annotation', 'analysis/features'];
 const projects = [
   { name: '焊接缺陷检测 · 主数据集', count: '1,209', status: '已完成', tone: 'green' },
   { name: '表面质量巡检数据', count: '842', status: '标注中', tone: 'blue' },
@@ -109,9 +110,10 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'analysis/select') content = <AnalysisSelect onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
   else if (route === 'analysis/alignment') content = selectedDataId ? <Alignment embedded /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/analysis') content = selectedDataId ? <WeldAnalysis embedded /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/analysis') content = selectedDataId ? <AdvancedWeldAnalysis embedded /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/split') content = selectedDataId ? <Alignment embedded splitOnly /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/annotation') content = selectedDataId ? <Annotation embedded /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/features') content = selectedDataId ? <FeatureExtraction embedded /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'model-center/repository') content = <ModelRepository />;
   else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training embedded /></>;
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTest embedded /></>;
@@ -313,6 +315,398 @@ function Registration({ embedded = false }: { embedded?: boolean }) {
   return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据登记" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />登记即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>新建数据登记</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">登记草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label>数据来源 *<input placeholder="例如：产线相机 · 03号" /></label><label>采集时间 *<input value="2026-08-15 09:42" readOnly /></label><label>焊缝 / 批次名称 *<input placeholder="输入焊缝或批次名称" /></label><label>关联产品信息<input placeholder="产品型号、零件编号" /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select defaultValue="Fronius CMT"><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select defaultValue="MAG焊"><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" /></label><label>板材厚度<input placeholder="例如：6 mm" /></label><label>电流 / 电压<input placeholder="180 A / 22 V" /></label><label>采样频率<input placeholder="10 kHz" /></label></div><div className="upload-zone"><Upload size={20} /><strong>拖入或选择原始数据文件</strong><span>支持视频、CSV、WAV、JSON、图片 · 单文件不超过 2 GB</span><button className="outline-button">选择文件</button></div><button className="full-button" onClick={() => setRegistered(true)}>{registered ? <><CheckCircle2 size={16} />登记已生成：REG-20260815-00249</> : <><FileCheck2 size={16} />生成登记编号</>}</button></section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>登记规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一登记编号', '原始文件与后续版本自动关联', '登记后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近登记</h2><p>最近 24 小时新增数据</p></div></div>{weldRows.slice(0, 3).map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已登记</StatusPill></div>)}</section></aside></div></div>;
 }
 
+const CH = 720; const CW = 220; const AXIS_L = 44; const AXIS_B = 22; const PLOT_W = CH - AXIS_L; const PLOT_H = CW - AXIS_B;
+const dur = 5.42;
+const SAMPLES = 216;
+const t = Array.from({ length: SAMPLES }, (_, i) => (i / (SAMPLES - 1)) * dur);
+function seg(s: number, e: number) { return s <= t[0] ? 0 : e >= dur ? 1 : s / dur; }
+const arc = 0.42; const weldS = 0.78; const weldE = 4.28; const ext = 4.86;
+const isArc = (x: number) => x < arc;
+const isWeld = (x: number) => x >= weldS && x <= weldE;
+const isTail = (x: number) => x > ext;
+const anomalA: [number, number] = [1.92, 2.34];
+const anomalB: [number, number] = [3.58, 3.86];
+const isAnomA = (x: number) => x >= anomalA[0] && x <= anomalA[1];
+const isAnomB = (x: number) => x >= anomalB[0] && x <= anomalB[1];
+const isAnom = (x: number) => isAnomA(x) || isAnomB(x);
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+function currentAmp(x: number): number {
+  let b = 180;
+  if (isArc(x)) b = 60 + (x / arc) * 130;
+  else if (isTail(x)) b = 150 - (x - ext) * 90;
+  else if (isWeld(x)) b = 180;
+  const noise = isAnom(x) ? (Math.sin(x * 47) * 22 + Math.cos(x * 31) * 16) : (Math.sin(x * 25) * 7 + Math.cos(x * 18) * 4);
+  const drip = Math.sin(x * 38) * (isWeld(x) ? 11 : 0);
+  return clamp(b + noise + drip, 0, 300);
+}
+function voltVal(x: number): number {
+  let b = 22.4;
+  if (isArc(x)) b = 14 + (x / arc) * 9;
+  else if (isTail(x)) b = 22 - (x - ext) * 12;
+  else if (isWeld(x)) b = 22.4;
+  const noise = isAnom(x) ? (Math.sin(x * 53) * 3.4 + Math.cos(x * 29) * 2.6) : (Math.sin(x * 22) * 0.9 + Math.cos(x * 16) * 0.6);
+  return clamp(b + noise, 0, 40);
+}
+function gasVal(x: number): number {
+  if (isArc(x)) return clamp(12 + (x / arc) * 6, 0, 30);
+  if (isTail(x)) return clamp(18 - (x - ext) * 5, 0, 30);
+  const noise = isAnom(x) ? (Math.sin(x * 13) * 2.4) : (Math.cos(x * 7) * 0.6);
+  return clamp(18 + noise, 0, 30);
+}
+function wireVal(x: number): number {
+  if (isArc(x)) return clamp(3 + (x / arc) * 4, 0, 12);
+  if (isTail(x)) return clamp(7 - (x - ext) * 5, 0, 12);
+  const noise = isAnom(x) ? (Math.sin(x * 19) * 1.6) : (Math.cos(x * 11) * 0.4);
+  return clamp(7 + noise, 0, 12);
+}
+
+const sigCur = t.map(currentAmp);
+const sigVol = t.map(voltVal);
+const sigGas = t.map(gasVal);
+const sigWir = t.map(wireVal);
+
+type Chan = { id: string; name: string; unit: string; color: string; values: number[]; lo: number; hi: number; mean: string };
+const channels: Chan[] = [
+  { id: 'cur', name: '电流', unit: 'A', color: '#2c9caf', values: sigCur, lo: 0, hi: 300, mean: '180 ± 12 A' },
+  { id: 'vol', name: '电压', unit: 'V', color: '#67cdb0', values: sigVol, lo: 0, hi: 40, mean: '22.4 ± 1.8 V' },
+  { id: 'gas', name: '气体流量', unit: 'L/min', color: '#f0a34a', values: sigGas, lo: 0, hi: 30, mean: '18 L/min' },
+  { id: 'wir', name: '送丝速度', unit: 'm/min', color: '#75add1', values: sigWir, lo: 0, hi: 12, mean: '7 m/min' },
+];
+
+function fmt(s: number) {
+  const m = Math.floor(s / 60);
+  const r = (s - m * 60).toFixed(2).padStart(5, '0');
+  return `${String(m).padStart(2, '0')}:${r}`;
+}
+
+function toPath(values: number[], lo: number, hi: number): string {
+  const range = hi - lo || 1;
+  return values.map((v, i) => {
+    const px = AXIS_L + (i / (SAMPLES - 1)) * PLOT_W;
+    const py = (PLOT_H * (1 - (v - lo) / range));
+    return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`;
+  }).join(' ');
+}
+
+
+function PhasePlot({ cursor, onCursor }: { cursor: number; onCursor: (s: number) => void }) {
+  const w = 260; const h = 230; const pad = 26; const pw = w - pad * 2; const ph = h - pad * 2;
+  const cxLo = 140; const cxHi = 230; const cvLo = 15; const cvHi = 30;
+  const toX = (c: number) => pad + ((c - cxLo) / (cxHi - cxLo)) * pw;
+  const toY = (v: number) => pad + (1 - (v - cvLo) / (cvHi - cvLo)) * ph;
+  const points = t.map((ts, i) => ({ x: toX(sigCur[i]), y: toY(sigVol[i]), ts, i, anom: isAnom(ts) }));
+  const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const cursorIdx = Math.min(points.length - 1, Math.max(0, Math.round((cursor / dur) * (points.length - 1))));
+  const cp = points[cursorIdx];
+  const x = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width * w;
+    const c = cxLo + ((relX - pad) / pw) * (cxHi - cxLo);
+    let best = 0; let bd = Infinity;
+    for (let i = 0; i < points.length; i++) { const d = Math.abs(sigCur[i] - c); if (d < bd) { bd = d; best = i; } }
+    onCursor(points[best].ts);
+  };
+  return <svg viewBox={`0 0 ${w} ${h}`} className="phase-svg" onMouseMove={x} onMouseLeave={() => {}}>
+    <line x1={pad} y1={pad} x2={pad} y2={pad + ph} stroke="#e8efef" />
+    <line x1={pad} y1={pad + ph} x2={pad + pw} y2={pad + ph} stroke="#e8efef" />
+    <text x={pad + pw / 2} y={h - 6} textAnchor="middle" className="phase-axis-label">电流 (A)</text>
+    <text x={8} y={pad + ph / 2} textAnchor="middle" className="phase-axis-label" transform={`rotate(-90 8 ${pad + ph / 2})`}>电压 (V)</text>
+    <path d={path} fill="none" stroke="#2c9caf" strokeWidth="1.4" opacity="0.55" />
+    {points.filter((p) => p.anom).map((p) => <circle key={p.i} cx={p.x} cy={p.y} r="2.4" fill="#e88d6c" opacity="0.7" />)}
+    <circle cx={cp.x} cy={cp.y} r="5" fill="#fff" stroke="#e88d6c" strokeWidth="2.5" />
+  </svg>;
+}
+
+function PddChart({ chanId }: { chanId: string }) {
+  const chan = channels.find((c) => c.id === chanId) ?? channels[0];
+  const bins = 28;
+  const vals = chan.values;
+  const lo = chan.lo; const hi = chan.hi;
+  const counts = new Array(bins).fill(0);
+  vals.forEach((v) => { const b = clamp(Math.floor(((v - lo) / (hi - lo)) * bins), 0, bins - 1); counts[b]++; });
+  const max = Math.max(...counts) || 1;
+  const w = 260; const h = 200; const pad = 28; const pw = w - pad - 12; const ph = h - pad - 16;
+  const bw = pw / bins;
+  const kde: number[] = [];
+  for (let i = 0; i < bins; i++) {
+    let sum = 0;
+    for (let j = 0; j < bins; j++) { const d = (i - j) / 3.5; sum += counts[j] * Math.exp(-d * d); }
+    kde.push(sum);
+  }
+  const kdeMax = Math.max(...kde) || 1;
+  const kdePath = kde.map((k, i) => { const px = pad + i * bw + bw / 2; const py = pad + ph * (1 - k / kdeMax); return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`; }).join(' ');
+  return <svg viewBox={`0 0 ${w} ${h}`} className="pdd-svg">
+    <line x1={pad} y1={pad} x2={pad} y2={pad + ph} stroke="#e8efef" />
+    <line x1={pad} y1={pad + ph} x2={pad + pw} y2={pad + ph} stroke="#e8efef" />
+    {counts.map((c, i) => <rect key={i} x={pad + i * bw + 1} y={pad + ph * (1 - c / max)} width={bw - 2} height={ph * (c / max)} fill={chan.color} opacity="0.32" rx="1" />)}
+    <path d={kdePath} fill="none" stroke={chan.color} strokeWidth="2.2" />
+    <text x={pad} y={h - 4} className="pdd-axis" textAnchor="start">{lo}</text>
+    <text x={pad + pw} y={h - 4} className="pdd-axis" textAnchor="end">{hi} {chan.unit}</text>
+    <text x={6} y={pad + 8} className="pdd-axis">密度</text>
+  </svg>;
+}
+
+function ExploreWaveform({ active, cursor, onCursor, mode }: { active: Set<string>; cursor: number; onCursor: (s: number) => void; mode: string }) {
+  const x = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const rel = (e.clientX - rect.left) / rect.width;
+    onCursor(clamp(rel * dur, 0, dur));
+  };
+  const cursorX = AXIS_L + (cursor / dur) * PLOT_W;
+  const visible = channels.filter((c) => active.has(c.id));
+  return <div className="explore-waveform">
+    <svg viewBox={`0 0 ${CH} ${CW}`} className="explore-waveform-svg" preserveAspectRatio="none" onMouseMove={x} onClick={x} onMouseLeave={() => {}}>
+      {[0, 0.25, 0.5, 0.75, 1].map((p) => <line key={p} x1={AXIS_L} y1={PLOT_H * p} x2={CH} y2={PLOT_H * p} stroke="#edf2f2" />)}
+      <rect x={AXIS_L + seg(anomalA[0], anomalA[1]) * PLOT_W} y1={0} y={0} width={(anomalA[1] - anomalA[0]) / dur * PLOT_W} height={PLOT_H} fill="#e88d6c" opacity="0.13" />
+      <rect x={AXIS_L + seg(anomalB[0], anomalB[1]) * PLOT_W} width={(anomalB[1] - anomalB[0]) / dur * PLOT_W} height={PLOT_H} fill="#e88d6c" opacity="0.13" />
+      {visible.map((c) => <path key={c.id} d={toPath(c.values, c.lo, c.hi)} fill="none" stroke={c.color} strokeWidth={c.id === 'cur' ? 2 : 1.6} opacity={0.9} />)}
+      <line x1={cursorX} y1={0} x2={cursorX} y2={PLOT_H} stroke="#d16f69" strokeWidth="1.5" strokeDasharray="4 3" />
+    </svg>
+    <div className="explore-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>5s</span></div>
+  </div>;
+}
+
+function modeLabel(mode: string) {
+  if (mode === '时域') return '原始时域波形';
+  if (mode === 'PSD') return '功率谱密度（Welch 法）';
+  if (mode === 'STFT') return '短时傅里叶时频图';
+  if (mode === 'DWT') return '离散小波分解';
+  if (mode === '小波分解') return '小波多层分量分解';
+  return '';
+}
+
+const filterTypes = ['低通', '高通', '带通'] as const;
+type FilterType = typeof filterTypes[number];
+
+function applyFilter(values: number[], type: FilterType, freq: number, freq2: number): number[] {
+  const out = [...values];
+  for (let pass = 0; pass < 3; pass++) {
+    const tmp = [...out];
+    for (let i = 2; i < tmp.length; i++) {
+      const a = (tmp[i] + tmp[i - 1] + tmp[i - 2]) / 3;
+      if (type === '低通') out[i] = tmp[i] * (1 - freq) + a * freq;
+      else if (type === '高通') out[i] = tmp[i] - a * freq * 0.6;
+      else out[i] = tmp[i] * (1 - freq2) + (tmp[i] - a) * freq;
+    }
+  }
+  return out;
+}
+
+function PsdChart({ values, color, lo, hi }: { values: number[]; color: string; lo: number; hi: number }) {
+  const N = values.length;
+  const half = Math.floor(N / 2);
+  const mags: number[] = [];
+  for (let k = 0; k < half; k++) {
+    let re = 0; let im = 0;
+    for (let n = 0; n < N; n++) {
+      const ang = (2 * Math.PI * k * n) / N;
+      re += values[n] * Math.cos(ang);
+      im -= values[n] * Math.sin(ang);
+    }
+    mags.push((re * re + im * im) / N);
+  }
+  const max = Math.max(...mags) || 1;
+  const welchBins = 24;
+  const welch: number[] = [];
+  const binSize = Math.floor(half / welchBins) || 1;
+  for (let b = 0; b < welchBins; b++) {
+    let sum = 0;
+    for (let j = 0; j < binSize; j++) { sum += mags[b * binSize + j] ?? 0; }
+    welch.push(sum / binSize);
+  }
+  const wMax = Math.max(...welch) || 1;
+  const W = 660; const H = 180; const pad = 30; const pw = W - pad - 12; const ph = H - pad - 18;
+  const bw = pw / welchBins;
+  const path = welch.map((w, i) => { const px = pad + i * bw + bw / 2; const py = pad + ph * (1 - w / wMax); return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`; }).join(' ');
+  const labels = ['0', '0.5k', '1k', '2k', '5k', '10k'];
+  return <svg viewBox={`0 0 ${W} ${H}`} className="psd-svg" preserveAspectRatio="none">
+    {[0, 0.25, 0.5, 0.75, 1].map((p) => <line key={p} x1={pad} y1={pad + ph * p} x2={pad + pw} y2={pad + ph * p} stroke="#edf2f2" />)}
+    {welch.map((w, i) => <rect key={i} x={pad + i * bw + 1} y={pad + ph * (1 - w / wMax)} width={bw - 2} height={ph * (w / wMax)} fill={color} opacity="0.25" rx="1" />)}
+    <path d={path} fill="none" stroke={color} strokeWidth="2.2" />
+    <line x1={pad} y1={pad + ph} x2={pad + pw} y2={pad + ph} stroke="#d8e0e0" />
+    <line x1={pad} y1={pad} x2={pad} y2={pad + ph} stroke="#d8e0e0" />
+    {labels.map((l, i) => <text key={l} x={pad + (pw / (labels.length - 1)) * i} y={H - 4} className="psd-axis" textAnchor={i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle'}>{l}</text>)}
+    <text x={6} y={pad + 8} className="psd-axis">PSD</text>
+  </svg>;
+}
+
+function StftHeatmap({ values, color }: { values: number[]; color: string }) {
+  const cols = 40; const rows = 16;
+  const N = values.length;
+  const win = Math.floor(N / cols) || 1;
+  const heat: number[][] = [];
+  let gMax = 0;
+  for (let c = 0; c < cols; c++) {
+    const frame = values.slice(c * win, c * win + win);
+    const row: number[] = [];
+    for (let k = 0; k < rows; k++) {
+      let re = 0; let im = 0;
+      for (let n = 0; n < win && n < frame.length; n++) {
+        const ang = (2 * Math.PI * k * n) / win;
+        re += frame[n] * Math.cos(ang);
+        im -= frame[n] * Math.sin(ang);
+      }
+      const m = Math.sqrt(re * re + im * im);
+      row.push(m);
+      if (m > gMax) gMax = m;
+    }
+    heat.push(row);
+  }
+  const W = 660; const H = 180; const pad = 28; const pw = W - pad - 8; const ph = H - pad - 16;
+  const cw = pw / cols; const rh = ph / rows;
+  const cellColor = (v: number) => {
+    const r = v / (gMax || 1);
+    if (r > 0.75) return color;
+    if (r > 0.5) return color + 'cc';
+    if (r > 0.25) return color + '88';
+    if (r > 0.1) return color + '44';
+    return '#f0f5f4';
+  };
+  return <svg viewBox={`0 0 ${W} ${H}`} className="stft-svg" preserveAspectRatio="none">
+    {heat.map((col, c) => col.map((v, r) => <rect key={`${c}-${r}`} x={pad + c * cw} y={pad + (rows - 1 - r) * rh} width={cw + 0.5} height={rh + 0.5} fill={cellColor(v)} />))}
+    <line x1={pad} y1={pad + ph} x2={pad + pw} y2={pad + ph} stroke="#d8e0e0" />
+    <line x1={pad} y1={pad} x2={pad} y2={pad + ph} stroke="#d8e0e0" />
+    <text x={pad + pw / 2} y={H - 4} className="psd-axis" textAnchor="middle">时间 (s)</text>
+    <text x={8} y={pad + ph / 2} className="psd-axis" textAnchor="middle" transform={`rotate(-90 8 ${pad + ph / 2})`}>频率</text>
+  </svg>;
+}
+
+function DwtChart({ values, color }: { values: number[]; color: string }) {
+  const levels = 4;
+  const W = 660; const H = 180; const pad = 30; const pw = W - pad - 8;
+  const bandH = (H - pad - 10) / (levels + 1);
+  const approx = [...values];
+  const bands: number[][] = [];
+  for (let lv = 0; lv < levels; lv++) {
+    const detail: number[] = [];
+    const next: number[] = [];
+    for (let i = 0; i < approx.length - 1; i += 2) {
+      const a = (approx[i] + approx[i + 1]) / 2;
+      const d = (approx[i] - approx[i + 1]) / 2;
+      next.push(a); detail.push(d);
+    }
+    bands.push(detail);
+    approx.length = 0; approx.push(...next);
+  }
+  const allBands = [...bands, approx];
+  const allMax = Math.max(...allBands.flatMap((b) => b.map(Math.abs))) || 1;
+  const toBandPath = (band: number[], yOff: number) => {
+    const step = pw / (band.length - 1 || 1);
+    return band.map((v, i) => { const px = pad + i * step; const py = yOff + bandH / 2 - (v / allMax) * (bandH / 2 - 2); return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`; }).join(' ');
+  };
+  return <svg viewBox={`0 0 ${W} ${H}`} className="dwt-svg" preserveAspectRatio="none">
+    {allBands.map((band, lv) => {
+      const yOff = pad + lv * bandH;
+      const label = lv < levels ? `D${levels - lv}` : `A${levels}`;
+      const c = lv < levels ? color : '#f0a34a';
+      return <g key={lv}>
+        <line x1={pad} y1={yOff + bandH} x2={pad + pw} y2={yOff + bandH} stroke="#edf2f2" />
+        <text x={6} y={yOff + bandH / 2 + 3} className="psd-axis">{label}</text>
+        <path d={toBandPath(band, yOff)} fill="none" stroke={c} strokeWidth="1.4" opacity="0.85" />
+      </g>;
+    })}
+    <text x={pad + pw / 2} y={H - 2} className="psd-axis" textAnchor="middle">样本点</text>
+  </svg>;
+}
+
+function WaveletDecomp({ values, color }: { values: number[]; color: string }) {
+  const levels = 5;
+  const W = 660; const H = 200; const pad = 34; const pw = W - pad - 8;
+  const bandH = (H - pad - 10) / levels;
+  const wavelets = ['db4', 'sym3', 'coif1', 'haar', 'bior1.3'];
+  const recon: number[][] = [];
+  let cur = [...values];
+  for (let lv = 0; lv < levels; lv++) {
+    const comp: number[] = [];
+    const scale = (lv + 1) * 4;
+    for (let i = 0; i < cur.length; i++) {
+      const win = cur.slice(Math.max(0, i - scale), Math.min(cur.length, i + scale));
+      const m = win.reduce((s, v) => s + v, 0) / win.length;
+      const d = cur[i] - m;
+      comp.push(d * (1 + lv * 0.3) + Math.sin(i * 0.4 + lv) * 3 * (lv / levels));
+    }
+    recon.push(comp);
+  }
+  const allMax = Math.max(...recon.flatMap((b) => b.map(Math.abs))) || 1;
+  return <svg viewBox={`0 0 ${W} ${H}`} className="wavelet-decomp-svg" preserveAspectRatio="none">
+    {recon.map((band, lv) => {
+      const yOff = pad + lv * bandH;
+      const step = pw / (band.length - 1 || 1);
+      const path = band.map((v, i) => { const px = pad + i * step; const py = yOff + bandH / 2 - (v / allMax) * (bandH / 2 - 2); return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`; }).join(' ');
+      const opacity = 0.4 + (lv / levels) * 0.5;
+      return <g key={lv}>
+        <line x1={pad} y1={yOff + bandH} x2={pad + pw} y2={yOff + bandH} stroke="#edf2f2" />
+        <text x={6} y={yOff + bandH / 2 + 3} className="psd-axis">L{lv + 1}</text>
+        <path d={path} fill="none" stroke={color} strokeWidth="1.3" opacity={opacity} />
+      </g>;
+    })}
+    <text x={pad + pw / 2} y={H - 2} className="psd-axis" textAnchor="middle">样本点</text>
+  </svg>;
+}
+
+
+
+function AdvancedWeldAnalysis({ embedded = false }: { embedded?: boolean }) {
+  const [mode, setMode] = useState('时域');
+  const [active, setActive] = useState<Set<string>>(new Set(['cur', 'vol', 'gas']));
+  const [cursor, setCursor] = useState(2.1);
+  const [pddChan, setPddChan] = useState('cur');
+  const [filterOn, setFilterOn] = useState(false);
+  const [filterType, setFilterType] = useState<FilterType>('低通');
+  const [cutoff, setCutoff] = useState(0.3);
+  const [cutoff2, setCutoff2] = useState(0.6);
+  const [filterChan, setFilterChan] = useState('cur');
+  const toggle = (id: string) => setActive((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const anomalies = [{ range: anomalA, type: '电弧不稳', sev: 'orange' as const }, { range: anomalB, type: '飞溅倾向', sev: 'red' as const }];
+  const filterChanObj = channels.find((c) => c.id === filterChan) ?? channels[0];
+  const filteredValues = filterOn ? applyFilter(filterChanObj.values, filterType, cutoff, cutoff2) : filterChanObj.values;
+  const modes = ['时域', 'PSD', 'STFT', 'DWT', '小波分解'];
+  return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />REG-20260815-00248</span><h2>焊缝 · MAG 短路过渡样本</h2><p>Fronius CMT · Q235B · 6 mm · 2026-08-15 09:42</p></div><div className="analysis-kpis"><div><span>核验状态</span><strong className="accent-text">通过</strong></div><div><span>有效焊接段</span><strong>3.86 s</strong></div><div><span>异常区段</span><strong className="warning-text">2 个</strong></div></div></div>
+  <div className="explore-layout">
+    <section className="panel explore-main">
+      <div className="panel-heading"><div><h2>多模态信号联动</h2><p>勾选通道任意组合，拖动波形同步定位 — 当前：{modeLabel(mode)}</p></div><div className="mode-tabs">{modes.map((item) => <button className={mode === item ? 'active' : ''} onClick={() => setMode(item)} key={item}>{item}</button>)}</div></div>
+      <div className="preprocess-bar">
+        <div className="preprocess-toggle"><label className="switch-row compact"><span><FilterIcon size={13} />信号滤波</span><input type="checkbox" checked={filterOn} onChange={(e) => setFilterOn(e.target.checked)} /></label></div>
+        {filterOn && <><div className="preprocess-field"><label>滤波类型</label><div className="pp-chips">{filterTypes.map((ft) => <button key={ft} className={filterType === ft ? 'on' : ''} onClick={() => setFilterType(ft)}>{ft}</button>)}</div></div>
+        <div className="preprocess-field"><label>目标通道</label><div className="pp-chans">{channels.map((c) => <button key={c.id} className={filterChan === c.id ? 'on' : ''} onClick={() => setFilterChan(c.id)}><i style={{ background: c.color }} />{c.name}</button>)}</div></div>
+        <div className="preprocess-field"><label>截止频率</label><div className="pp-slider"><input type="range" min="0.05" max="0.9" step="0.05" value={cutoff} onChange={(e) => setCutoff(parseFloat(e.target.value))} /><span>{(cutoff * 1000).toFixed(0)} Hz</span></div></div>
+        {filterType === '带通' && <div className="preprocess-field"><label>上限频率</label><div className="pp-slider"><input type="range" min="0.1" max="0.95" step="0.05" value={cutoff2} onChange={(e) => setCutoff2(parseFloat(e.target.value))} /><span>{(cutoff2 * 1000).toFixed(0)} Hz</span></div></div>}
+        </>}
+      </div>
+      <div className="channel-toggles">{channels.map((c) => <button key={c.id} className={`channel-toggle ${active.has(c.id) ? 'on' : ''}`} onClick={() => toggle(c.id)}><i style={{ background: c.color }} />{c.name}<small>{c.unit}</small><span className="toggle-check">{active.has(c.id) ? <Check size={12} /> : null}</span></button>)}</div>
+      <div className="explore-legend">{channels.filter((c) => active.has(c.id)).map((c) => <span key={c.id}><i style={{ background: c.color }} />{c.name} ({c.unit})</span>)}{active.size === 0 && <span className="explore-legend-empty">请至少开启一个通道</span>}<span className="explore-legend-anom"><i className="legend-orange" />异常区段</span><span className="explore-legend-cursor"><i className="result-dot red" />时间游标 {fmt(cursor)}</span></div>
+      {mode === '时域' && <><ExploreWaveform active={active} cursor={cursor} onCursor={setCursor} mode={mode} />{filterOn && <div className="filter-compare"><span className="fc-label">滤波后 {filterChanObj.name}（{filterType} · {cutoff.toFixed(2)}）</span><svg viewBox={`0 0 ${CH} 70`} className="filter-compare-svg" preserveAspectRatio="none"><path d={toPath(applyFilter(filterChanObj.values, filterType, cutoff, cutoff2), filterChanObj.lo, filterChanObj.hi).split('M').map((s) => 'M' + s).join('').replace(/^M/, '')} fill="none" stroke={filterChanObj.color} strokeWidth="1.8" opacity="0.7" /></svg></div>}
+      <div className="event-track"><span>起弧 <b>00:00.42</b></span><i /><span>稳态焊接 <b>00:00.78 - 00:04.28</b></span><i /><span>收弧 <b>00:04.86</b></span></div>
+      <div className="anomaly-summary"><div className="anomaly-summary-head"><AlertTriangle size={14} /><span>已检出异常区段 {anomalies.length} 个 · 点击可定位</span></div>{anomalies.map((a, i) => <button key={i} className={`anomaly-chip ${a.sev}`} onClick={() => setCursor((a.range[0] + a.range[1]) / 2)}><i /><strong>{a.type}</strong><small>{fmt(a.range[0])} – {fmt(a.range[1])}</small><span>定位 <ArrowUpRight size={12} /></span></button>)}</div>
+      <div className="signal-cards">{channels.map((c) => <div key={c.id} className={active.has(c.id) ? '' : 'dim'}><Waves size={16} /><span>{c.name}波形<strong>{c.mean}</strong></span></div>)}</div></>}
+      {mode === 'PSD' && <div className="spectrum-view"><div className="spectrum-head"><span><FilterIcon size={14} />功率谱密度 · Welch 法</span><small>目标通道：{filterChanObj.name}（{filterOn ? `已滤波 ${filterType}` : '原始信号'}）</small></div><PsdChart values={filteredValues} color={filterChanObj.color} lo={filterChanObj.lo} hi={filterChanObj.hi} /><div className="spectrum-note"><BarChart3 size={13} /><span>主峰集中在低频段（短路过渡频率），异常区段在 2-5 kHz 存在次峰。</span></div></div>}
+      {mode === 'STFT' && <div className="spectrum-view"><div className="spectrum-head"><span><Activity size={14} />短时傅里叶变换时频图</span><small>目标通道：{filterChanObj.name}</small></div><StftHeatmap values={filteredValues} color={filterChanObj.color} /><div className="spectrum-note"><Waves size={13} /><span>时频图可观察到 1.9-2.3s 和 3.6-3.9s 两个异常区段的高频能量抬升。</span></div></div>}
+      {mode === 'DWT' && <div className="spectrum-view"><div className="spectrum-head"><span><Layers3 size={14} />离散小波分解（4 层 · db4）</span><small>目标通道：{filterChanObj.name}</small></div><DwtChart values={filteredValues} color={filterChanObj.color} /><div className="spectrum-note"><Gauge size={13} /><span>D1-D4 为细节系数、A4 为近似系数，异常在 D1-D2 高频层最明显。</span></div></div>}
+      {mode === '小波分解' && <div className="spectrum-view"><div className="spectrum-head"><span><Waves size={14} />小波多层分量分解</span><small>目标通道：{filterChanObj.name} · 5 层</small></div><WaveletDecomp values={filteredValues} color={filterChanObj.color} /><div className="spectrum-note"><Layers3 size={13} /><span>L1-L5 由低到高展示不同尺度的小波分量，低层捕捉高频瞬变。</span></div></div>}
+    </section>
+    <aside className="explore-aside">
+      <section className="panel explore-phase-panel">
+        <div className="panel-heading"><div><h2>UI 相图</h2><p>电流–电压轨迹，颜色越亮越接近当前时刻</p></div><span className="explore-hint">悬停联动</span></div>
+        <PhasePlot cursor={cursor} onCursor={setCursor} />
+        <div className="phase-legend"><span><i className="legend-blue" />稳态轨迹</span><span><i className="legend-orange" />异常发散</span><span><i className="result-dot red" />游标 {fmt(cursor)}</span></div>
+      </section>
+      <section className="panel explore-pdd-panel">
+        <div className="panel-heading"><div><h2>PDD 概率密度分布</h2><p>评估信号值的集中度与双峰特征</p></div><div className="pdd-chan-select">{channels.map((c) => <button key={c.id} className={pddChan === c.id ? 'active' : ''} onClick={() => setPddChan(c.id)}><i style={{ background: c.color }} />{c.name}</button>)}</div></div>
+        <PddChart chanId={pddChan} />
+        <div className="pdd-note"><BarChart3 size={13} /><span>当前通道分布近似单峰、集中度高；异常区段会使分布尾部抬升。</span></div>
+      </section>
+      <section className="panel explore-result-panel">
+        <div className="panel-heading"><div><h2>分析结果</h2><p>AI 异常检测模型 v1.8</p></div><Sparkles size={16} className="accent-text" /></div>
+        <div className="result-score"><strong>96.8%</strong><span>焊接稳定度</span></div>
+        <div className="result-row"><span><i className="result-dot green" />正常区段</span><strong>92.4%</strong></div>
+        <div className="result-row"><span><i className="result-dot orange" />电弧不稳</span><strong>5.1%</strong></div>
+        <div className="result-row"><span><i className="result-dot red" />飞溅倾向</span><strong>2.5%</strong></div>
+        <button className="full-button small-button">查看异常详情 <ArrowUpRight size={14} /></button>
+      </section>
+    </aside>
+  </div></div>;
+}
 function SignalChart({ accent = '#2c9caf', secondary = '#f0a34a' }: { accent?: string; secondary?: string }) {
   return <div className="signal-chart"><div className="chart-grid-lines" /><svg viewBox="0 0 700 180" preserveAspectRatio="none"><path d="M0 106 C26 82 39 127 65 101 S103 62 128 100 S158 138 188 94 S221 84 249 101 S280 42 307 93 S339 132 370 88 S399 73 428 95 S463 144 493 88 S531 60 558 84 S594 121 620 75 S664 98 700 58" fill="none" stroke={accent} strokeWidth="2.5" /><path d="M0 135 C32 126 46 137 76 125 S123 119 152 130 S188 108 218 126 S257 135 287 119 S325 128 354 116 S391 128 420 110 S458 131 489 118 S530 121 561 104 S600 120 632 108 S672 114 700 102" fill="none" stroke={secondary} strokeWidth="1.8" strokeDasharray="5 5" /></svg><div className="chart-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>5s</span></div></div>;
 }
@@ -341,6 +735,105 @@ function ModelTest({ embedded = false }: { embedded?: boolean }) {
 
 function InfoRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={accent ? 'accent-text' : ''}>{value}</strong></div>; }
 
+const tsFeatures = [
+  { name: '均值', cur: '180.2', vol: '22.4', gas: '18.0', wir: '7.0' },
+  { name: '方差', cur: '142.8', vol: '3.2', gas: '0.8', wir: '0.4' },
+  { name: '峰值', cur: '246.1', vol: '28.3', gas: '21.2', wir: '8.6' },
+  { name: '偏度', cur: '0.12', vol: '-0.08', gas: '0.31', wir: '0.05' },
+  { name: '峰度', cur: '2.94', vol: '3.12', gas: '2.67', wir: '2.81' },
+  { name: 'RMS', cur: '182.1', vol: '22.5', gas: '18.0', wir: '7.0' },
+  { name: 'FFT 主频', cur: '39.2 Hz', vol: '37.8 Hz', gas: '12.4 Hz', wir: '11.1 Hz' },
+  { name: '小波能量', cur: '8.42', vol: '1.86', gas: '0.72', wir: '0.38' },
+];
+const visionFeatures = [
+  { name: '熔池面积', value: '1,284 px²', desc: '分割掩膜像素统计' },
+  { name: '熔池周长', value: '186 px', desc: '边缘轮廓长度' },
+  { name: '长宽比', value: '2.34', desc: '外接矩形长/宽' },
+  { name: '圆形度', value: '0.72', desc: '4πA/P²' },
+  { name: '灰度均值', value: '128.4', desc: '熔池区域平均灰度' },
+  { name: '纹理对比度', value: '0.46', desc: 'GLCM 对比度' },
+  { name: '纹理能量', value: '0.82', desc: 'GLCM 角二阶矩' },
+  { name: '边缘梯度', value: '34.2', desc: 'Sobel 梯度均值' },
+];
+const audioFeatures = [
+  { name: '频带能量 (0-1kHz)', value: '24.6 dB' },
+  { name: '频带功率 (1-5kHz)', value: '18.3 dB' },
+  { name: '总功率谱密度', value: '0.042' },
+  { name: '质心频率', value: '2.14 kHz' },
+  { name: '频谱滚降', value: '4.2 kHz' },
+  { name: '过零率', value: '0.038' },
+];
+const unifiedVector = [
+  { group: '时序·电流', dims: 8, range: '[0:8]', tone: '#2c9caf' },
+  { group: '时序·电压', dims: 8, range: '[8:16]', tone: '#67cdb0' },
+  { group: '时序·气体', dims: 6, range: '[16:22]', tone: '#f0a34a' },
+  { group: '时序·送丝', dims: 6, range: '[22:28]', tone: '#75add1' },
+  { group: '视觉·几何', dims: 4, range: '[28:32]', tone: '#b89ac4' },
+  { group: '视觉·纹理', dims: 4, range: '[32:36]', tone: '#b89ac4' },
+  { group: '声音·频带', dims: 6, range: '[36:42]', tone: '#d4a05a' },
+];
+
+function FeatureExtraction({ embedded = false }: { embedded?: boolean }) {
+  const [normMethod, setNormMethod] = useState('Z-Score');
+  const [exportFmt, setExportFmt] = useState('NPY');
+  const totalDims = unifiedVector.reduce((s, v) => s + v.dims, 0);
+  return <div className="page-wrap"><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从时序、视觉、声音模态提取代表性特征，输出统一特征向量供融合层使用。" action={<Toolbar action="执行提取" secondary="导出特征集" />} />
+    <div className="feature-layout">
+      <section className="panel feature-modality-panel">
+        <div className="panel-heading"><div><h2>时序信号特征</h2><p>电流 / 电压 / 气体流量 / 送丝速度 · 统计 + 频域 + 时频</p></div><Waves size={17} className="accent-text" /></div>
+        <div className="feature-table-wrap">
+          <div className="feature-table">
+            <div className="ft-row ft-head"><span>特征</span><span style={{ color: '#2c9caf' }}>电流</span><span style={{ color: '#67cdb0' }}>电压</span><span style={{ color: '#f0a34a' }}>气体</span><span style={{ color: '#75add1' }}>送丝</span></div>
+            {tsFeatures.map((f) => <div className="ft-row" key={f.name}><span>{f.name}</span><span className="mono">{f.cur}</span><span className="mono">{f.vol}</span><span className="mono">{f.gas}</span><span className="mono">{f.wir}</span></div>)}
+          </div>
+        </div>
+        <div className="feature-tags"><span>统计特征</span><span>FFT 频域</span><span>小波时频</span><span>28 维 / 通道</span></div>
+      </section>
+
+      <section className="panel feature-modality-panel">
+        <div className="panel-heading"><div><h2>熔池视觉特征</h2><p>熔池视觉模型提取几何与纹理特征</p></div><ImageIcon size={17} className="accent-text" /></div>
+        <div className="vision-feature-grid">
+          {visionFeatures.map((f) => <div className="vf-item" key={f.name}><div><strong>{f.name}</strong><small>{f.desc}</small></div><span className="mono">{f.value}</span></div>)}
+        </div>
+        <div className="feature-tags"><span>几何特征</span><span>GLCM 纹理</span><span>Sobel 边缘</span><span>8 维</span></div>
+      </section>
+
+      <section className="panel feature-modality-panel">
+        <div className="panel-heading"><div><h2>声音 / 光谱特征</h2><p>频带能量、功率谱密度与声学统计</p></div><AudioWaveform size={17} className="accent-text" /></div>
+        <div className="audio-feature-list">
+          {audioFeatures.map((f) => <div className="af-item" key={f.name}><Sigma size={13} /><span>{f.name}</span><strong className="mono">{f.value}</strong></div>)}
+        </div>
+        <div className="feature-tags"><span>频带能量</span><span>PSD</span><span>声学统计</span><span>6 维</span></div>
+      </section>
+
+      <section className="panel feature-unified-panel">
+        <div className="panel-heading"><div><h2>统一特征向量</h2><p>多模态特征拼接后输出，供后续融合层使用</p></div><Boxes size={17} className="accent-text" /></div>
+        <div className="unified-summary"><div><span>总维度</span><strong>{totalDims} 维</strong></div><div><span>模态数</span><strong>3</strong></div><div><span>归一化</span><strong>{normMethod}</strong></div><div><span>输出格式</span><strong>.{exportFmt.toLowerCase()}</strong></div></div>
+        <div className="unified-vector-bar">
+          {unifiedVector.map((seg, i) => <div className="uv-seg" key={i} style={{ flexGrow: seg.dims, background: seg.tone }} title={`${seg.group} · ${seg.dims} 维`}><span>{seg.dims}</span></div>)}
+        </div>
+        <div className="unified-legend">{unifiedVector.map((seg, i) => <span key={i}><i style={{ background: seg.tone }} />{seg.group}<small>{seg.range}</small></span>)}</div>
+        <div className="unified-config">
+          <div className="form-block"><label>归一化方式</label><div className="pp-chips">{['Z-Score', 'Min-Max', 'L2 范数', '无'].map((m) => <button key={m} className={normMethod === m ? 'on' : ''} onClick={() => setNormMethod(m)}>{m}</button>)}</div></div>
+          <div className="form-block"><label>输出格式</label><div className="pp-chips">{['NPY', 'CSV', 'JSON', 'PT'].map((f) => <button key={f} className={exportFmt === f ? 'on' : ''} onClick={() => setExportFmt(f)}>{f}</button>)}</div></div>
+        </div>
+        <button className="full-button"><Download size={15} />导出统一特征向量</button>
+      </section>
+
+      <section className="panel feature-pipeline-panel">
+        <div className="panel-heading"><div><h2>提取流水线</h2><p>从原始信号到融合向量的处理链路</p></div></div>
+        <div className="feature-pipeline">
+          <div className="fp-step"><Database size={15} /><span>原始多模态数据</span></div><i>↓</i>
+          <div className="fp-step"><FilterIcon size={15} /><span>信号预处理 / 滤波</span></div><i>↓</i>
+          <div className="fp-step"><Waves size={15} /><span>分模态特征提取</span></div><i>↓</i>
+          <div className="fp-step"><Boxes size={15} /><span>特征拼接 · {totalDims} 维</span></div><i>↓</i>
+          <div className="fp-step"><Check size={15} /><span>归一化 · 输出向量</span></div>
+        </div>
+        <div className="pipeline-note"><FileText size={14} /><span>当前为演示数据，接入后端后特征值由对应模型实时计算。</span></div>
+      </section>
+    </div>
+  </div>;
+}
 function Training({ embedded = false }: { embedded?: boolean }) {
   const [isTraining, setIsTraining] = useState(false);
   return <div className="page-wrap"><PageIntro eyebrow="模型工坊" title="模型训练" description="配置训练任务，快速迭代你的工业视觉模型。" action={<button className={`primary-button ${isTraining ? 'training-button' : ''}`} onClick={() => setIsTraining(!isTraining)}>{isTraining ? <Activity size={16} /> : <Play size={16} />}{isTraining ? '训练进行中' : '开始新训练'}</button>} /><div className="training-layout"><section className="panel config-panel"><div className="panel-heading"><div><h2>训练配置</h2><p>从数据集到模型参数，一站式配置</p></div><span className="draft-tag">草稿</span></div><div className="form-block"><label>训练数据集</label><div className="select-field"><Database size={16} />主数据集 · 焊接缺陷检测 <ChevronDown size={15} /></div></div><div className="form-block"><label>选择基础模型</label><div className="model-select"><div className="model-logo">V</div><div><strong>VisionForge v2.1</strong><span>通用视觉检测模型 · 推荐</span></div><Check size={17} className="selected-check" /></div></div><div className="parameter-grid"><div className="form-block"><label>训练轮数 <CircleHelp size={13} /></label><div className="input-field">50 <span>epochs</span></div></div><div className="form-block"><label>批次大小 <CircleHelp size={13} /></label><div className="input-field">16 <span>batch</span></div></div><div className="form-block"><label>学习率</label><div className="input-field">0.001</div></div><div className="form-block"><label>验证集比例</label><div className="input-field">20%</div></div></div><div className="advanced-row"><SlidersHorizontal size={15} />高级参数<span>已配置 4 项</span><ChevronDown size={15} /></div><button className="full-button" onClick={() => setIsTraining(true)}>{isTraining ? <><Activity size={16} />训练任务运行中</> : <><Play size={16} />开始训练任务</>}</button></section><section className="panel training-chart-panel"><div className="panel-heading"><div><h2>训练表现</h2><p>{isTraining ? '任务 #TR-20260815-09 · 实时更新' : '最近一次训练任务 · #TR-20260814-07'}</p></div><span className={`run-status ${isTraining ? 'running' : ''}`}><i />{isTraining ? '运行中' : '已完成'}</span></div><div className="metric-row"><div><span>mAP@50</span><strong>{isTraining ? '—' : '94.6%'}</strong></div><div><span>精确率</span><strong>{isTraining ? '—' : '96.2%'}</strong></div><div><span>召回率</span><strong>{isTraining ? '—' : '92.8%'}</strong></div></div><div className="line-chart"><div className="chart-y"><span>1.0</span><span>0.8</span><span>0.6</span><span>0.4</span><span>0.2</span><span>0</span></div><svg viewBox="0 0 600 250" preserveAspectRatio="none" role="img" aria-label="训练指标曲线"><path d="M0 212 C55 190 68 174 112 164 S170 128 208 132 S260 103 300 97 S355 80 387 76 S438 63 474 50 S530 34 600 23" fill="none" stroke="#1d8fa5" strokeWidth="4" /><path d="M0 232 C60 220 72 210 125 194 S175 177 215 167 S270 150 312 143 S370 126 402 121 S450 111 492 92 S548 83 600 72" fill="none" stroke="#f0a34a" strokeWidth="3" strokeDasharray="7 7" /></svg><div className="chart-x"><span>0</span><span>10</span><span>20</span><span>30</span><span>40</span><span>50 epochs</span></div></div><div className="chart-key"><span><i className="legend-blue" />训练损失</span><span><i className="legend-orange" />验证损失</span></div></section></div><div className="training-note"><Terminal size={17} /><div><strong>训练日志</strong><p>{isTraining ? '正在准备数据增强策略... 预计 18 分钟后完成。' : '任务已完成，模型已自动保存至模型仓库。'}</p></div><button className="ghost-button">查看完整日志 <ArrowUpRight size={14} /></button></div></div>;
