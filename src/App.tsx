@@ -6,6 +6,7 @@ import {
   Tag, Terminal, TrainFront, Upload, Users, WandSparkles, Waves, Zap,
   ClipboardCheck, FileText, GitBranch, ScanLine, Download, CheckCircle2,
   AlertTriangle, Eye, RefreshCw, ChevronLeft, ChevronRight, Cpu,
+  Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
 } from 'lucide-react';
 const overviewImage = 'https://images.pexels.com/photos/14804699/pexels-photo-14804699.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const labelImage = 'https://images.pexels.com/photos/13296053/pexels-photo-13296053.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
