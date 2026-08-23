@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/core/
 
-核心配置与基础设施。当前进度：Task 1（配置 + 日志中间件）+ Task 2（db 会话）+ Task 3（audit 写入）+ Task 5（密码哈希 + JWT）。
+核心配置与基础设施。当前进度：Task 1（配置 + 日志中间件）+ Task 2（db 会话）+ Task 3（audit 写入）+ Task 5（密码哈希 + JWT）+ Task 6（启动 seed）。
 
 ## 脚本
 
@@ -10,6 +10,7 @@
 - `db.py`：**Task 2**。模块级 `engine`（MySQL，`settings.mysql_url`，`pool_pre_ping=True`）、`SessionLocal`（`sessionmaker`，`expire_on_commit=False`）、`get_session()`（FastAPI 依赖，`yield` 一个 `Session`）。
 - `audit.py`：**Task 3**。`write_audit(session, user_id, action, resource_type, resource_id=None, detail=None)` 向 `audit_logs`（模型 `AuditLog`，§3.23）插一行，`created_at=datetime.now(timezone.utc)`（UTC aware）。**只 `session.add` + `session.flush`，不 commit**——由调用方统一 commit，保证审计与业务变更同事务。
 - `security.py`：**Task 5**。`hash_password(plain) -> str` / `verify_password(plain, hash) -> bool`（pwdlib `PasswordHash.recommended()`，Argon2）；`create_access_token(user: User) -> str`（PyJWT HS256，`sub=str(user.id)`，`exp = now + access_token_expire_minutes`，`iat` 已设）；`decode_token(token) -> int`（返回 user id，失败抛 `jwt.PyJWTError`/`ValueError`）。**坑：** pwdlib `verify` 对无法识别的哈希格式（如测试里随手填的 `"hash"`）会抛 `UnknownHashError`，`verify_password` 统一捕获按不匹配处理，避免坏哈希让登录 500。
+- `seed.py`：**Task 6**。`seed_admin(session)` 无 `users.username == admin_username` 时插管理员（林工/admin，argon2 哈希）；`seed_demo(session)` 写演示数据（数值对齐 `src/App.tsx`：4 条焊缝 + 版本链 v1.0→v1.3（0245 停在 v1.0）、0248 核验 93.3 + 15 条规则（第 9 项警告）、3 数据集 + 3 模型、标注页演示样本、审计日志）；`seed_all(session)` = 两者 + 末尾统一 `session.commit()`，**幂等**（按业务唯一键跳过）。**坑：** 全部走 ORM，无 MySQL 特有 SQL（SQLite 测试可用）；`Session(engine)` 的 `with` 退出只 close 不 commit，故 `seed_all` 必须自行 commit 数据才会落库。
 
 ## 坑/限制
 

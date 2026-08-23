@@ -12,6 +12,7 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 - `test_common.py`（Task 3）：`ok/err/paginate` 信封纯函数 + 全局异常处理器（隔离迷你 app）+ `write_audit` 审计写入。
 - `test_storage.py`（Task 4）：`normalize_filename`/`normalize_key` 纯函数断言 + 假 `Minio` 客户端注入测参数透传，不连真实 MinIO。
 - `test_auth.py`（Task 5）：JWT 认证。内存 SQLite **必须 `poolclass=StaticPool` + `check_same_thread=False`**——TestClient 在 worker 线程处理请求，默认 per-thread 池会让各线程看到互相独立的空库（"no such table"）；用 `app.dependency_overrides[get_session]` 覆盖登录与 `get_current_user` 两处依赖，seed 一个 argon2 用户测 login 成功/密码错/用户不存在、me 带/不带/坏 token、`decode_token` 往返、`verify_password`。另含防枚举机制断言：`_DUMMY_HASH` 是合法 argon2 哈希且任意明文均不匹配（不直接断言耗时，避免 CI 抖动）。
+- `test_seed.py`（Task 6）：内存 SQLite + `SQLModel.metadata.create_all`，同线程直跑 `seed_all`（不用 TestClient/StaticPool）。`seed_all` 两次幂等（各表数量不翻倍）；label_categories==5 / welds==4 / models==3 / datasets==3；管理员 `verify_password(admin_password)` True；0248 有 4 版本且 latest→v1.3、核验 93.3/14/1/0/2.8 + 15 条规则（第 9 项警告）；0245 停在 v1.0；标注页演示数据就位。
 
 ## 坑/限制
 

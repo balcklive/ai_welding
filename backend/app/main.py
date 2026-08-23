@@ -3,6 +3,8 @@
 - Task 1：日志中间件（`AccessLogMiddleware`）+ 健康检查。
 - Task 3：挂载 v1 路由聚合（`/api/v1` 前缀在此添加）+ 全局异常处理器
   （统一返回 `{code,message,detail?}` 信封，见 `schemas/common.py`）。
+- Task 6：lifespan 启动时执行 `seed_all`（管理员 + 演示数据，幂等）；
+  MySQL 不可达时仅告警不阻塞启动（见 `core/seed.py`）。
 
 异常错误码映射：
 - `RequestValidationError` → `err(42200, "参数校验失败", status=422)`
@@ -11,13 +13,18 @@
 - 兜底 `Exception` → 500 `err(50000, "服务内部错误")`（loguru 记 traceback）
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from loguru import logger
+from sqlmodel import Session
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.db import engine
 from app.core.logging import AccessLogMiddleware, setup_logging
+from app.core.seed import seed_all
 from app.schemas.common import err, ok
 
 setup_logging()
@@ -27,7 +34,23 @@ if settings.secret_key in ("change-me", "") or settings.admin_password in ("admi
         "检测到弱默认凭据：SECRET_KEY 或 ADMIN_PASSWORD 仍为默认值，生产环境务必在 .env 中修改"
     )
 
-app = FastAPI(title="AI Welding Platform API", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时执行 seed（管理员 + 演示数据，幂等）。
+
+    MySQL 不可达时仅 `logger.warning` 后跳过，避免启动直接崩溃（本地演示可容忍）。
+    """
+    try:
+        with Session(engine) as session:
+            seed_all(session)
+        logger.info("启动 seed 完成：管理员 + 演示数据已就绪")
+    except Exception:  # noqa: BLE001 - 启动期数据库不可达不应阻塞服务启动
+        logger.opt(exception=True).warning(
+            "启动 seed 失败（数据库不可达？），跳过 seed，服务继续启动"
+        )
+
+
+app = FastAPI(title="AI Welding Platform API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(AccessLogMiddleware)
 
 

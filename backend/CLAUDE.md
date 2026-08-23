@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/
 
-后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）已完成。
+后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）已完成。
 
 ## 目录与脚本
 
@@ -8,6 +8,7 @@
 - `.python-version`：`3.12`（uv 据此选/下载解释器）。
 - `uv.lock`：`uv sync` 生成的锁文件，勿手改。
 - `app/`：应用代码（见 `app/CLAUDE.md`）。`app/models/` 含全部 23 张表类，`app/core/db.py` 提供引擎与会话。
+- `app/core/seed.py`：**Task 6**。启动 seed——`seed_all(session)`（幂等，末尾统一 commit）/ `seed_admin` / `seed_demo`。演示数据数值对齐前端 mock（App.tsx weldRows/VersionPanel/Validation/datasetRows/ModelRepository/Annotation）；ORM 写库，SQLite 测试与 MySQL 启动均可用。详见 `app/core/CLAUDE.md`。
 - `alembic/`：迁移（见 `alembic/CLAUDE.md`；`0001_initial` 手写，datetime 统一 `DATETIME(6)`）。
 - `tests/`：pytest 测试（`uv run pytest`，SQLite 内存 + TestClient，不连远程库）。
 
@@ -23,5 +24,5 @@
 - **配置 `.env` 解析**：`app/core/config.py::Settings` 用 `env_file=Path(__file__).resolve().parents[3] / ".env"` 固定指向**仓库根 `.env`**（config.py → parents[3] = 仓库根），与 cwd 无关。不要改成相对 `.env`，否则在 backend/ 下跑会读不到。
 - **访问日志**：loguru 写 `backend/logs/api.log`；`API_LOG_DIR` 为相对值时自动锚定到 `backend/` 下（保证 cwd 无关）。`backend/logs/`、`backend/.venv/` 已被根 `.gitignore` 忽略。
 - **中间件只覆盖 `/api/v1`** 路由（开发规范 §2.1）；非 API 路径直接透传不记日志。
-- **管理员 seed**：`ADMIN_USERNAME`/`ADMIN_PASSWORD` 在根 `.env`（Task 6 使用）；当前是本地演示默认值 `admin`/`admin123`，生产必须改。
+- **管理员 seed**：`ADMIN_USERNAME`/`ADMIN_PASSWORD` 在根 `.env`（Task 6 已实现，`app/core/seed.py` 读取）；当前是本地演示默认值 `admin`/`admin123`，生产必须改。
 - pytest 能 import `app` 依赖 `tests/__init__.py`（使 backend/ 进入 sys.path）。
