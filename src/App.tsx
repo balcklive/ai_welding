@@ -1758,7 +1758,7 @@ function Training({ embedded = false }: { embedded?: boolean }) {
       val_ratio: config.val_ratio,
     })
       .then((res) => { setJobId(res.job_id); setIsTraining(true); })
-      .catch((err) => { console.warn('[training] createTrainingTask failed', err); setIsTraining(true); });
+      .catch((err) => { console.warn('[training] createTrainingTask failed', err); });
   };
   const handleLogs = () => {
     if (!jobId) return;
