@@ -31,7 +31,8 @@ aiwelding/  (桶)
 ├── annotations/{annotation_task_id}/export.json       # 标注导出
 ├── datasets/{dataset_version_id}/{snapshot}.json      # 数据集固定快照清单
 ├── models/{model_version_id}/weights.pt               # 模型权重
-└── reports/{report_type}/{ref_id}.pdf                 # 导出报告
+├── reports/{report_type}/{ref_id}.pdf                 # 导出报告
+└── uploads/{uuid}/{filename}                          # 临时上传区（推理输入等，30 天清理）
 ```
 
 **对象键命名规则：**
@@ -57,6 +58,7 @@ aiwelding/  (桶)
 - 新增端点：`POST /api/v1/files/presign-upload`（**这是对 `API接口清单.md` 的补充扩展**）。
 - 后端生成预签名 PUT URL（默认 30 分钟有效、指定 `Content-Length`），前端直接 PUT 到 MinIO，超大文件走 **multipart**。
 - 直传避免 2GB 文件占用后端内存/带宽，登记页"单文件 ≤2GB"由后端校验 `Content-Length` 实现。
+- 直传完成**无独立回执端点**：登记场景由前端调用 `POST /registrations/{id}/raw-files` 挂载；其余场景（推理输入等）前端直接使用返回的 `object_key`。
 
 ## 4. 下载与播放
 
@@ -86,6 +88,7 @@ aiwelding/  (桶)
 | `models/` | 长期保留 | 模型版本权重 |
 | `reports/` | 30 天 | 导出报告 |
 | `annotations/` | 长期保留 | 标注导出 |
+| `uploads/` | 30 天 | 推理输入等临时文件 |
 
 - 启用 MinIO **桶版本化**（可选）：防误删，回滚旧对象。
 - 容量告警：按桶/前缀统计大小，超阈值告警（预留运维项）。
@@ -97,5 +100,7 @@ aiwelding/  (桶)
 | API | `POST /files/upload`、`GET /files/{key}/url`（清单 §3.7）；`POST /files/presign-upload`（本文档扩展） |
 | 数据库 | `data_versions.object_keys`（v1.0 原始文件）、`samples.object_keys`、`model_versions.file_key`、`dataset_versions.snapshot_id`、`inference_tasks.input_key` 存的就是本文档的对象键 |
 | 登记上传 | 登记表单的原始文件 → `raw/{registration_no}/...`；上传后经 `POST /registrations/{id}/raw-files` 把 object_key 挂到 v1.0 原始数据版本（存 `data_versions.object_keys`） |
+| 推理输入 | 推理样本先传 `uploads/{uuid}/...`，再以返回 `object_key` 提交 `POST /inference-tasks`（存 `inference_tasks.input_key`） |
+| 对齐产物 | 对齐任务成功后的视频/轨道/JSON → `processed/{weld_id}/align/...`，object_key 回填 `alignment_tasks.assets`，前端经 `GET /files/{key}/url` 播放 |
 
 > 一致性：所有对象键一律以本文档前缀体系为准；数据库字段与接口参数只引用 `object_key` 字符串。
