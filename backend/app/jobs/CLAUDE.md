@@ -1,7 +1,9 @@
 # CLAUDE.md — backend/app/jobs/
 
-Job 执行器与各域 handler（Task 13）。导入本包即完成 handler 注册（`__init__.py` 拉入
-`app/jobs/alignment.py`，其模块级 `@register_handler("alignment")` 填充 `executor.HANDLERS`）。
+Job 执行器与各域 handler（Task 13 + Task 14）。导入本包即完成 handler 注册
+（`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py`，
+各模块级 `@register_handler(...)` 填充 `executor.HANDLERS`）。新增域任务（split/annotation/
+training...）在本包加一个 `xxx.py` 注册即可，executor 无需改动。
 
 ## 脚本
 
@@ -25,6 +27,17 @@ Job 执行器与各域 handler（Task 13）。导入本包即完成 handler 注�
 - `alignment.py`：**Task 13**。`handle(job_id, session)`（`@register_handler("alignment")`）——
   按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.simulate_alignment`
   （模拟进度 + 自动生成「时间对齐」版本 + 回填 task 域字段与 job.result）。
+- `split.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("split")`）→
+  `simulate_split(session, task, job)`（**领域逻辑直接在本模块**，任务清单未规划 split service）：
+  解析规则 `fixed_rate`（帧/样本，>=1）→ `sample_count = max(1, int(DURATION*1000)//fixed_rate)`
+  （DURATION=signals 5.42s → 5420 帧，确定性）→ 进度逐步 → 逐样本建 `Sample` 行
+  （frame_no 0..n，`object_keys=processed/{weld_id}/split/{sample.id}.jpg|.json`，
+  **先 flush 拿 id 再回填 object_keys**）→ 回填 `task.sample_count` + `job.result`
+  `{sample_count, rules, task_format, samples[]}`。
+- `annotation.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("annotation")`）→
+  `app.services.annotation.simulate_annotation`（进度逐步 → 若 source=split_task 把该切分任务
+  样本 `annotation_task_id` 指向本任务 → 回填 job.result `{source, name, samples_count}`）。
+  AI 预标注/标注保存是**同步端点**，不经 handler。
 
 ## 坑/限制
 

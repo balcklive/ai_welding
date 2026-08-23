@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/
 
-后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）+ Task 7（通用 Job 服务 + `GET /jobs/{job_id}` 轮询端点）+ Task 8（Dashboard 总览四端点 stats/attributes/distributions/projects）+ Task 9（files 三端点：小文件代理上传 / 大文件预签名直传 / 下载 URL）+ Task 10（welds 核心 CRUD：列表/登记/版本/核验）+ **Task 11（Analysis：candidates / signals / 真实 DSP）已完成** + **Task 12（真实多模态特征提取 + 端点）已完成** + **Task 13（Job 执行器 DB 轮询 + 对齐任务模拟）已完成**。
+后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）+ Task 7（通用 Job 服务 + `GET /jobs/{job_id}` 轮询端点）+ Task 8（Dashboard 总览四端点 stats/attributes/distributions/projects）+ Task 9（files 三端点：小文件代理上传 / 大文件预签名直传 / 下载 URL）+ Task 10（welds 核心 CRUD：列表/登记/版本/核验）+ **Task 11（Analysis：candidates / signals / 真实 DSP）已完成** + **Task 12（真实多模态特征提取 + 端点）已完成** + **Task 13（Job 执行器 DB 轮询 + 对齐任务模拟）已完成** + **Task 14（切分 + 标注，模拟）已完成**。
 
 ## 目录与脚本
 

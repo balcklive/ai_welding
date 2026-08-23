@@ -7,6 +7,8 @@
 
 from app.jobs import executor
 from app.jobs.alignment import handle as _alignment_handler  # noqa: F401  # 注册 alignment handler
+from app.jobs.annotation import handle as _annotation_handler  # noqa: F401  # 注册 annotation handler（Task 14）
+from app.jobs.split import handle as _split_handler  # noqa: F401  # 注册 split handler（Task 14）
 
 __all__ = [
     "executor",

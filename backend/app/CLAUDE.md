@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/
 
-应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）+ Task 11（analysis 域：真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（Job 执行器 DB 轮询 + 对齐任务模拟）。
+应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）+ Task 11（analysis 域：真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（Job 执行器 DB 轮询 + 对齐任务模拟）+ Task 14（切分 + 标注，模拟）。
 
 ## 脚本
 
@@ -22,14 +22,17 @@
   `dsp.py` + `signals.py` = **Task 11**（真实 DSP 纯函数 + 确定性信号生成），
   `features.py` = **Task 12**（多模态特征提取 + 42 维统一向量），
   `alignment.py` = **Task 13**（多模态对齐模拟：进度 + 自动生成「时间对齐」版本 + 产物回填），
-  详见 `services/CLAUDE.md`。
-- `jobs/`：**Task 13** Job 执行器 + 各域 handler（`executor.py` DB 轮询 / `run_job` 同步入口 /
-  handler 注册表；`alignment.py` = 对齐 handler；导入本包即完成注册），详见 `jobs/CLAUDE.md`。
+  `annotation.py` = **Task 14**（标注：任务创建 handler 逻辑 / 样本导入 / AI 预标注确定性模拟 /
+  覆盖写保存 / confidence 语义 / job_uid 双解析），详见 `services/CLAUDE.md`。
+- `jobs/`：**Task 13 + Task 14** Job 执行器 + 各域 handler（`executor.py` DB 轮询 / `run_job`
+  同步入口 / handler 注册表；`alignment.py` = 对齐 handler、`split.py` = 切分 handler、
+  `annotation.py` = 标注 handler；导入本包即完成注册），详见 `jobs/CLAUDE.md`。
 - `api/`：v1 路由聚合（Task 3 骨架，各域占位）+ `deps.py` 公共依赖 `get_current_user`（Task 5），
   `v1/dashboard.py` 为 **Task 8 已实现**（四端点）、`v1/files.py` 为 **Task 9 已实现**
   （upload / presign-upload / url）、`v1/welds.py` 为 **Task 10 已实现**（welds/registrations 全端点）、
-  `v1/analysis.py` 为 **Task 11 + Task 12 + Task 13 已实现**（candidates / signals /
-  六 mode DSP / result / features 提取 / alignment-tasks 两端点），详见 `api/CLAUDE.md`。
+  `v1/analysis.py` 为 **Task 11 ~ Task 14 已实现**（candidates / signals / 六 mode DSP /
+  result / features 提取 / alignment-tasks / split-tasks / label-categories /
+  annotation-tasks 全端点），详见 `api/CLAUDE.md`。
 
 ## 坑/限制
 

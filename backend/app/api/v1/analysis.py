@@ -1,5 +1,5 @@
-"""analysis 域路由（Task 11 + Task 12 + Task 13）：分析候选 / 多通道信号 / 真实 DSP
-六模式 / 分析结果 / 特征提取 / 对齐任务。
+"""analysis 域路由（Task 11 ~ Task 14）：分析候选 / 多通道信号 / 真实 DSP 六模式 /
+分析结果 / 特征提取 / 对齐任务 / 切分任务 / 标注。
 
 端点契约见 `docs/API接口清单.md` §3.4；全部需登录（router 级 `Depends(get_current_user)`），
 返回统一 `ok(...)` / `err(...)` 信封；信号由 `app.services.signals` 确定性生成、
@@ -10,7 +10,19 @@ Task 13：对齐任务走异步 Job——`POST …/alignment-tasks` 建 pending 
 （`app.jobs.alignment`，模拟对齐 + 自动生成「时间对齐」版本 + 更新 latest_version_id）；
 `GET /alignment-tasks/{task_id}` 返回 Job 信封（result 内嵌 events/tracks/assets）。
 
-错误码约定（与 welds 域一致）：40401=焊缝/登记不存在、40402=版本不存在、40000=参数错误。
+Task 14：切分/标注（实施边界 §3.1 = 真实异步编排 + 模拟结果）：
+- 切分 `POST …/split-tasks` 建 pending Job + `split_tasks` 行 → `{job_id}`；
+  handler（`app.jobs.split`）按规则生成 `samples` 行 + 回填 sample_count；
+  `GET /split-tasks/{task_id}` 返回 Job 信封（result 内嵌 sample_count/samples）。
+- 标注：`GET /label-categories`；`POST /annotation-tasks` 异步建任务（handler
+  `app.jobs.annotation` 把来源切分样本归属到本任务）；`GET /annotation-tasks/{task_id}`
+  Job 信封；`POST …/import` 导入样本；`GET …/samples`（分页）与 `GET …/samples/{id}`
+  （含样本级 confidence）；`POST …/ai-pretag`（同步确定性 2 区域）；`POST …/labels`
+  （覆盖写，annotator=当前用户，写审计）。标注任务相关 `{task_id}` 兼容 job_uid 与 DB id
+  （`app.services.annotation.resolve_*`），前端创建后只持有 job_id 即可直接用。
+
+错误码约定（与 welds 域一致）：40401=焊缝/登记/任务/样本不存在、40402=版本不存在、
+40000=参数错误。
 
 注意（坑）：
 - `channels` 查询参数兼容 `channels[]=cur&channels[]=vol` 与 `channels=cur&channels=vol`
@@ -27,10 +39,18 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
+from app.core.audit import write_audit
 from app.core.db import get_session
-from app.models.analysis import AlignmentTask, FeatureExtraction
-from app.schemas.common import err, ok
-from app.services import dsp, features, signals
+from app.models.analysis import (
+    AlignmentTask,
+    AnnotationTask,
+    FeatureExtraction,
+    LabelCategory,
+    SplitTask,
+)
+from app.models.data import User
+from app.schemas.common import err, ok, paginate
+from app.services import annotation, dsp, features, signals
 from app.services import welds as svc
 from app.services.jobs import (
     _iso_utc,
@@ -46,6 +66,10 @@ _FILTER_TYPES = {"低通", "高通", "带通"}
 _DEFAULT_SAMPLE_RATE = 1000
 _NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
 _FORMATS = {"NPY", "CSV", "JSON", "PT"}
+#: 切分任务格式 / 标注来源 / 导入来源白名单（契约 §3.4）。
+_SPLIT_FORMATS = {"目标检测", "图像分类", "语义分割", "时序分类"}
+_ANNOTATION_SOURCES = {"split_task", "manual"}
+_IMPORT_SOURCES = {"files", "split_task"}
 
 
 class ExtractFeaturesRequest(BaseModel):
@@ -61,6 +85,47 @@ class AlignmentTaskCreate(BaseModel):
     """POST …/alignment-tasks 请求体（契约 §3.4）。`modalities[]` 空时由服务端按焊缝登记模态兜底。"""
 
     modalities: list[str] = []
+
+
+class SplitTaskCreate(BaseModel):
+    """POST …/welds/{weld_id}/versions/{version_id}/split-tasks 请求体（契约 §3.4）。
+
+    `fixed_rate`(帧/样本，>=1) 必填；`keep_event_buffer`(±s) 默认 0；`task_format` 默认目标检测。
+    """
+
+    fixed_rate: int
+    keep_event_buffer: float = 0.0
+    task_format: str = "目标检测"
+
+
+class AnnotationTaskCreate(BaseModel):
+    """POST /annotation-tasks 请求体（契约 §3.4）。`source` 必填；从切分样本需给 `split_task_id`。"""
+
+    source: str
+    split_task_id: str | None = None
+    name: str | None = None
+
+
+class AnnotationImportRequest(BaseModel):
+    """POST /annotation-tasks/{task_id}/import 请求体（契约 §3.4）。"""
+
+    source: str
+    object_keys: list[str] | None = None
+    split_task_id: str | None = None
+
+
+class LabelItem(BaseModel):
+    """单条标注：类别 + 框坐标 + 可选置信度（缺省沿用先前 AI 预标注值）。"""
+
+    category: str
+    box: list
+    confidence: float | None = None
+
+
+class SaveLabelsRequest(BaseModel):
+    """POST …/labels 请求体（契约 §3.4）：`labels[]` 覆盖写样本标注。"""
+
+    labels: list[LabelItem]
 
 
 # ── 分析候选 ──────────────────────────────────────────────────────────
@@ -352,7 +417,297 @@ def get_alignment_task(
     return ok(payload)
 
 
+# ── 切分任务（Task 14：异步 Job，handler 按规则生成样本） ───────────────
+
+
+@router.post("/welds/{weld_id}/versions/{version_id}/split-tasks")
+def create_split_task(
+    weld_id: str,
+    version_id: int,
+    body: SplitTaskCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """提交数据切分任务（**异步**，契约 §3.4）：建 pending Job + `split_tasks` 行。
+
+    同事务 commit，返回 `{job_id}`。成功后（后台执行器）按规则在 `samples` 表生成样本，
+    回填 `SplitTask.sample_count` 与 Job.result（`{sample_count, samples:[...]}`）。
+    """
+    if body.fixed_rate < 1:
+        return err(40000, "fixed_rate 需为 >=1 的整数（帧/样本）", status=400)
+    if body.task_format not in _SPLIT_FORMATS:
+        return err(
+            40000,
+            f"task_format 需为 {'/'.join(sorted(_SPLIT_FORMATS))}",
+            status=400,
+        )
+    resolved = _resolve_weld_version(session, weld_id, version_id)
+    if resolved is not None:
+        return resolved
+
+    job = create_job(session, type="split")
+    task = SplitTask(
+        job_id=job.id,
+        version_id=version_id,
+        rules={
+            "fixed_rate": body.fixed_rate,
+            "keep_event_buffer": body.keep_event_buffer,
+        },
+        task_format=body.task_format,
+    )
+    session.add(task)
+    write_audit(
+        session,
+        current_user.id,
+        "create",
+        "split_task",
+        job.job_uid,
+        {
+            "weld_id": weld_id,
+            "version_id": version_id,
+            "fixed_rate": body.fixed_rate,
+            "task_format": body.task_format,
+        },
+    )
+    session.commit()
+    return ok({"job_id": job.job_uid})
+
+
+@router.get("/split-tasks/{task_id}")
+def get_split_task(task_id: str, session: Session = Depends(get_session)) -> dict:
+    """切分任务状态/结果（契约 §3.4，轮询 Job 结构）：result 内嵌 `sample_count`/`samples`。"""
+    job = get_job_by_uid(session, task_id)
+    if job is None:
+        return err(40401, "任务不存在", status=404)
+    payload = to_job_payload(job)
+    task = session.exec(
+        select(SplitTask).where(SplitTask.job_id == job.id)
+    ).first()
+    # 域字段以 split_tasks 行的 sample_count 为准（seed 与 handler 都写这里），合并进 result。
+    if task is not None and task.sample_count is not None:
+        result = dict(payload.get("result") or {})
+        result["sample_count"] = task.sample_count
+        payload["result"] = result
+    return ok(payload)
+
+
+# ── 标注（Task 14：异步任务创建 + 同步预标注/保存） ─────────────────────
+
+
+@router.get("/label-categories")
+def list_label_categories(session: Session = Depends(get_session)) -> dict:
+    """缺陷标签类别（模型口径 5 类，契约 §3.4）：焊瘤/气孔/未熔合/咬边/正常。"""
+    return ok(annotation.list_label_categories(session))
+
+
+@router.post("/annotation-tasks")
+def create_annotation_task(
+    body: AnnotationTaskCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """创建标注任务（**异步**，契约 §3.4）：建 pending Job + `annotation_tasks` 行。
+
+    同事务 commit，返回 `{job_id}`。成功后（后台执行器）若来源为 split_task，
+    把该切分任务的样本 `annotation_task_id` 指向本任务。
+    """
+    if body.source not in _ANNOTATION_SOURCES:
+        return err(
+            40000,
+            f"source 需为 {'/'.join(sorted(_ANNOTATION_SOURCES))}",
+            status=400,
+        )
+    split_id = None
+    if body.source == "split_task":
+        split = annotation.resolve_split_task(session, body.split_task_id or "")
+        if split is None:
+            return err(40401, "切分任务不存在", status=404)
+        split_id = split.id
+
+    job = create_job(session, type="annotation")
+    task = AnnotationTask(
+        job_id=job.id,
+        split_task_id=split_id,
+        name=body.name,
+        source=body.source,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(task)
+    write_audit(
+        session,
+        current_user.id,
+        "create",
+        "annotation_task",
+        job.job_uid,
+        {"source": body.source, "split_task_id": body.split_task_id, "name": body.name},
+    )
+    session.commit()
+    return ok({"job_id": job.job_uid})
+
+
+@router.get("/annotation-tasks/{task_id}")
+def get_annotation_task(task_id: str, session: Session = Depends(get_session)) -> dict:
+    """标注任务整体状态/进度（契约 §3.4，轮询 Job 结构）。`task_id` 为 job_uid。"""
+    job = get_job_by_uid(session, task_id)
+    if job is None:
+        return err(40401, "任务不存在", status=404)
+    return ok(to_job_payload(job))
+
+
+@router.post("/annotation-tasks/{task_id}/import")
+def import_annotation_samples(
+    task_id: str,
+    body: AnnotationImportRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """导入额外样本到标注任务（契约 §3.4）。`task_id` 兼容 job_uid 与 DB id。
+
+    - source=`files`：按 `object_keys[]` 建新 `Sample` 行；
+    - source=`split_task`：把该切分任务的样本改指本任务。
+    返回 `ok({imported})`。
+    """
+    if body.source not in _IMPORT_SOURCES:
+        return err(
+            40000,
+            f"source 需为 {'/'.join(sorted(_IMPORT_SOURCES))}",
+            status=400,
+        )
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    if body.source == "files" and not body.object_keys:
+        return err(40000, "files 导入需提供 object_keys[]", status=400)
+    if body.source == "split_task":
+        if not body.split_task_id or annotation.resolve_split_task(
+            session, body.split_task_id
+        ) is None:
+            return err(40401, "切分任务不存在", status=404)
+    try:
+        imported = annotation.import_samples(
+            session, task, body.source, body.object_keys, body.split_task_id
+        )
+    except ValueError as exc:  # noqa: BLE001 - 未知来源等由服务抛出的业务错误
+        return err(40000, str(exc), status=400)
+    write_audit(
+        session,
+        current_user.id,
+        "update",
+        "annotation_task",
+        task_id,
+        {"source": body.source, "imported": imported},
+    )
+    session.commit()
+    return ok({"imported": imported})
+
+
+@router.get("/annotation-tasks/{task_id}/samples")
+def list_annotation_samples(
+    task_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    session: Session = Depends(get_session),
+) -> dict:
+    """标注样本列表（契约 §3.4，分页）：每样本含 annotations[] 与样本级 confidence。"""
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)  # §1.4：page_size 最大 100
+    items, total = annotation.list_samples(session, task, page, page_size)
+    return ok(paginate(items, total, page, page_size))
+
+
+@router.get("/annotation-tasks/{task_id}/samples/{sample_id}")
+def get_annotation_sample(
+    task_id: str,
+    sample_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """单个样本详情（契约 §3.4）：样本 + 最新标注 + 样本级 `confidence`。"""
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    payload = annotation.get_sample_detail(session, task, sample_id)
+    if payload is None:
+        return err(40401, "样本不存在或不属于该任务", status=404)
+    return ok(payload)
+
+
+@router.post("/annotation-tasks/{task_id}/samples/{sample_id}/ai-pretag")
+def ai_pretag_sample(
+    task_id: str,
+    sample_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """AI 预标注（**同步**，契约 §3.4）：确定性模拟 2 个疑似区域 + 置信度，**替换**现有标注。
+
+    seed = `sample_id` → 同样本每次结果一致。落库（annotator=AI预标注），前端随后
+    `POST …/labels` 覆盖写为人工标注。
+    """
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    sample = annotation.get_sample(session, task, sample_id)
+    if sample is None:
+        return err(40401, "样本不存在或不属于该任务", status=404)
+    new_annotations = annotation.pretag_sample(session, task, sample)
+    session.commit()
+    return ok([annotation.annotation_payload(a) for a in new_annotations])
+
+
+@router.post("/annotation-tasks/{task_id}/samples/{sample_id}/labels")
+def save_annotation_labels(
+    task_id: str,
+    sample_id: int,
+    body: SaveLabelsRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """保存/更新标注（**同步**，契约 §3.4）：`labels[]` 覆盖写样本标注，annotator=当前用户。
+
+    类别必须在 label_categories（400）；confidence 缺省沿用先前（AI 预标注）同类别值。
+    写审计（`update`）后提交。
+    """
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    sample = annotation.get_sample(session, task, sample_id)
+    if sample is None:
+        return err(40401, "样本不存在或不属于该任务", status=404)
+    cats = {c.name for c in session.exec(select(LabelCategory)).all()}
+    for label in body.labels:
+        if label.category not in cats:
+            return err(40000, f"未知标签类别: {label.category}", status=400)
+        box = label.box
+        if not (
+            isinstance(box, list)
+            and len(box) == 4
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in box)
+        ):
+            return err(40000, "box 需为 [x, y, w, h] 数值数组", status=400)
+
+    new_annotations = annotation.save_labels(
+        session, task, sample, body.labels, _operator(current_user)
+    )
+    write_audit(
+        session,
+        current_user.id,
+        "update",
+        "annotation",
+        f"{task_id}/{sample_id}",
+        {"labels": [l.category for l in body.labels]},
+    )
+    session.commit()
+    return ok([annotation.annotation_payload(a) for a in new_annotations])
+
+
 # ── 内部助手 ──────────────────────────────────────────────────────────
+
+
+def _operator(user: User) -> str:
+    """服务端取当前登录用户作 annotator/operator（优先展示名，对齐 seed 林工）。"""
+    return user.display_name or user.username
 
 
 def _resolve_weld_version(session: Session, weld_id: str, version_id: int) -> dict | None:

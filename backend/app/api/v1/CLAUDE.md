@@ -26,7 +26,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     回写 `data_records.quality`，审计 validate）。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
-- `analysis.py`：**Task 11 + Task 12 + Task 13 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+- `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
@@ -34,6 +34,28 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /alignment-tasks/{task_id}`（**Task 13**）：Job 信封（`task_id`=job_uid），成功时
     `result` 内嵌 `events/tracks/assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）；
     未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
+  - `POST /welds/{weld_id}/versions/{version_id}/split-tasks` + `GET /split-tasks/{task_id}`
+    （**Task 14 切分**）：异步 Job（type=split）+ `split_tasks` 行 → `{job_id}`；body
+    `{fixed_rate(>=1 帧/样本), keep_event_buffer(±s), task_format(白名单 目标检测/图像分类/
+    语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行
+    （`processed/{weld_id}/split/...`）并回填 sample_count；GET 返回 Job 信封（result 内嵌
+    sample_count/samples，sample_count 以 split_tasks 行为准合并）。
+  - **Task 14 标注**（`app.services.annotation` 领域逻辑）：
+    `GET /label-categories`（模型口径 5 类）；`POST /annotation-tasks`（body
+    `{source(split_task|manual), split_task_id?, name?}`，异步 Job type=annotation +
+    `annotation_tasks` 行 → `{job_id}`，成功后 handler 把来源切分样本归属到本任务）；
+    `GET /annotation-tasks/{task_id}`（Job 信封）；`POST /annotation-tasks/{task_id}/import`
+    （`{source(files|split_task), object_keys[]?, split_task_id?}` → `{imported}`）；
+    `GET /annotation-tasks/{task_id}/samples?page=&page_size=`（分页，`page_size` 上限 100，
+    每样本含 annotations[] + 样本级 confidence）；`GET …/samples/{sample_id}`（样本 + 最新
+    标注 + confidence = 当前标注置信度均值）；`POST …/samples/{sample_id}/ai-pretag`（同步
+    确定性 2 区域，seed=sample_id，**替换**现有标注，annotator=AI预标注）；
+    `POST …/samples/{sample_id}/labels`（body `{labels[]}`，**覆盖写**，annotator=当前用户，
+    confidence 缺省沿用先前同类别值，类别须在 label_categories，box 须 [x,y,w,h] 数值，写
+    审计 `update`）。
+  - **坑**：标注任务相关 `{task_id}`（samples/import/labels/ai-pretag 路径）兼容 job_uid 与
+    annotation_tasks 表 DB id（`annotation.resolve_annotation_task` 双解析）；`split_task_id`
+    同理双解析。业务错误码 40401（焊缝/任务/样本不存在）、40402（版本不存在）、40000（参数）。
   - `GET /analysis/candidates`：quality=通过 的可分析焊缝最小载荷（`svc.list_through_welds`）；
   - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
     写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
