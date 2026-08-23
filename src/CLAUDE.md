@@ -3,7 +3,7 @@
 前端源码（React 18 + TypeScript + Tailwind）。
 
 - `main.tsx`：React 入口，挂载 `App`。
-- `App.tsx`：主应用（单文件）。含四个一级模块——数据总览、数据中心、分析与标注、模型中心；实现侧边栏导航、Tab 切换、"先选数据"上下文状态。**Task 21 起总览页与数据列表已接 API**（`Overview` ← `getStats/getAttributes/getDistributions/getProjects`；`ManagementFiltered` ← `listWelds` 服务端筛选分页；`SelectionContext` ← `getWeld`），其余页面仍为演示 mock。接线模式：mock 常量改名 `mock*` 作初始态（UI 永不空白），`useEffect` 挂载后调 `api.*`，成功替换、失败保留 mock + `console.warn`；JSX/className 不动。
+- `App.tsx`：主应用（单文件）。含四个一级模块——数据总览、数据中心、分析与标注、模型中心；实现侧边栏导航、Tab 切换、"先选数据"上下文状态。**Task 21 起总览页与数据列表已接 API**（`Overview` ← `getStats/getAttributes/getDistributions/getProjects`；`ManagementFiltered` ← `listWelds` 服务端筛选分页；`SelectionContext` ← `getWeld`）；**Task 22 起数据中心其余页已接 API**——`Registration`（登记提交 ← `createRegistration`，文件上传 ← `uploadFile`(<100MB)/`presignUpload`(≥100MB)+PUT，上传后 ← `attachRawFiles`，最近登记 ← `listWelds({tab:'recent'})`）、`Validation`（挂载 ← `getWeld` 取 `latest_version_id` → `getValidation`，执行 ← `runValidation`）、`VersionPanel`（只读版本链 ← `listVersions`）、数据集（列表/新建 ← `listDatasets`/`createDataset`，详情 ← `getDataset`+`getDimensions`+`getReadiness`+`listDatasetVersions`+`getLineage`，新建版本 ← `createDatasetVersion`，训练/测试数据集条 ← `listDatasets()[0]`）。分析与标注、模型中心仍为演示 mock。接线模式：mock 常量改名 `mock*` 作初始态（UI 永不空白），`useEffect` 挂载后调 `api.*`，成功替换、失败保留 mock + `console.warn`；JSX/className 不动。
 - `index.css`：Tailwind 全局样式。
 - `vite-env.d.ts`：Vite 类型声明。
 - `api/`：前端接口层（Task 18 起）。`client.ts`（统一 fetch 封装：解包信封、注入 JWT、401 清 token 重载）、`types.ts`（全部实体/请求体类型，契约见 `docs/API接口清单.md`）。详见 `api/CLAUDE.md`。
@@ -13,5 +13,6 @@
 坑/限制：
 - `App.tsx` 是单文件大组件，改动时不要破坏现有信息架构（四个模块 + 先选数据模式）。接线时只换数据源，不改 JSX/className。
 - 总览/列表接 API 时的映射约定：分布/缺陷 `tone` 用 `donutPalette`（`src/App.tsx`）按序取色（后端不输出颜色）；多模态 token 经 `modalityMeta` 映射中文 label/icon/desc（video/timeseries/audio/infrared 等）；`Project.progress`(0-100) 字符串化为 `"68%"`、status→tone（标注中→blue，可训练/已完成→green，其余→orange）；`listWelds` 的 `source`/`brand` 为前缀匹配、`tab` 传 `全部最新数据/待核验/已归档`（后端未知 tab 视为不过滤），分页 `page/page_size`。
+- 数据中心接 API 的映射约定（Task 22）：数据集行 `DatasetRow` 由 `Dataset` 派生——`split` 空/未构建→`'—'`（详情 `split` 同），`progress`→`"96.8%"`，`status`→tone（可训练→green，其余→orange），`source` 后端无此字段统一 `'多模态数据'`；核验规则由 `ValidationRuleResult.status`(passed/warning/failed) 映射图标/文案/状态色（失败→红、警告→橙、通过→绿），汇总状态 `failed>0→异常 / 仅警告→待复核 / 否则→核验通过`；维度由 `DimensionStatus.status`(已具备/必需/缺失)+`required` 驱动；适配检查 `ReadinessCheck` 的 `checks[].passed` 决定每行图标；数据集版本 `DatasetVersion` 无 label/action 字段，快照行标题用 `数据快照 · {item_count} 条样本`，当前版本按 `detail.current_version_id` 判定；血缘 `LineageNode` 按 `type` 映射图标与后缀（records→条 / training_tasks→次 / 其余→个）。
 - `package.json` 里的 `@supabase/supabase-js` 依赖当前未使用。
 - 接入后端时：接口走 `src/api/`，相对路径 `/api/v1/...`（契约见 `docs/API接口清单.md`）；开发环境由 `vite.config.ts` 的 `/api` proxy 转发到 `http://localhost:8000`，生产同源。不要重写 `App.tsx`。
