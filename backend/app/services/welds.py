@@ -342,6 +342,17 @@ def get_record_by_weld_id(session: Session, weld_id: str) -> DataRecord | None:
     return session.exec(select(DataRecord).where(DataRecord.weld_id == weld_id)).first()
 
 
+def list_through_welds(session: Session) -> list[DataRecord]:
+    """核验通过（quality=通过）的可分析焊缝，created_at 倒序。供 analysis candidates。"""
+    return list(
+        session.exec(
+            select(DataRecord)
+            .where(DataRecord.quality == "通过")
+            .order_by(DataRecord.created_at.desc(), DataRecord.id.desc())
+        ).all()
+    )
+
+
 def get_record_by_identifier(session: Session, identifier: str) -> DataRecord | None:
     """registration 端点兼容 DB id / registration_no / weld_id 三种标识。"""
     try:

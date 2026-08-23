@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/
 
-后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）+ Task 7（通用 Job 服务 + `GET /jobs/{job_id}` 轮询端点）+ Task 8（Dashboard 总览四端点 stats/attributes/distributions/projects）+ Task 9（files 三端点：小文件代理上传 / 大文件预签名直传 / 下载 URL）+ **Task 10（welds 核心 CRUD：列表/登记/版本/核验）已完成**。
+后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）+ Task 7（通用 Job 服务 + `GET /jobs/{job_id}` 轮询端点）+ Task 8（Dashboard 总览四端点 stats/attributes/distributions/projects）+ Task 9（files 三端点：小文件代理上传 / 大文件预签名直传 / 下载 URL）+ Task 10（welds 核心 CRUD：列表/登记/版本/核验）+ **Task 11（Analysis：candidates / signals / 真实 DSP，已填充 analysis.py）已完成**。
 
 ## 目录与脚本
 
@@ -10,7 +10,7 @@
 - `app/`：应用代码（见 `app/CLAUDE.md`）。`app/models/` 含全部 23 张表类，`app/core/db.py` 提供引擎与会话。
 - `app/core/seed.py`：**Task 6**。启动 seed——`seed_all(session)`（幂等，末尾统一 commit）/ `seed_admin` / `seed_demo`。演示数据数值对齐前端 mock（App.tsx weldRows/VersionPanel/Validation/datasetRows/ModelRepository/Annotation）；ORM 写库，SQLite 测试与 MySQL 启动均可用。详见 `app/core/CLAUDE.md`。
 - `alembic/`：迁移（见 `alembic/CLAUDE.md`；`0001_initial` 手写，datetime 统一 `DATETIME(6)`）。
-- `tests/`：pytest 测试（`uv run pytest`，SQLite 内存 + TestClient，不连远程库）。`test_welds.py` 为 Task 10（Welds CRUD），覆盖登记事务/编号递增/列表筛选分页/版本链/核验级联/401。
+- `tests/`：pytest 测试（`uv run pytest`，SQLite 内存 + TestClient，不连远程库）。`test_welds.py` 为 Task 10（Welds CRUD），覆盖登记事务/编号递增/列表筛选分页/版本链/核验级联/401；`test_dsp.py` + `test_analysis.py` 为 Task 11（真实 DSP 纯函数 + analysis 端点：candidates/signals/六 mode/result/401）。
 
 ## 常用命令
 

@@ -26,7 +26,19 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     回写 `data_records.quality`，审计 validate）。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
-- `analysis.py`：占位（`# filled in Task 11`）。分析 + DSP 真实实现。
+- `analysis.py`：**Task 11 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+  统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
+  - `GET /analysis/candidates`：quality=通过 的可分析焊缝最小载荷（`svc.list_through_welds`）；
+  - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
+    写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
+    返回 `{duration, sample_rate, channels:[{id,name,unit,values[],lo,hi,mean}], events, anomalies}`；
+  - `GET …/analysis/{mode}`：mode ∈ psd|stft|dwt|wavelet|phase|pdd，query `channel`（默认 cur）+
+    滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；
+  - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常）。
+  - 信号由 `app.services.signals` 确定性生成（seed = crc32(weld_id)）、DSP 由 `app.services.dsp`
+    真实计算（scipy/pywt，非罐头数字）。
+  - 坑：`/analysis/result` 是具体路径，必须在 `/analysis/{mode}` 之前注册（FastAPI 按顺序匹配）；
+    `cutoff/cutoff2` 为 0~1 归一化频率（相对奈奎斯特）；错误码 40401/40402/40000。
 - `datasets.py`：占位（`# filled in Task 15`）。数据集 + 构建任务。
 - `models.py`：占位（`# filled in Task 16`）。模型 + 训练/测试/推理。
 - `files.py`：**Task 9 已实现**。router `prefix="/files"`（完整路径 `/api/v1/files/*`），
