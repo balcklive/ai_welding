@@ -1,13 +1,14 @@
 # CLAUDE.md — backend/
 
-后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）已完成。
+后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）已完成。
 
 ## 目录与脚本
 
 - `pyproject.toml`：项目元数据 + 依赖声明（`[tool.uv] package=false`，非打包安装）。依赖变更用 `uv add` 后重新 `uv sync`。
 - `.python-version`：`3.12`（uv 据此选/下载解释器）。
 - `uv.lock`：`uv sync` 生成的锁文件，勿手改。
-- `app/`：应用代码（见 `app/CLAUDE.md`）。
+- `app/`：应用代码（见 `app/CLAUDE.md`）。`app/models/` 含全部 23 张表类，`app/core/db.py` 提供引擎与会话。
+- `alembic/`：迁移（见 `alembic/CLAUDE.md`；`0001_initial` 手写，datetime 统一 `DATETIME(6)`）。
 - `tests/`：pytest 测试（`uv run pytest`，SQLite 内存 + TestClient，不连远程库）。
 
 ## 常用命令
@@ -15,6 +16,7 @@
 - 安装/同步：`uv sync`
 - 测试：`uv run pytest`
 - 起服务：`uv run uvicorn app.main:app --reload`（开发期在前端 `npm run dev` 用 Vite proxy 指向 `http://localhost:8000`）
+- 迁移：`uv run alembic upgrade head` / `uv run alembic revision --autogenerate -m "..."`（后需连上远程 MySQL）
 
 ## 坑/限制
 

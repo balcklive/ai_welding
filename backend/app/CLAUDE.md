@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/
 
-应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）。
+应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）。
 
 ## 脚本
 
@@ -8,6 +8,8 @@
 - `core/__init__.py`：空。
 - `core/config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`。
 - `core/logging.py`：`setup_logging()`（loguru 控制台 + 轮转文件）+ 纯 ASGI `AccessLogMiddleware`。
+- `core/db.py`：MySQL `engine` + `SessionLocal` + `get_session()` 依赖（Task 2，详见 `core/CLAUDE.md`）。
+- `models/`：全部 23 张 SQLModel 表类（Task 2，详见 `models/CLAUDE.md`）。
 
 ## 坑/限制
 
