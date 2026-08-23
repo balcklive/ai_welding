@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/api/
 
-API 路由层。Task 3 建立 v1 聚合骨架，各域模块为占位（后续任务逐个填充实现）；Task 7 填充 `v1/jobs.py`、Task 8 填充 `v1/dashboard.py`（详见 `v1/CLAUDE.md`）。
+API 路由层。Task 3 建立 v1 聚合骨架，各域模块为占位（后续任务逐个填充实现）；Task 7 填充 `v1/jobs.py`、Task 8 填充 `v1/dashboard.py`、Task 9 填充 `v1/files.py`（详见 `v1/CLAUDE.md`）。
 
 ## 脚本
 
@@ -11,3 +11,4 @@ API 路由层。Task 3 建立 v1 聚合骨架，各域模块为占位（后续�
 ## 坑/限制
 
 - 各域 router 自身**不带前缀**；`/api/v1` 前缀由 `main.py` 的 `include_router(api_router, prefix="/api/v1")` 统一添加，不要再在域模块里加前缀。
+- **Task 9 契约补充**（对 `docs/API接口清单.md` §3.7 的小扩展，T25 回写文档）：`POST /files/presign-upload` 请求体在 `{size, content_type, prefix}` 之外扩展可选 `filename`（默认 `"file"`），`object_key = normalize_key(prefix, filename)`。调用方只需传含业务标识的 prefix（如 `raw/REG-...`），文件名由服务端规范化，无需前端拼对象键。

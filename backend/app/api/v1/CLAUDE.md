@@ -15,7 +15,24 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 - `analysis.py`：占位（`# filled in Task 11`）。分析 + DSP 真实实现。
 - `datasets.py`：占位（`# filled in Task 15`）。数据集 + 构建任务。
 - `models.py`：占位（`# filled in Task 16`）。模型 + 训练/测试/推理。
-- `files.py`：占位（`# filled in Task 9`）。MinIO 三个端点。
+- `files.py`：**Task 9 已实现**。router `prefix="/files"`（完整路径 `/api/v1/files/*`），
+  **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点：
+  - `POST /upload`（multipart `file`，小文件 <100MB 后端代理）：object_key 前缀
+    固定 `uploads/{uuid}`，流式读取 + 字节计数封顶（`MAX_PROXY_UPLOAD_SIZE`，
+    Content-Length 有则先快速拒绝），`upload_stream` 后 `presign_get` 返回
+    `ok({object_key, url})`。超限 → `err(40000, ..., status=400)`。
+  - `POST /presign-upload`（body `{size, content_type, prefix, filename?}`）：
+    校验 `0 < size ≤ 2GB`（`MAX_PRESIGN_UPLOAD_SIZE`），调 `presign_put` 返回
+    `ok({object_key, upload_url})`；空 prefix（normalize_key 抛 ValueError）→ 400。
+  - `GET /{object_key:path}/url?expires=`：object_key 含 `/`（如 `uploads/<uuid>/x.mp4`），
+    用 `:path` 捕获；`expires` 默认 3600、上限 86400（`MAX_PRESIGN_GET_EXPIRES`），
+    空/空白 key 与越界 expires → 400。返回 `ok({url})`。
+  - **契约补充（Task 9 决策，T25 回写 `docs/API接口清单.md`）**：`presign-upload`
+    请求体在 `{size, content_type, prefix}` 之外扩展可选 `filename`（默认 `"file"`），
+    `object_key = normalize_key(prefix, filename)`——调用方只给含业务标识的 prefix
+    （如 `raw/REG-...`），无需自行拼文件名。
+  - 存储调用统一走 `app.storage.get_storage()`（懒加载单例），测试 monkeypatch
+    该引用即可（见 `tests/test_files.py`）。
 - `jobs.py`：**Task 7 已实现**。`GET /jobs/{job_id}`（无前缀，完整路径 `/api/v1/jobs/{job_id}`，
   依赖 `get_current_user` 需登录）→ `ok(to_job_payload(job))`（§1.5 Job JSON）；不存在 →
   `err(40401, "任务不存在", status=404)`。业务逻辑在 `app.services.jobs`。
