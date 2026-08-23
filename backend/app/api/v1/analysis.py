@@ -13,12 +13,13 @@ Task 13：对齐任务走异步 Job——`POST …/alignment-tasks` 建 pending 
 Task 14：切分/标注（实施边界 §3.1 = 真实异步编排 + 模拟结果）：
 - 切分 `POST …/split-tasks` 建 pending Job + `split_tasks` 行 → `{job_id}`；
   handler（`app.jobs.split`）按规则生成 `samples` 行 + 回填 sample_count；
-  `GET /split-tasks/{task_id}` 返回 Job 信封（result 内嵌 sample_count/samples）。
+  `GET /split-tasks/{task_id}` 返回 Job 信封（result 内嵌 sample_count + samples 前 50 条预览）。
 - 标注：`GET /label-categories`；`POST /annotation-tasks` 异步建任务（handler
   `app.jobs.annotation` 把来源切分样本归属到本任务）；`GET /annotation-tasks/{task_id}`
   Job 信封；`POST …/import` 导入样本；`GET …/samples`（分页）与 `GET …/samples/{id}`
   （含样本级 confidence）；`POST …/ai-pretag`（同步确定性 2 区域）；`POST …/labels`
-  （覆盖写，annotator=当前用户，写审计）。标注任务相关 `{task_id}` 兼容 job_uid 与 DB id
+  （覆盖写，annotator=当前用户，类别/box/confidence∈[0,1] 校验，写审计）。
+  标注任务相关 `{task_id}` 兼容 job_uid 与 DB id
   （`app.services.annotation.resolve_*`），前端创建后只持有 job_id 即可直接用。
 
 错误码约定（与 welds 域一致）：40401=焊缝/登记/任务/样本不存在、40402=版本不存在、
@@ -686,6 +687,11 @@ def save_annotation_labels(
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in box)
         ):
             return err(40000, "box 需为 [x, y, w, h] 数值数组", status=400)
+        # confidence 列是 Numeric(4,3)，越界（如 >=10）会触发 MySQL DataError → 500；
+        # 给定时必须在 [0,1]，否则 400（不落库）。
+        conf = label.confidence
+        if conf is not None and not (0 <= conf <= 1):
+            return err(40000, "置信度需在 0~1 之间", status=400)
 
     new_annotations = annotation.save_labels(
         session, task, sample, body.labels, _operator(current_user)

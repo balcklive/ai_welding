@@ -33,6 +33,12 @@ from app.services.signals import DURATION
 #: 参考时长（s）= 信号生成器时长（signals.DURATION=5.42，1000Hz → 5420 帧），与前端一致。
 _REF_DURATION_S = DURATION
 
+#: 结果 JSON 内 `samples[]` 的展示上限。切分样本可上千（fixed_rate=1 → 5420），全量塞进
+#: `job.result` 会让 `GET /split-tasks/{id}` 与 `GET /jobs/{id}` 每次轮询回传 ~500KB；
+#: 前端只消费 `sample_count`（App.tsx Alignment splitOnly），故 `samples` 只保留前 N 条作预览，
+#: 全量样本以 `samples` 表（split_task_id）为准，不落结果。
+_MAX_RESULT_SAMPLES = 50
+
 #: 进度逐步递增点（0→100）。步间 commit + 小睡，让轮询/前端能看到 progress 变化。
 _PROGRESS_STEPS: tuple[int, ...] = (20, 40, 60, 80, 100)
 _PROGRESS_SLEEP: float = 0.005
@@ -115,7 +121,7 @@ def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
                 "object_keys": s.object_keys,
                 "annotation_task_id": s.annotation_task_id,
             }
-            for s in samples
+            for s in samples[:_MAX_RESULT_SAMPLES]
         ],
     }
     mark_succeeded(session, job, result)

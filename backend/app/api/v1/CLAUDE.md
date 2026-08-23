@@ -39,7 +39,8 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `{fixed_rate(>=1 帧/样本), keep_event_buffer(±s), task_format(白名单 目标检测/图像分类/
     语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行
     （`processed/{weld_id}/split/...`）并回填 sample_count；GET 返回 Job 信封（result 内嵌
-    sample_count/samples，sample_count 以 split_tasks 行为准合并）。
+    sample_count/samples（**review 修复**：`samples` 仅前 50 条预览，全量以 `samples` 表为准），
+    sample_count 以 split_tasks 行为准合并）。
   - **Task 14 标注**（`app.services.annotation` 领域逻辑）：
     `GET /label-categories`（模型口径 5 类）；`POST /annotation-tasks`（body
     `{source(split_task|manual), split_task_id?, name?}`，异步 Job type=annotation +
@@ -51,7 +52,8 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     标注 + confidence = 当前标注置信度均值）；`POST …/samples/{sample_id}/ai-pretag`（同步
     确定性 2 区域，seed=sample_id，**替换**现有标注，annotator=AI预标注）；
     `POST …/samples/{sample_id}/labels`（body `{labels[]}`，**覆盖写**，annotator=当前用户，
-    confidence 缺省沿用先前同类别值，类别须在 label_categories，box 须 [x,y,w,h] 数值，写
+    confidence 缺省沿用先前同类别值，类别须在 label_categories，box 须 [x,y,w,h] 数值，
+    **confidence 给定时须在 [0,1]**（越界如 >=10 撞 Numeric(4,3) 列 → 400 而非 500），写
     审计 `update`）。
   - **坑**：标注任务相关 `{task_id}`（samples/import/labels/ai-pretag 路径）兼容 job_uid 与
     annotation_tasks 表 DB id（`annotation.resolve_annotation_task` 双解析）；`split_task_id`

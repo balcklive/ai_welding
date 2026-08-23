@@ -35,7 +35,8 @@ executor 无需改动。
   （DURATION=signals 5.42s → 5420 帧，确定性）→ 进度逐步 → 逐样本建 `Sample` 行
   （frame_no 0..n，`object_keys=processed/{weld_id}/split/{sample.id}.jpg|.json`，
   **先 flush 拿 id 再回填 object_keys**）→ 回填 `task.sample_count` + `job.result`
-  `{sample_count, rules, task_format, samples[]}`。
+  `{sample_count, rules, task_format, samples[]}`（**review 修复**：`samples` 只内嵌前 50 条
+  预览，防 fixed_rate=1 → 5420 条 ~500KB 塞进 result 每轮询回传；全量样本以 `samples` 表为准）。
 - `annotation.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("annotation")`）→
   `app.services.annotation.simulate_annotation`（进度逐步 → 若 source=split_task 把该切分任务
   样本 `annotation_task_id` 指向本任务 → 回填 job.result `{source, name, samples_count}`）。

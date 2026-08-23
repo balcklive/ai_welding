@@ -179,7 +179,9 @@ def test_split_task_end_to_end(
     assert done["finished_at"].endswith("Z")
     result = done["result"]
     assert result["sample_count"] == SPLIT_SAMPLE_COUNT
-    assert len(result["samples"]) == SPLIT_SAMPLE_COUNT
+    # 结果 JSON 只内嵌前 50 条 samples 预览（防 result 塞全量），sample_count 仍完整
+    assert len(result["samples"]) == 50
+    assert result["samples"][0]["frame_no"] == 0
 
     split = _split_row(db_engine, job_id)
     assert split is not None
@@ -477,6 +479,27 @@ def test_save_labels_validation(
     assert resp.status_code == 400 and resp.json()["code"] == 40000
     resp = client.post(url, json={"labels": [{"category": "焊瘤", "box": [1, 2, 3]}]})
     assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+    # confidence 越界（>=10 或 <0）会撞 Numeric(4,3) 列 → 400 而非 500
+    resp = client.post(
+        url, json={"labels": [{"category": "焊瘤", "box": [1, 2, 3, 4], "confidence": 10}]}
+    )
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    assert "0~1" in resp.json()["message"]
+    resp = client.post(
+        url, json={"labels": [{"category": "焊瘤", "box": [1, 2, 3, 4], "confidence": -0.1}]}
+    )
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+    # 边界 0 / 1 仍合法（不被过度收紧）
+    resp = client.post(
+        url, json={"labels": [{"category": "焊瘤", "box": [1, 2, 3, 4], "confidence": 0}]}
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    resp = client.post(
+        url, json={"labels": [{"category": "焊瘤", "box": [1, 2, 3, 4], "confidence": 1}]}
+    )
+    assert resp.status_code == 200, resp.text[:300]
 
 
 # ---------- 样本分页 ----------

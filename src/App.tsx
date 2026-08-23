@@ -789,7 +789,11 @@ function InferencePanel() {
     if (modelVersionId == null) { console.warn('[inference] 模型版本未就绪，请稍后再试'); return; }
     const upload = file.size < 100 * 1024 * 1024
       ? uploadFile(file).then((r) => r.object_key)
-      : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'inference' }).then((r) => fetch(r.upload_url, { method: 'PUT', body: file }).then(() => r.object_key));
+      : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'inference' }).then(async (r) => {
+          const res = await fetch(r.upload_url, { method: 'PUT', body: file });
+          if (!res.ok) throw new Error(`[inference] presign PUT failed: ${res.status}`);
+          return r.object_key;
+        });
     upload
       .then((objectKey) => {
         const inputType = file.type.startsWith('image/') ? '图像' : file.type.startsWith('video/') ? '视频帧' : '时序';
@@ -893,7 +897,11 @@ function Registration({ embedded = false }: { embedded?: boolean }) {
     if (!file) return;
     const upload = file.size < 100 * 1024 * 1024
       ? uploadFile(file).then((r) => r.object_key)
-      : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' }).then((r) => fetch(r.upload_url, { method: 'PUT', body: file }).then(() => r.object_key));
+      : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' }).then(async (r) => {
+          const res = await fetch(r.upload_url, { method: 'PUT', body: file });
+          if (!res.ok) throw new Error(`[registration] presign PUT failed: ${res.status}`);
+          return r.object_key;
+        });
     upload
       .then((objectKey) => {
         if (regId == null) { console.warn('[registration] no registration id yet, skip attachRawFiles'); return; }
