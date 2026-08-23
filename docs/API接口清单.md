@@ -77,6 +77,13 @@
 - 时间统一 ISO 8601（UTC）。
 - 标识：焊缝 `WLD-YYYYMMDD-序号`、登记编号 `REG-YYYYMMDD-序号`、数据集 `DS-xxx-序号`、任务 `job_xxx` / `TR-...`。
 
+### 1.8 接口调用日志（必守）
+- 所有 `/api/v1` 调用经统一 ASGI 中间件记录：调用时间（UTC + 耗时 ms）、调用人（从 JWT 解出 username / display_name，未登录为 anonymous）、方法 / 路径 / query、请求体、返回状态码 / 返回体、客户端 IP、correlation id。
+- 复用 **loguru** 实现按大小/时间轮转（`API_LOG_DIR` / `API_LOG_ROTATION` / `API_LOG_RETENTION`），输出 `logs/api.log`。
+- 脱敏：`password` / `token` / `secret` / `Authorization` 一律替换为 `***`；`POST /auth/login` 只记用户名。
+- 与业务审计表 `audit_logs`（`数据库设计.md` §3.23）互补：文件日志重调用现场，`audit_logs` 重业务语义。
+- 完整规范见 `docs/开发规范.md` §2。
+
 ---
 
 ## 2. 核心实体
