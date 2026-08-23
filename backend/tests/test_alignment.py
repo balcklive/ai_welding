@@ -13,6 +13,9 @@
 - weld/version 不存在 → 40401/40402；未知 task_id → 40401；未登录 → 40100。
 """
 
+import threading
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -223,6 +226,85 @@ def test_get_alignment_task_unknown_404(
     resp = client.get("/api/v1/alignment-tasks/job_deadbeef")
     assert resp.status_code == 404
     assert resp.json()["code"] == 40401
+
+
+# ---------- 原子领单（review 修复）：已成功/非 pending 的 job 不会被重复执行 ----------
+
+
+def test_run_job_skips_already_succeeded_job(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    job_id = _post_alignment_task(WELD_0248, vid, ["video"])
+
+    run_job(job_id)
+    done = client.get(f"/api/v1/alignment-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+
+    # 再跑一次：原子领单 WHERE status='pending' → rowcount 0 → 跳过，不重复执行
+    run_job(job_id)
+    again = client.get(f"/api/v1/alignment-tasks/{job_id}").json()["data"]
+    assert again["status"] == "succeeded"
+    assert again["result"] == done["result"]  # 结果未被改动/重跑
+
+    # 只应有一个「时间对齐」v1.4 版本（未因重复 run_job 再生成 v1.5）
+    versions = client.get(f"/api/v1/welds/{WELD_0248}/versions").json()["data"]
+    assert "v1.4" in [v["version_no"] for v in versions]
+    assert "v1.5" not in [v["version_no"] for v in versions]
+
+
+# ---------- 执行器线程生命周期（review 修复）：防双轮询 ----------
+
+
+def test_executor_thread_start_noop_when_running_and_stop_waits(monkeypatch) -> None:
+    """start() 在旧线程存活时不重复启动；stop() 只在线程真正退出后丢弃引用。"""
+    started = threading.Event()
+
+    def _loop(self):
+        started.set()
+        while not self._stop.is_set():
+            self._stop.wait(0.02)
+
+    monkeypatch.setattr(executor_mod._ExecutorThread, "_loop", _loop)
+    et = executor_mod._ExecutorThread()
+    et.start()
+    assert started.wait(2)
+    thread_ref = et._thread
+
+    et.start()  # 已存活 → no-op，不新建线程
+    assert et._thread is thread_ref
+
+    et.stop()
+    assert et._thread is None  # 线程已退出，引用被清理
+
+
+def test_executor_thread_stop_timeout_keeps_reference(monkeypatch) -> None:
+    """stop() 超时（handler 长跑）保留引用；此时 start() 拒绝二次启动，直到线程自然退出。"""
+    monkeypatch.setattr(executor_mod, "_POLL_INTERVAL", 0.01)  # stop 的 join 超时=0.02s
+    entered = threading.Event()
+
+    def _loop(self):
+        entered.set()
+        time.sleep(0.3)  # 无视 _stop，模拟长跑 handler（超过 join 超时）
+
+    monkeypatch.setattr(executor_mod._ExecutorThread, "_loop", _loop)
+    et = executor_mod._ExecutorThread()
+    et.start()
+    assert entered.wait(2)
+
+    et.stop()  # join 0.02s 超时，线程仍在 sleep → 保留引用
+    assert et._thread is not None
+    assert et._thread.is_alive()
+
+    et.start()  # 线程仍存活 → 拒绝重复启动（防双执行者）
+    assert et._thread.is_alive()
+
+    # 清理：等线程自然退出后引用已随 stop 的二次 join 或 start 的检测释放
+    et._thread.join(timeout=2)
+    assert not et._thread.is_alive()
 
 
 # ---------- 未登录 ----------

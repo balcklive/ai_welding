@@ -10,10 +10,15 @@ Job 执行器与各域 handler（Task 13）。导入本包即完成 handler 注�
 - `executor.py`：**Task 13**。DB 轮询执行器：
   - `HANDLERS: dict[job type → (job_id:int, session:Session) -> None]`，用
     `@register_handler("type")` 装饰器注册。
-  - `start()` / `stop()`：daemon 线程，每 ~1s 轮询 `pending` job（批 5）。**领单语义**：
-    先 `mark_running` + `commit`（轮询/并发不重复领）再跑 handler。
+  - `start()` / `stop()`：daemon 线程，每 ~1s 轮询 `pending` job（批 5）。**原子领单**：
+    对每个候选发条件 UPDATE `WHERE id AND status='pending'`（`rowcount==1` 才算领到），
+    并发/多执行者不会重复领同一 job（review 修复；原 SELECT→mark_running→commit 非原子）。
+  - 线程生命周期（review 修复，防双轮询）：`stop()` 只在确认线程真正退出（join 返回且
+    `is_alive()` False）后丢弃引用，超时仍存活则保留；`start()` 若上一线程仍存活则拒绝
+    重复启动（no-op + 告警），且只在确认旧线程已死后才清 `_stop`。
   - `run_job(job_uid)`：**同步**入口（测试/手动），不启动线程；全程用**一个**独立
-    `Session`（`SessionLocal`），失败 → `mark_failed(job, {"message": str(e)})` + commit。
+    `Session`（`SessionLocal`）；同样原子领单（非 pending 跳过），失败 → `mark_failed`
+    + commit。
   - 失败兜底：任意 `Exception` → loguru traceback → failed，**绝不滞留 running**；
     未注册 type → `ValueError` 同样走 failed。
   - `_dispatch` / `_mark_failed_in`：handler 执行 + 失败回写（事务脏先 `rollback` 再写）。
