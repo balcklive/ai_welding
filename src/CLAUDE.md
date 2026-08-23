@@ -3,7 +3,7 @@
 前端源码（React 18 + TypeScript + Tailwind）。
 
 - `main.tsx`：React 入口，挂载 `App`。
-- `App.tsx`：主应用（约 840 行，单文件）。含四个一级模块——数据总览、数据中心、分析与标注、模型中心；实现侧边栏导航、Tab 切换、"先选数据"上下文状态。当前所有数据为演示数据（mock）。
+- `App.tsx`：主应用（单文件）。含四个一级模块——数据总览、数据中心、分析与标注、模型中心；实现侧边栏导航、Tab 切换、"先选数据"上下文状态。**Task 21 起总览页与数据列表已接 API**（`Overview` ← `getStats/getAttributes/getDistributions/getProjects`；`ManagementFiltered` ← `listWelds` 服务端筛选分页；`SelectionContext` ← `getWeld`），其余页面仍为演示 mock。接线模式：mock 常量改名 `mock*` 作初始态（UI 永不空白），`useEffect` 挂载后调 `api.*`，成功替换、失败保留 mock + `console.warn`；JSX/className 不动。
 - `index.css`：Tailwind 全局样式。
 - `vite-env.d.ts`：Vite 类型声明。
 - `api/`：前端接口层（Task 18 起）。`client.ts`（统一 fetch 封装：解包信封、注入 JWT、401 清 token 重载）、`types.ts`（全部实体/请求体类型，契约见 `docs/API接口清单.md`）。详见 `api/CLAUDE.md`。
@@ -11,6 +11,7 @@
 - `pages/`：前端页面层（Task 20 起）。`Login.tsx` 最小登录页（登录成功写 token+user 到 localStorage 并通知外层）。详见 `pages/CLAUDE.md`。
 
 坑/限制：
-- `App.tsx` 是单文件大组件，改动时不要破坏现有信息架构（四个模块 + 先选数据模式）。
+- `App.tsx` 是单文件大组件，改动时不要破坏现有信息架构（四个模块 + 先选数据模式）。接线时只换数据源，不改 JSX/className。
+- 总览/列表接 API 时的映射约定：分布/缺陷 `tone` 用 `donutPalette`（`src/App.tsx`）按序取色（后端不输出颜色）；多模态 token 经 `modalityMeta` 映射中文 label/icon/desc（video/timeseries/audio/infrared 等）；`Project.progress`(0-100) 字符串化为 `"68%"`、status→tone（标注中→blue，可训练/已完成→green，其余→orange）；`listWelds` 的 `source`/`brand` 为前缀匹配、`tab` 传 `全部最新数据/待核验/已归档`（后端未知 tab 视为不过滤），分页 `page/page_size`。
 - `package.json` 里的 `@supabase/supabase-js` 依赖当前未使用。
 - 接入后端时：接口走 `src/api/`，相对路径 `/api/v1/...`（契约见 `docs/API接口清单.md`）；开发环境由 `vite.config.ts` 的 `/api` proxy 转发到 `http://localhost:8000`，生产同源。不要重写 `App.tsx`。
