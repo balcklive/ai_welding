@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import quote_plus
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,7 +37,10 @@ class Settings(BaseSettings):
 
     @property
     def mysql_url(self) -> str:
-        return (f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
+        # user/password 必须 URL-encode：.env 密码可含 @ 等保留字符，
+        # 直接拼入 URL 会让 SQLAlchemy 按第一个 @ 切分，把 host 解析错
+        # （如 `root:1qaz@WSX@182...` → host=`WSX@182...`，连接失败）。
+        return (f"mysql+pymysql://{quote_plus(self.mysql_user)}:{quote_plus(self.mysql_password)}"
                 f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}"
                 f"?charset={self.mysql_charset}")
 

@@ -6,7 +6,7 @@ dependencies = [
   "fastapi>=0.115", "uvicorn[standard]>=0.30", "sqlmodel>=0.0.22",
   "pydantic-settings>=2.4", "alembic>=1.13", "sqlalchemy>=2.0",
   "pymysql>=1.1", "cryptography>=42.0", "PyJWT>=2.8", "pwdlib[argon2]>=0.2",
-  "minio>=7.2", "numpy>=1.26", "scipy>=1.13", "PyWavelets>=1.6",
+  "minio>=7.2", "numpy>=2.0", "scipy>=1.13", "PyWavelets>=1.6",
   "scikit-image>=0.23", "librosa>=0.10", "Jinja2>=3.1", "xhtml2pdf>=0.2.15",
   "loguru>=0.7", "python-multipart>=0.0.9",
 ]

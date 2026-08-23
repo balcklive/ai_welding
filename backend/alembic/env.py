@@ -24,7 +24,9 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # 从 settings 注入 URL（alembic.ini 中 sqlalchemy.url 留空）。
-config.set_main_option("sqlalchemy.url", settings.mysql_url)
+# 密码 URL-encode 后含 `%`（如 %40），configparser 把 `%` 当插值语法会报
+# "invalid interpolation syntax"，需先转义为 `%%`（set_main_option 展开后还原）。
+config.set_main_option("sqlalchemy.url", settings.mysql_url.replace("%", "%%"))
 
 target_metadata = SQLModel.metadata
 

@@ -92,7 +92,7 @@
 |---|---|---|
 | `User` | 用户（暂不细分角色） | id, username, display_name, role, avatar |
 | `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, weld_name, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, product, modalities, quality, operator, storage_bytes, latest_version_id |
-| `DataVersion` | 数据版本（原始/去噪/对齐/人工修正…） | id, weld_id, version_no, action, operator, object_keys[], created_at, note |
+| `DataVersion` | 数据版本（原始/去噪/对齐/人工修正…） | id, **record_id**(关联焊缝，后端序列化如此，前端经它关联所属焊缝), version_no, action, operator, object_keys[], created_at, note |
 | `ValidationReport` | 数据核验报告 | id, version_id, score, passed, warning, failed, duration, rules[] |
 | `ValidationRule` | 核验规则结果（15 项） | name, status(passed/warning/failed), message |
 | `AlignmentTask` | 多模态对齐任务（Job） | id, version_id, status, events{arc, weld_segment, tail}, tracks[], assets[]（对齐产物对象键，供播放/下载） |
@@ -104,7 +104,7 @@
 | `FeatureExtraction` | 特征提取结果 | id, version_id, ts_features, vision_features, audio_features, unified_vector{dims, groups}, normalization, format |
 | `Dataset` | 数据集 | id, name, task, sample_count, progress, current_version, status(标注中/可训练) |
 | `DatasetVersion` | 数据集版本（固定快照） | id, dataset_id, version_no, split{train/val/test}, item_count, snapshot_id, quality{repeat_rate, empty_label_rate, ...} |
-| `Project` | 数据项目卡片（总览，由数据集派生） | id, name, status(标注中/可训练), sample_count, progress, updated_at |
+| `Project` | 数据项目卡片（总览，由数据集派生） | name, status(标注中/可训练), sample_count, progress, updated_at（**无 `id` 字段**，后端 `get_projects` 不输出） |
 | `DatasetItem` | 数据集版本成员（固定样本清单） | dataset_version_id, sample_id, split |
 | `Model` | 模型仓库条目 | id, name, type, description（版本/指标/状态见 `ModelVersion`） |
 | `ModelVersion` | 模型版本（训练产出，状态可流转） | id, model_id, version_no, metric, status(生产候选/训练中/实验版本), file_key |
@@ -139,12 +139,17 @@
 
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
-| GET | `/api/v1/welds` | 数据列表：服务端分页+筛选，按焊缝 ID 去重、仅最新版本 | query: `q`(关键词:焊缝ID/登记编号), `source`, `brand`, `status`(通过/待复核/异常), `tab`(全部最新/待核验/已归档/最近), `page`, `page_size` |
+| GET | `/api/v1/welds` | 数据列表：服务端分页+筛选，按焊缝 ID 去重、仅最新版本 | query: `q`(关键词:焊缝ID/登记编号), `source`(数据来源前缀), `brand`(焊机品牌前缀), `status`(通过/待复核/异常), `tab`(全部最新/待核验/已归档/最近), `page`, `page_size` |
+
+> **§3.3 GET /welds 筛选映射说明**（schema 无独立归档位/品牌列，按既有列映射）：
+> - `tab=已归档` → `quality=='通过'`（schema 无归档位，取"已核验通过视为归档"的确定映射）；
+> - `tab=最近` / `tab=全部最新` → 不追加过滤，仅 `created_at desc` 排序（等价 N=page_size 取最新）；
+> - `brand` → 映射 `machine` 前缀（`machine LIKE 'brand%'`，无 brand 列）；`source` → `source LIKE '前缀%'`；`status` → `quality` 精确匹配。
 | GET | `/api/v1/welds/{weld_id}` | 单条焊缝详情（来源/焊机/模态/核验状态/最新版本） | — 需登录 |
 | POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填） |
 | GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
 | PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息 | body 同 POST（部分字段可选） |
-| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys` 与记录容量） | body: `object_keys[]` |
+| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0) |
 | GET | `/api/v1/welds/{weld_id}/versions` | 版本链（v1.0~v1.3 + 操作人/时间/动作） | — 需登录 |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}` | 单个版本详情 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions` | 新建数据版本（去噪处理/人工修正等加工动作落库为独立版本，不覆盖旧版） | body: `action`(去噪处理/人工修正), `note?`, `object_keys[]?` |
@@ -179,7 +184,7 @@
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
 | GET | `/api/v1/datasets` | 数据集列表（任务类型/样本数/完成度/版本/状态） | 需登录 |
-| POST | `/api/v1/datasets` | 新建数据集 | body: `name`, `task`, 样本来源 |
+| POST | `/api/v1/datasets` | 新建数据集 | body: `name`, `task`, `source?`(样本来源，见下方说明) |
 | GET | `/api/v1/datasets/{dataset_id}` | 详情：样本统计 / 训练验证测试划分 / 数据质量 / 更新时间 | — 需登录 |
 | GET | `/api/v1/datasets/{dataset_id}/dimensions` | 输入维度状态：`Voltage/GasSpeed/Current/Molten_feature/Sound_feature/焊缝照片/熔池视频`（已具备/缺失/必需） | — 需登录 |
 | GET | `/api/v1/datasets/{dataset_id}/readiness` | 模型适配检查：按任务动态返回检查项与「可训练/暂不可训练」 | — 需登录 |
@@ -188,6 +193,8 @@
 | GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}` | 版本详情（固定样本清单、划分） | — 需登录 |
 | POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source` |
 | GET | `/api/v1/datasets/{dataset_id}/lineage` | 数据血缘：原始焊缝→标注任务→数据集版本→模型训练 | — 需登录 |
+
+> **§3.5 已知限制（接受但不落库）**：`POST /datasets` 的 `source` 与 `POST /datasets/{id}/versions` 的 `name`/`note` 当前**仅接受、不落库**——`datasets`（§3.14）无 `source` 列、`dataset_versions`（§3.15）无 `name`/`note` 列。此为表结构已定、尚未加列+迁移前的已知限制；后续需落库时加列 + 迁移 + 两端同步。
 
 ### 3.6 🤖 models 模型中心
 
@@ -210,7 +217,7 @@
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
 | POST | `/api/v1/files/upload` | 上传文件到 MinIO（**小文件 <100MB** 代理转发），返回 object_key + URL | multipart: `file` |
-| POST | `/api/v1/files/presign-upload` | **大文件预签名直传**（≥100MB，登记原始文件 ≤2GB）：返回可 PUT 的 upload_url + object_key | body: `size`, `content_type`, `prefix` |
+| POST | `/api/v1/files/presign-upload` | **大文件预签名直传**（≥100MB，登记原始文件 ≤2GB）：返回可 PUT 的 upload_url + object_key | body: `size`, `content_type`, `prefix`, `filename?`(可选，缺省 `"file"`，由服务端拼进 object_key) |
 | GET | `/api/v1/files/{object_key}/url` | 预签名下载/播放 URL（支持 Range 拖动播放） | query: `expires` |
 | GET | `/api/v1/jobs/{job_id}` | **通用任务状态轮询**（对齐/切分/训练/测试/数据集构建共用） | — 需登录 |
 | POST | `/api/v1/reports/export` | 通用导出：核验报告/分析报告/标注集/特征集/测试报告/数据列表 | body: `type`, `ref_ids[]`, `format` |
@@ -240,7 +247,7 @@ src/api/
 
 ```ts
 // auth.ts
-login(username: string, password: string): Promise<{ access_token: string; user: User }>
+login(username: string, password: string): Promise<{ access_token: string; token_type: string; user: User }>  // 后端返回含 token_type: "bearer"
 getMe(): Promise<User>
 
 // dashboard.ts
@@ -289,7 +296,7 @@ getDataset(id: string): Promise<Dataset>
 getDimensions(id: string): Promise<DimensionStatus[]>
 getReadiness(id: string): Promise<ReadinessCheck>
 listDatasetVersions(id: string): Promise<DatasetVersion[]>
-createDatasetVersion(id: string, body: { name: string; note?: string }): Promise<DatasetVersion>
+createDatasetVersion(id: string, body: { name?: string; note?: string }): Promise<DatasetVersion>   // name 可选（后端仅接受不落库，见 §3.5 说明）
 getDatasetVersion(id: string, versionId: string): Promise<DatasetVersion>
 getLineage(id: string): Promise<LineageNode[]>
 createBuildTask(id: string, versionId: string, source: DatasetSource): Promise<{ job_id: string }>  // POST …/versions/{version_id}/build-tasks，body: source
@@ -316,7 +323,7 @@ getFileUrl(objectKey: string, expires?: number): Promise<{ url: string }>
 getJob(jobId: string): Promise<Job<unknown>>
 
 // reports.ts
-exportReport(body: ExportRequest): Promise<{ url: string }>
+exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string }[] }>   // 后端返回 {urls:[{ref_id,url}]}（非单 {url}）
 ```
 
 ### 4.3 横切工具

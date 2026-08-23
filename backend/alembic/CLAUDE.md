@@ -25,3 +25,4 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - **唯一约束名**：`uq_<table>_<cols>`；索引名 `ix_<table>_<col>`（`ix_audit_logs_resource_type_resource_id` 为复合索引）。新建迁移尽量沿用命名风格。
 - **MySQL 限制**：表/索引名 ≤64 字符；JSON 列（8.0.13 前）不能有默认值，NOT NULL JSON 由服务层保证。
 - 初始迁移的 `revision = "0001"`（非随机 hex），后续迁移用 `alembic revision` 自动续。
+- **URL 含 `%` 的插值坑**：`env.py` 注入 `sqlalchemy.url` 走 configparser，密码 URL-encode 后含 `%`（如 `%40`）会被当作插值语法报 `invalid interpolation syntax`。必须在 `set_main_option` 前 `settings.mysql_url.replace("%", "%%")`（Task 25 已修）。另见 `app/core/config.py` 的 mysql_url URL-encode 修复（密码含 `@` 时原拼法会把 host 解析错）。

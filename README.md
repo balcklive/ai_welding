@@ -180,16 +180,32 @@ Sound_feature
 
 ## 本地运行
 
+后端先起（连接真实 MySQL/MinIO，启动时自动 seed 管理员与演示数据）：
+
+```bash
+cd backend && uv sync && uv run uvicorn app.main:app --reload
+```
+
+前端随后（`npm run dev` 走 `/api` proxy 转发到 `http://localhost:8000`）：
+
 ```bash
 npm install
 npm run dev
 ```
 
-构建检查：
+登录账号见根 `.env` 的 `ADMIN_USERNAME`/`ADMIN_PASSWORD`（本地演示默认 `admin`/`admin123`，生产必须改）。
+
+构建检查（前端）：
 
 ```bash
 npm run typecheck
 npm run build
+```
+
+后端测试（SQLite 内存，不连远程库）：
+
+```bash
+cd backend && uv run pytest
 ```
 
 ## GitHub Pages 部署
