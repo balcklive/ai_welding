@@ -8,6 +8,8 @@ import {
   AlertTriangle, Eye, RefreshCw, ChevronLeft, ChevronRight, Cpu,
   Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
 } from 'lucide-react';
+import { getToken } from './api/client';
+import Login from './pages/Login';
 const overviewImage = 'https://images.pexels.com/photos/14804699/pexels-photo-14804699.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const labelImage = 'https://images.pexels.com/photos/13296053/pexels-photo-13296053.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const modelImage = 'https://images.pexels.com/photos/11951215/pexels-photo-11951215.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
@@ -54,7 +56,7 @@ const projects = [
 ];
 const bars = [46, 58, 52, 67, 61, 78, 74, 92, 81, 88, 72, 96];
 
-function App() {
+function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
   const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -91,6 +93,18 @@ function App() {
       {route !== 'overview' && <WorkspaceFrame route={route} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} navigate={navigate} />}
     </main>
   </div>;
+}
+
+/**
+ * 登录闸门（§4.3）：无 token → 渲染最小登录页；登录成功后 AppShell 才挂载。
+ * 仅包一层，不改动 AppShell 及其内部所有 UI 组件。
+ */
+function App() {
+  const [token, setToken] = useState(() => getToken());
+  if (!token) {
+    return <Login onSuccess={() => setToken(getToken())} />;
+  }
+  return <AppShell />;
 }
 
 function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: { route: Route; selectedDataId: string | null; setSelectedDataId: (id: string) => void; navigate: (r: Route) => void }) {
