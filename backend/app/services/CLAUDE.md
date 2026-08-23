@@ -108,6 +108,9 @@
     `dataset_items` → 计算 quality（repeat_rate/empty_label_rate/dimension_missing_rate）→
     快照 JSON 写 MinIO `datasets/{version.id}/snapshot.json`（**尽力而为**，失败仅告警）→
     回填 version + dataset（current_version_id/sample_count/status 可训练）。
+    **坑（review 修复）**：quality 的 `dimension_missing_rate` 必须用**本次构建的 in-flight
+    samples**（`_dimension_availability_from_samples`）判维度——`datasets.current_version_id`
+    在 quality 计算之后才回填，按当前版本查样本会让首次构建的维度缺失率恒为 1.0。
   - `get_lineage` = 4 层节点：原始焊缝 / 标注任务 / 数据集版本 / 模型训练。
   - 解析辅助 `_sample_record_id`：样本 → 所属焊缝（meta.record_id > meta.weld_id > split_task/
     annotation_task→version→record），按焊缝分组划分的依据。
