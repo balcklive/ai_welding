@@ -25,7 +25,9 @@
   defectTypes/wordCloud/projects），**tone/颜色由前端映射，后端不输出**。模块级常量
   `DEFECT_VOCAB`（统计口径缺陷词表：气孔/焊瘤/未焊透/焊穿/咬边/夹渣，§3.2 与标注
   "标签类别"是两套词表勿混用）、`TRANSITION_BY_WELD_METHOD`（weld_method→过渡类型映射）。
-  时间序列化复用 `jobs._iso_utc`（不重复造轮子）。
+  时间序列化复用 `jobs._iso_utc`（不重复造轮子）。**计数一律用单条 group_by 查询**
+  （`_defect_counts` 按 category、`_weld_method_counts` 按 weld_method）汇总后查 dict，
+  词表缺失默认 0，**避免 per-词条 N+1 查询**（评审发现并已修复）。
 
 ## 坑/限制
 

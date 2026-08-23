@@ -12,7 +12,8 @@ weldingTypes / defectTypes / wordCloud / projects），字段名与前端一致�
 
 坑：`session.exec(select(单列/聚合函数))` 是 `SelectOfScalar`，返回的是**标量**结果
 （`.one()`/`.all()` 直接给值，不是 Row）；只有 `select(多列)`/`select(模型)` 才返回 Row。
-聚合助手已按此约定取值，勿再套 `[0]`。
+聚合助手已按此约定取值，勿再套 `[0]`。另：计数一律用**单条 group_by 查询**汇总（缺陷按
+category、焊法按 weld_method），内存里查 dict 补齐词表默认 0，避免 per-词条 N+1 查询。
 """
 
 from sqlmodel import Session, func, select
@@ -80,8 +81,9 @@ def get_attributes(session: Session) -> dict:
     """
     weld_methods = sorted(_distinct_scalars(session, DataRecord.machine))
 
+    defect_counts = _defect_counts(session)
     defect_types = [
-        {"name": name, "count": _defect_count(session, name)} for name in DEFECT_VOCAB
+        {"name": name, "count": defect_counts.get(name, 0)} for name in DEFECT_VOCAB
     ]
 
     modality_set: set[str] = set()
@@ -115,29 +117,26 @@ def get_distributions(session: Session) -> dict:
         for brand, count in sorted(brand_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 
+    # 单条 group_by 查询拿到 weld_method → 记录数，一次喂给 transition_types 与 welding_types。
+    weld_method_counts = _weld_method_counts(session)
+
     transition: dict[str, int] = {}
-    for method in session.exec(select(DataRecord.weld_method)).all():
-        if not method:
-            continue
+    for method, count in weld_method_counts.items():
         t = TRANSITION_BY_WELD_METHOD.get(method, "脉冲过渡")
-        transition[t] = transition.get(t, 0) + 1
+        transition[t] = transition.get(t, 0) + count
     transition_types = [
         {"name": name, "value": count}
         for name, count in sorted(transition.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 
-    welding: dict[str, int] = {}
-    for method in session.exec(select(DataRecord.weld_method)).all():
-        if not method:
-            continue
-        welding[method] = welding.get(method, 0) + 1
     welding_types = [
         {"name": name, "value": count}
-        for name, count in sorted(welding.items(), key=lambda kv: (-kv[1], kv[0]))
+        for name, count in sorted(weld_method_counts.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
 
+    defect_counts = _defect_counts(session)
     defects = [
-        {"name": name, "count": _defect_count(session, name)} for name in DEFECT_VOCAB
+        {"name": name, "count": defect_counts.get(name, 0)} for name in DEFECT_VOCAB
     ]
 
     max_count = max(brand_counts.values()) if brand_counts else 0
@@ -195,13 +194,27 @@ def _distinct_scalars(session: Session, column) -> list[str]:
     return [value for value in session.exec(select(column).distinct()).all() if value]
 
 
-def _defect_count(session: Session, category: str) -> int:
-    """指定缺陷类别的标注数。"""
-    return int(
-        session.exec(
-            select(func.count(Annotation.id)).where(Annotation.category == category)
-        ).one()
-    )
+def _defect_counts(session: Session) -> dict[str, int]:
+    """单条 group_by 查询返回 `{category: 标注数}`；统计口径词表缺失类别默认 0。
+
+    多列 select 返回 Row，可 `for cat, cnt in rows` 解包。
+    """
+    rows = session.exec(
+        select(Annotation.category, func.count(Annotation.id)).group_by(
+            Annotation.category
+        )
+    ).all()
+    return {category: int(count) for category, count in rows}
+
+
+def _weld_method_counts(session: Session) -> dict[str, int]:
+    """单条 group_by 查询返回 `{weld_method: 记录数}`（NULL 被 group_by 排除）。"""
+    rows = session.exec(
+        select(DataRecord.weld_method, func.count(DataRecord.id)).group_by(
+            DataRecord.weld_method
+        )
+    ).all()
+    return {method: int(count) for method, count in rows if method}
 
 
 def _brand_counts(session: Session) -> dict[str, int]:
