@@ -1,15 +1,18 @@
 # CLAUDE.md — backend/app/
 
-应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）。
+应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）。
 
 ## 脚本
 
-- `main.py`：FastAPI 实例 `app`。Task 1 直挂 `GET /api/v1/health`（返回统一信封 `{"code":0,"message":"ok","data":{"status":"ok"}}`）；`app.add_middleware(AccessLogMiddleware)`。路由聚合（`include_router(api_router, prefix="/api/v1")`）留给 Task 3。
+- `main.py`：FastAPI 实例 `app`。Task 1 直挂 `GET /api/v1/health`（返回统一信封 `{"code":0,"message":"ok","data":{"status":"ok"}}`）+ `AccessLogMiddleware`；Task 3 `include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并 `register_exception_handlers(app)` 注册全局异常处理器（`RequestValidationError`→42200 / `HTTPException` 按 status 映射 / 兜底 `Exception`→50000）。异常错误码映射见本文件 docstring。
 - `core/__init__.py`：空。
 - `core/config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`。
 - `core/logging.py`：`setup_logging()`（loguru 控制台 + 轮转文件）+ 纯 ASGI `AccessLogMiddleware`。
 - `core/db.py`：MySQL `engine` + `SessionLocal` + `get_session()` 依赖（Task 2，详见 `core/CLAUDE.md`）。
+- `core/audit.py`：`write_audit(...)` 向 `audit_logs` 写审计（Task 3，详见 `core/CLAUDE.md`）。
 - `models/`：全部 23 张 SQLModel 表类（Task 2，详见 `models/CLAUDE.md`）。
+- `schemas/`：统一响应信封 `ok/err` + 分页 `paginate`（Task 3，详见 `schemas/CLAUDE.md`）。
+- `api/`：v1 路由聚合（Task 3 骨架，各域占位，详见 `api/CLAUDE.md`）。
 
 ## 坑/限制
 

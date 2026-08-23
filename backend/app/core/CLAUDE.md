@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/core/
 
-核心配置与基础设施。当前进度：Task 1（配置 + 日志中间件）+ Task 2（db 会话）。
+核心配置与基础设施。当前进度：Task 1（配置 + 日志中间件）+ Task 2（db 会话）+ Task 3（audit 写入）。
 
 ## 脚本
 
@@ -8,6 +8,7 @@
 - `config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`。
 - `logging.py`：`setup_logging()`（loguru 控制台 + 轮转文件）+ 纯 ASGI `AccessLogMiddleware`。
 - `db.py`：**Task 2**。模块级 `engine`（MySQL，`settings.mysql_url`，`pool_pre_ping=True`）、`SessionLocal`（`sessionmaker`，`expire_on_commit=False`）、`get_session()`（FastAPI 依赖，`yield` 一个 `Session`）。
+- `audit.py`：**Task 3**。`write_audit(session, user_id, action, resource_type, resource_id=None, detail=None)` 向 `audit_logs`（模型 `AuditLog`，§3.23）插一行，`created_at=datetime.now(timezone.utc)`（UTC aware）。**只 `session.add` + `session.flush`，不 commit**——由调用方统一 commit，保证审计与业务变更同事务。
 
 ## 坑/限制
 
