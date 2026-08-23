@@ -182,7 +182,8 @@ export interface Dataset {
   status: string;
   current_version_id: number | null;
   version: string | null;
-  split: DatasetSplit | null;
+  /** 当前版本划分；未构建/无当前版本时为 `null`，已建版本但未构建时为 `{}`。 */
+  split: Partial<DatasetSplit> | null;
   quality: DatasetQuality | null;
   created_at: string | null;
   updated_at: string | null;
@@ -192,7 +193,8 @@ export interface DatasetVersion {
   id: number;
   dataset_id: number;
   version_no: string;
-  split: DatasetSplit;
+  /** 固定快照划分；后端恒输出该键，未构建版本为 `{}`（train/val/test 缺省）。 */
+  split: Partial<DatasetSplit>;
   item_count: number;
   snapshot_id: string | null;
   quality: DatasetQuality | null;
