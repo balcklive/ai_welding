@@ -2,10 +2,11 @@
 
 使用**内存 SQLite** 引擎 + `SQLModel.metadata.create_all`，绝不连远程 MySQL。
 覆盖：
-1. 23 张表全部建出；
-2. User + DataRecord + DataVersion 插入提交成功，`modalities` JSON 往返；
-3. 同一 `(record_id, version_no)` 二次插入触发 `IntegrityError`（复合唯一）；
-4. `DataRecord.latest_version_id` 可指向已建版本。
+1. 23 张表全部建出，且逐表索引与模型元数据一致（SQLAlchemy inspector）；
+2. 手写迁移 `0001_initial.py` 的 create_index 与模型元数据索引完全对齐（防索引漂移）；
+3. User + DataRecord + DataVersion 插入提交成功，`modalities` JSON 往返；
+4. 同一 `(record_id, version_no)` 二次插入触发 `IntegrityError`（复合唯一）；
+5. `DataRecord.latest_version_id` 可指向已建版本。
 """
 
 import pytest
@@ -39,7 +40,8 @@ def engine() -> Engine:
 def test_all_23_tables_created(engine: Engine) -> None:
     from sqlalchemy import inspect
 
-    tables = set(inspect(engine).get_table_names())
+    insp = inspect(engine)
+    tables = set(insp.get_table_names())
     expected = {
         "users",
         "data_records",
@@ -67,6 +69,57 @@ def test_all_23_tables_created(engine: Engine) -> None:
     }
     assert expected <= tables, expected - tables
     assert len(expected) == 23
+
+    # 逐表索引名一致性：模型声明（index=True / Index()）的索引必须已在库里实际建出，
+    # 防止模型加了索引但建表/迁移漏掉（例如曾漏掉 ix_validation_rule_results_report_id）。
+    for table_name, table in SQLModel.metadata.tables.items():
+        model_idx = {ix.name for ix in table.indexes}
+        db_idx = {ix["name"] for ix in insp.get_indexes(table_name)}
+        assert model_idx <= db_idx, (
+            f"{table_name}: 模型声明但 SQLite 未建出 {sorted(model_idx - db_idx)}"
+        )
+
+
+def test_migration_indexes_match_model_metadata() -> None:
+    """手写迁移 `0001_initial.py` 的 create_index 必须与模型元数据索引**完全对齐**。
+
+    迁移是手写的（远程 MySQL 不可达），此处直接解析迁移文件，防止
+    模型新增 index=True/Index() 而迁移遗漏（或反之）的索引漂移在 CI 中漏网。
+    """
+    import re
+    from pathlib import Path
+
+    mig_path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "0001_initial.py"
+    )
+    text = mig_path.read_text(encoding="utf-8")
+
+    mig_indexes: dict[str, set[str]] = {}
+    for m in re.finditer(
+        r'op\.create_index\(\s*["\']([^"\']+)["\'],\s*["\']([^"\']+)["\'],\s*\[([^\]]*)\]',
+        text,
+    ):
+        name, table = m.group(1), m.group(2)
+        mig_indexes.setdefault(table, set()).add(name)
+
+    model_indexes: dict[str, set[str]] = {}
+    for table_name, table in SQLModel.metadata.tables.items():
+        idx = {ix.name for ix in table.indexes}
+        if idx:
+            model_indexes[table_name] = idx
+
+    assert mig_indexes == model_indexes, {
+        "migration 独有": sorted(set(mig_indexes) - set(model_indexes)),
+        "model 独有": sorted(set(model_indexes) - set(mig_indexes)),
+        "同表索引差异": {
+            t: sorted(model_indexes.get(t, set()) ^ mig_indexes.get(t, set()))
+            for t in set(model_indexes) | set(mig_indexes)
+            if model_indexes.get(t, set()) != mig_indexes.get(t, set())
+        },
+    }
 
 
 def test_user_data_record_version_insert_and_json_roundtrip(engine: Engine) -> None:

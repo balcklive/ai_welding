@@ -420,6 +420,7 @@ def upgrade() -> None:
     op.create_index("ix_data_versions_record_id", "data_versions", ["record_id"])
     op.create_index("ix_data_versions_created_at", "data_versions", ["created_at"])
     op.create_index("ix_validation_reports_version_id", "validation_reports", ["version_id"])
+    op.create_index("ix_validation_rule_results_report_id", "validation_rule_results", ["report_id"])
     op.create_index("ix_jobs_type", "jobs", ["type"])
     op.create_index("ix_jobs_status", "jobs", ["status"])
     op.create_index("ix_alignment_tasks_version_id", "alignment_tasks", ["version_id"])
@@ -473,6 +474,9 @@ def downgrade() -> None:
     op.drop_table("annotation_tasks")
     op.drop_table("split_tasks")
     op.drop_table("alignment_tasks")
+    op.drop_index(
+        "ix_validation_rule_results_report_id", table_name="validation_rule_results"
+    )
     op.drop_table("validation_rule_results")
     op.drop_table("validation_reports")
     op.drop_table("data_versions")
