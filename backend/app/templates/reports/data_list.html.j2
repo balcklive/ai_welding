@@ -1,0 +1,24 @@
+{% extends "base.html.j2" %}
+{% block body %}
+<h1>{{ title }}</h1>
+<div class="meta">数据记录 {{ total }} 条{% if ref_id and ref_id != "all" %} · 引用 ID：{{ ref_id }}{% endif %}</div>
+
+<table>
+  <tr>
+    <th>焊缝ID</th><th>登记号</th><th>名称</th><th>来源</th><th>设备</th><th>工艺</th><th>材质</th><th>状态</th><th>操作人</th>
+  </tr>
+  {% for item in items %}
+  <tr>
+    <td>{{ item.weld_id }}</td>
+    <td>{{ item.registration_no }}</td>
+    <td>{{ item.weld_name or "—" }}</td>
+    <td>{{ item.source }}</td>
+    <td>{{ item.machine or "—" }}</td>
+    <td>{{ item.weld_method or "—" }}</td>
+    <td>{{ item.material or "—" }}</td>
+    <td>{{ item.quality }}</td>
+    <td>{{ item.operator or "—" }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

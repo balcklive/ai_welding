@@ -133,7 +133,15 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 - `jobs.py`：**Task 7 已实现**。`GET /jobs/{job_id}`（无前缀，完整路径 `/api/v1/jobs/{job_id}`，
   依赖 `get_current_user` 需登录）→ `ok(to_job_payload(job))`（§1.5 Job JSON）；不存在 →
   `err(40401, "任务不存在", status=404)`。业务逻辑在 `app.services.jobs`。
-- `reports.py`：占位（`# filled in Task 17`）。报告导出 PDF/CSV。
+- `reports.py`：**Task 17 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+  统一要求登录（完整路径 `/api/v1/reports/export`），契约 `docs/API接口清单.md` §3.7，业务逻辑在
+  `app.services.reports`：
+  - `POST /reports/export` body `{type(validation|analysis|annotation|features|test|data-list),
+    ref_ids[], format(pdf|json)}` → 每 ref_id 生成报告写 MinIO
+    `reports/{type}/{ref_id}.pdf|.json` → `ok({urls:[{ref_id, url}]})`（url 预签名下载）。
+  - 未知 type / format → 400（40000）；引用实体不存在 → 404（40401）；未登录 401（40100）。
+  - `data-list`：`ref_ids=[]` → 全量单份（ref_id=`all`）；非空 → 逐标识（DB id/weld_id/
+    registration_no）解析过滤，缺失 404。
 
 ## 坑/限制
 

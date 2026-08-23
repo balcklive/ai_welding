@@ -1,0 +1,26 @@
+{% extends "base.html.j2" %}
+{% block body %}
+<h1>{{ title }}</h1>
+<div class="meta">引用 ID：{{ ref_id }}</div>
+
+{% if summary %}
+<table class="kv">
+  {% for item in summary %}
+  <tr><td>{{ item.label }}</td><td>{{ item.value }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+{% if not sections %}
+<p>该报告暂无可展示的详细数据。</p>
+{% endif %}
+{% for section in sections %}
+<h2>{{ section.heading }}</h2>
+<table>
+  <tr><th>项</th><th>值</th></tr>
+  {% for item in section.items %}
+  <tr><td>{{ item.label }}</td><td>{{ item.value }}</td></tr>
+  {% endfor %}
+</table>
+{% endfor %}
+{% endblock %}

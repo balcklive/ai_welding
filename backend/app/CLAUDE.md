@@ -28,7 +28,12 @@
   按焊缝分组 8:1:1 防泄漏、quality 计算、快照写 MinIO、兜底合成样本），
   `models.py` = **Task 16**（模型仓库：列表汇总/详情/新建/状态流转 + 训练/测试/推理 handler
   领域逻辑：训练成功事务内生成 `model_versions`（实验版本）+ 权重写 MinIO `models/{id}/weights.pt`
-  尽力而为、测试 2×2 混淆矩阵、推理确定性 boxes，见 `services/CLAUDE.md`），详见 `services/CLAUDE.md`。
+  尽力而为、测试 2×2 混淆矩阵、推理确定性 boxes），
+  `reports.py` = **Task 17**（通用报告导出：validation/data-list 真实模板 + 其余通用模板，
+  PDF=Jinja2+xhtml2pdf 复用项，写 MinIO `reports/{type}/{ref_id}.pdf|.json` + 预签名 URL），
+  详见 `services/CLAUDE.md`。
+- `templates/reports/`：**Task 17** Jinja2 报告模板（base/validation/data_list/generic），
+  见 `templates/CLAUDE.md`。
 - `jobs/`：**Task 13 ~ Task 16** Job 执行器 + 各域 handler（`executor.py` DB 轮询 / `run_job`
   同步入口 / handler 注册表；`alignment.py` = 对齐 handler、`split.py` = 切分 handler、
   `annotation.py` = 标注 handler、`dataset_build.py` = 数据集构建 handler、
@@ -42,7 +47,8 @@
   annotation-tasks 全端点）、`v1/datasets.py` 为 **Task 15 已实现**（datasets 全端点：
   列表/新建/详情/dimensions/readiness/versions/版本详情/build-tasks/lineage）、
   `v1/models.py` 为 **Task 16 已实现**（models 全端点：列表/详情/新建/状态流转 +
-  training-tasks/test-tasks/inference-tasks 创建与轮询），详见 `api/CLAUDE.md`。
+  training-tasks/test-tasks/inference-tasks 创建与轮询）、`v1/reports.py` 为 **Task 17 已实现**
+  （通用报告导出 POST /reports/export），详见 `api/CLAUDE.md`。
 
 ## 坑/限制
 

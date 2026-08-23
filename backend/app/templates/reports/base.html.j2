@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+body { font-family: "WenQuanYi Zen Hei", "DejaVu Sans", sans-serif; color: #1a1a1a; margin: 28px; }
+h1 { font-size: 20px; border-bottom: 2px solid #333; padding-bottom: 8px; }
+h2 { font-size: 15px; margin-top: 20px; color: #444; }
+.meta { color: #666; font-size: 12px; margin-bottom: 14px; }
+table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+th, td { border: 1px solid #ccc; padding: 5px 8px; font-size: 12px; text-align: left; }
+th { background: #f2f2f2; }
+.kv td:first-child { width: 180px; font-weight: bold; background: #fafafa; }
+.score { font-size: 28px; font-weight: bold; color: #1f6feb; }
+.status-passed { color: #1a7f37; }
+.status-warning { color: #9a6700; }
+.status-failed { color: #cf222e; }
+.footer { margin-top: 28px; font-size: 11px; color: #888; }
+</style>
+</head>
+<body>
+{% block body %}{% endblock %}
+<div class="footer">生成时间：{{ generated_at or "—" }} · AI 焊接平台</div>
+</body>
+</html>

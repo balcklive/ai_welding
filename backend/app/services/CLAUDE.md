@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）+ Task 15（数据集服务）+ Task 16（模型中心服务）。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）+ Task 15（数据集服务）+ Task 16（模型中心服务）+ **Task 17（通用报告导出）**。
 
 ## 脚本
 
@@ -142,6 +142,18 @@
   - 内部助手：`next_model_version_no`（取该模型最大 (major,minor) → `v{major}.{minor+1}`；
     空 → v1.1）、`_recent_training`（最近一次已完成训练 finished_at ISO 串）、`_write_weights`
     （延迟 `from app.storage import get_storage`，测试 monkeypatch 该引用，同 dataset 快照）。
+- `reports.py`：**Task 17**。通用报告导出（契约 §3.7 / OSS §2，PDF=Jinja2+xhtml2pdf 复用项）。
+  `export_reports(session, type, ref_ids, fmt)` → 每个 ref_id 装配内容 dict → json 直接落
+  `reports/{type}/{ref_id}.json` / pdf 渲染 `app/templates/reports/` 模板后写 `.pdf` →
+  `upload_stream` + `presign_get` → 返回 `[{ref_id, url}]`。类型 builder：
+  `validation`（validation_reports + rule_results 完整模板）、`data-list`（**`ref_ids=[]` → 全量
+  单份 ref_id=`all`；非空 → 逐标识 DB id/weld_id/registration_no 解析过滤**）、`features`
+  （feature_extractions 统一向量 + 三类特征）、`test`（test_tasks.metrics + 混淆矩阵）、
+  `annotation`（annotation_tasks + 样本 COUNT）、`analysis`（数据版本 + signals 确定性分析结果），
+  analysis/annotation/features/test 复用 `generic.html.j2`（summary + sections，无数据占位）。
+  错误语义：未知类型/格式抛 `ValueError` → 路由 400；`EntityNotFoundError` → 404；写 MinIO
+  失败直接抛（导出必须拿到 URL，与 dataset/weights 的"尽力而为跳过"不同）。存储延迟导入
+  （`from app.storage import get_storage`，测试 monkeypatch）；时间序列化复用 `jobs._iso_utc`。
 
 ## 坑/限制
 
