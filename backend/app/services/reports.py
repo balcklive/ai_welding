@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 from sqlalchemy import func
 from sqlmodel import Session, select
 from xhtml2pdf import pisa
@@ -69,7 +69,8 @@ _TEMPLATE_BY_TYPE = {
 _TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates" / "reports"
 _env = Environment(
     loader=FileSystemLoader(str(_TEMPLATE_DIR)),
-    autoescape=select_autoescape(["html", "xml"]),
+    # 模板为 .j2 后缀，select_autoescape 按文件名结尾匹配不到 → 必须显式开启。
+    autoescape=True,
 )
 
 

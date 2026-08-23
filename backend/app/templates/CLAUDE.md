@@ -17,7 +17,12 @@ PDF 渲染流程 = 模板渲染 HTML → xhtml2pdf `pisa.CreatePDF` → PDF 字�
 
 ## 坑/限制
 
+- **autoescape 必须显式开启**：`app/services/reports.py` 的 Jinja `Environment(autoescape=True)`——
+  `select_autoescape(["html","xml"])` 按**文件名结尾**匹配，`.j2` 模板匹配不到会返回 False，
+  导致 `{{ weld_name }}` 等用户字段原样渲染（可注入 HTML/PDF）。改回 `select_autoescape` 前
+  必须确认匹配 `.j2`。回归测试：`tests/test_reports.py::test_jinja_autoescape_escapes_user_fields`。
 - 模板用 `{% extends "base.html.j2" %}`，文件名带 `.j2` 后缀（同 xhtml2pdf 兼容无冲突）。
 - xhtml2pdf 只支持内联 CSS 2 子集：表格/边框/字体可用；flex/grid/定位等不生效，勿用。
-- 变量取值一律在 `app/services/reports.py` 装配成 dict 再渲染，模板里不写复杂逻辑（autoescape 开启）。
+- 变量取值一律在 `app/services/reports.py` 装配成 dict 再渲染，模板里不写复杂逻辑；autoescape
+  对变量转义是刻意的（PDF 渲染 HTML 实体为字面字符，不会破坏表格/CSS）。
 - 新增报告类型：加模板 + 在 `reports.py::_TEMPLATE_BY_TYPE` / `_BUILDERS` 注册。

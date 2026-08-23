@@ -154,6 +154,8 @@
   错误语义：未知类型/格式抛 `ValueError` → 路由 400；`EntityNotFoundError` → 404；写 MinIO
   失败直接抛（导出必须拿到 URL，与 dataset/weights 的"尽力而为跳过"不同）。存储延迟导入
   （`from app.storage import get_storage`，测试 monkeypatch）；时间序列化复用 `jobs._iso_utc`。
+  **坑**：Jinja `Environment` 用显式 `autoescape=True`（`.j2` 后缀让 `select_autoescape(["html","xml"])`
+  匹配不到→逃逸失效），详见 `templates/CLAUDE.md`。
 
 ## 坑/限制
 

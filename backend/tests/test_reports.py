@@ -280,3 +280,34 @@ def test_unauthorized_returns_401(db_engine):
     )
     assert resp.status_code == 401
     assert resp.json()["code"] == 40100
+
+
+def test_jinja_autoescape_escapes_user_fields(
+    db_engine, override_get_session, override_get_current_user, fake_storage
+):
+    """回归：.j2 模板必须开 autoescape（select_autoescape 按文件名结尾匹配不到 .j2，
+    曾导致 {{ weld_name }} 等用户字段原样渲染、可向 PDF 注入任意 HTML）。"""
+    from app.services.reports import _env
+
+    assert _env.autoescape is True
+    html = _env.get_template("data_list.html.j2").render(
+        title="数据列表",
+        ref_id="all",
+        total=1,
+        generated_at="now",
+        items=[
+            {
+                "weld_id": "WLD-1",
+                "registration_no": "REG-1",
+                "weld_name": '<img src=x onerror=alert(1)>',
+                "source": "src",
+                "machine": "m",
+                "weld_method": "wm",
+                "material": "mat",
+                "quality": "ok",
+                "operator": "op",
+            }
+        ],
+    )
+    assert "<img" not in html
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html
