@@ -16,10 +16,16 @@ from fastapi.exceptions import RequestValidationError
 from loguru import logger
 
 from app.api.v1.router import api_router
+from app.core.config import settings
 from app.core.logging import AccessLogMiddleware, setup_logging
 from app.schemas.common import err, ok
 
 setup_logging()
+
+if settings.secret_key in ("change-me", "") or settings.admin_password in ("admin123", ""):
+    logger.warning(
+        "检测到弱默认凭据：SECRET_KEY 或 ADMIN_PASSWORD 仍为默认值，生产环境务必在 .env 中修改"
+    )
 
 app = FastAPI(title="AI Welding Platform API", version="0.1.0")
 app.add_middleware(AccessLogMiddleware)

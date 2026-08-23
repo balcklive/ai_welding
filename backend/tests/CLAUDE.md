@@ -11,7 +11,7 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 - `test_models.py`（Task 2）：内存 SQLite 建全部 23 张表 + 索引一致性（含与迁移 `0001_initial.py` 的索引对齐防漂移）+ 关键表插入/复合唯一/环形指针。
 - `test_common.py`（Task 3）：`ok/err/paginate` 信封纯函数 + 全局异常处理器（隔离迷你 app）+ `write_audit` 审计写入。
 - `test_storage.py`（Task 4）：`normalize_filename`/`normalize_key` 纯函数断言 + 假 `Minio` 客户端注入测参数透传，不连真实 MinIO。
-- `test_auth.py`（Task 5）：JWT 认证。内存 SQLite **必须 `poolclass=StaticPool` + `check_same_thread=False`**——TestClient 在 worker 线程处理请求，默认 per-thread 池会让各线程看到互相独立的空库（"no such table"）；用 `app.dependency_overrides[get_session]` 覆盖登录与 `get_current_user` 两处依赖，seed 一个 argon2 用户测 login 成功/密码错/用户不存在、me 带/不带/坏 token、`decode_token` 往返、`verify_password`。
+- `test_auth.py`（Task 5）：JWT 认证。内存 SQLite **必须 `poolclass=StaticPool` + `check_same_thread=False`**——TestClient 在 worker 线程处理请求，默认 per-thread 池会让各线程看到互相独立的空库（"no such table"）；用 `app.dependency_overrides[get_session]` 覆盖登录与 `get_current_user` 两处依赖，seed 一个 argon2 用户测 login 成功/密码错/用户不存在、me 带/不带/坏 token、`decode_token` 往返、`verify_password`。另含防枚举机制断言：`_DUMMY_HASH` 是合法 argon2 哈希且任意明文均不匹配（不直接断言耗时，避免 CI 抖动）。
 
 ## 坑/限制
 

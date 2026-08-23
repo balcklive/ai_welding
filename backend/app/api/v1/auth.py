@@ -11,11 +11,15 @@ from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
 from app.core.db import get_session
-from app.core.security import create_access_token, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.models.data import User
 from app.schemas.common import err, ok
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+# 防时序用户枚举：用户不存在时也跑一次 argon2 校验，使未知/已知用户名响应时间相当。
+# 模块导入时计算一次（~100-300ms），此后每次登录的"用户不存在"路径复用同一哈希。
+_DUMMY_HASH = hash_password("dummy-password-for-constant-time-verify")
 
 
 class LoginRequest(BaseModel):
@@ -40,7 +44,12 @@ def user_payload(user: User) -> dict:
 def login(body: LoginRequest, session: Session = Depends(get_session)) -> dict:
     """登录：用户名 + 密码校验，成功返回 JWT 与用户信息。"""
     user = session.exec(select(User).where(User.username == body.username)).first()
-    if user is None or not verify_password(body.password, user.password_hash):
+    if user is None:
+        # 用户不存在：仍跑一次 argon2 校验（对 DUMMY_HASH），
+        # 使两条路径耗时相当，防时序用户枚举。结果被丢弃。
+        verify_password(body.password, _DUMMY_HASH)
+        return err(40100, "用户名或密码错误", status=401)
+    if not verify_password(body.password, user.password_hash):
         return err(40100, "用户名或密码错误", status=401)
     return ok(
         {

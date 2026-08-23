@@ -152,3 +152,17 @@ def test_decode_token_roundtrip(db_session) -> None:
     user = db_session.exec(select(User).where(User.username == "lin_eng")).first()
     token = create_access_token(user)
     assert decode_token(token) == user.id
+
+
+def test_dummy_hash_used_for_unknown_user_is_valid_argon2() -> None:
+    """用户不存在路径复用模块级 DUMMY_HASH 跑 argon2：哈希合法且任何明文都不匹配（不抛异常）。
+
+    不直接断言耗时（CI 抖动），只锁住机制本身：DUMMY_HASH 是合法 argon2 哈希，
+    verify_password 对任意输入返回 False。配合 login 的 unknown-user 分支复用同一哈希，
+    即可让未知/已知用户名两条路径耗时相当（防时序枚举）。
+    """
+    from app.api.v1.auth import _DUMMY_HASH
+
+    assert _DUMMY_HASH.startswith("$argon2")
+    assert verify_password("any-password", _DUMMY_HASH) is False
+    assert verify_password("", _DUMMY_HASH) is False
