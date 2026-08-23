@@ -191,8 +191,9 @@
 
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
-| POST | `/api/v1/files/upload` | 上传文件到 MinIO（≤2GB），返回 object_key + URL | multipart: `file` |
-| GET | `/api/v1/files/{object_key}/url` | 预签名下载/播放 URL | query: `expires` |
+| POST | `/api/v1/files/upload` | 上传文件到 MinIO（**小文件 <100MB** 代理转发），返回 object_key + URL | multipart: `file` |
+| POST | `/api/v1/files/presign-upload` | **大文件预签名直传**（≥100MB，登记原始文件 ≤2GB）：返回可 PUT 的 upload_url + object_key | body: `size`, `content_type`, `prefix` |
+| GET | `/api/v1/files/{object_key}/url` | 预签名下载/播放 URL（支持 Range 拖动播放） | query: `expires` |
 | GET | `/api/v1/jobs/{job_id}` | **通用任务状态轮询**（对齐/切分/训练/测试/数据集构建共用） | — 需登录 |
 | POST | `/api/v1/reports/export` | 通用导出：核验报告/分析报告/标注集/特征集/测试报告 | body: `type`, `ref_ids[]`, `format` |
 
@@ -282,7 +283,8 @@ createInferenceTask(body: InferenceRequest): Promise<{ job_id: string }>
 getInferenceTask(id: string): Promise<Job<InferenceResult>>
 
 // files.ts
-uploadFile(file: File, onProgress?: (p: number) => void): Promise<{ object_key: string; url: string }>
+uploadFile(file: File, onProgress?: (p: number) => void): Promise<{ object_key: string; url: string }>   // 小文件 <100MB
+presignUpload(req: { size: number; content_type: string; prefix: string }): Promise<{ object_key: string; upload_url: string }>
 getFileUrl(objectKey: string, expires?: number): Promise<{ url: string }>
 
 // jobs.ts
