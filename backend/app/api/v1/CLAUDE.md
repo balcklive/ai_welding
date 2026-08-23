@@ -13,7 +13,9 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 - `datasets.py`：占位（`# filled in Task 15`）。数据集 + 构建任务。
 - `models.py`：占位（`# filled in Task 16`）。模型 + 训练/测试/推理。
 - `files.py`：占位（`# filled in Task 9`）。MinIO 三个端点。
-- `jobs.py`：占位（`# filled in Task 7`）。Job 服务 + 轮询端点。
+- `jobs.py`：**Task 7 已实现**。`GET /jobs/{job_id}`（无前缀，完整路径 `/api/v1/jobs/{job_id}`，
+  依赖 `get_current_user` 需登录）→ `ok(to_job_payload(job))`（§1.5 Job JSON）；不存在 →
+  `err(40401, "任务不存在", status=404)`。业务逻辑在 `app.services.jobs`。
 - `reports.py`：占位（`# filled in Task 17`）。报告导出 PDF/CSV。
 
 ## 坑/限制

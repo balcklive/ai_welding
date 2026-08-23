@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/
 
-后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）已完成。
+后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）+ Task 2（全部 SQLModel 模型 + db 会话 + Alembic 初始迁移）+ Task 3（统一信封 + 异常处理 + v1 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（JWT 认证 + login/me 端点）+ Task 6（启动 seed：管理员 + 演示数据）+ Task 7（通用 Job 服务 + `GET /jobs/{job_id}` 轮询端点）已完成。
 
 ## 目录与脚本
 
