@@ -10,6 +10,9 @@ from app.jobs.alignment import handle as _alignment_handler  # noqa: F401  # 注
 from app.jobs.annotation import handle as _annotation_handler  # noqa: F401  # 注册 annotation handler（Task 14）
 from app.jobs.split import handle as _split_handler  # noqa: F401  # 注册 split handler（Task 14）
 from app.jobs.dataset_build import handle as _dataset_build_handler  # noqa: F401  # 注册 dataset_build handler（Task 15）
+from app.jobs.training import handle as _training_handler  # noqa: F401  # 注册 training handler（Task 16）
+from app.jobs.testing import handle as _test_handler  # noqa: F401  # 注册 test handler（Task 16）
+from app.jobs.inference import handle as _inference_handler  # noqa: F401  # 注册 inference handler（Task 16）
 
 __all__ = [
     "executor",

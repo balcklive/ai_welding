@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）+ Task 15（数据集服务）。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）+ Task 15（数据集服务）+ Task 16（模型中心服务）。
 
 ## 脚本
 
@@ -118,6 +118,30 @@
     （`dataset_build_tasks.source` 仅 VARCHAR(32) 存类型，契约 §3.22）；`_build_snapshot` 内
     延迟 `from app.storage import get_storage`，测试 monkeypatch `app.storage.get_storage`；
     `run_build` 内的进度 commit 是执行器专用 session 场景（同 alignment）。
+
+- `models.py`：**Task 16**。模型中心服务，供 `app/api/v1/models.py` 路由调用（契约 §3.6）：
+  - `create_model`（同名抛 ValueError → 路由 409）/ `list_models`（**汇总 + 列表**：summary
+    `{total, prod_candidates, recent_training, gpu_usage=42}`，单条查询取全部 model_versions
+    按 id 倒序取每条模型最新版本，避免 N+1）/ `get_model`（详情 + 版本列表）/
+    `model_payload` / `version_payload`。
+  - `update_version_status`（PATCH：status 白名单 生产候选/训练中/实验版本 校验抛 ValueError；
+    **note 无对应列仅接受不落库**，同 dataset_versions.name/note 约定）。
+  - `run_training`（训练 handler 领域逻辑）：进度逐步 → 确定性指标（mAP50≈0.94-0.96 /
+    precision≈0.96 / recall≈0.93，seed=`random.Random(f"train-{task.id}")`）+ 损失曲线
+    （train/val 数组长度=epochs，训练损失递减、验证略高）→ **同事务生成 `model_versions`
+    （version_no next、status=实验版本、metric、file_key=`models/{id}/weights.pt`）→ 权重
+    占位写 MinIO 尽力而为**；`base_model_id` 给定时新版本挂到其所属模型，否则自动新建
+    `Model`（name=`训练模型-{task.id}`）；回填 training_tasks.metrics/loss_curve →
+    job.result `{metrics, loss_curve, model_version}`。
+  - `run_test`（测试 handler）：metrics `{accuracy 0.968, recall 0.942, f1 0.955, latency_ms 18}`
+    + confusion_matrix `[[612,18],[22,596]]`（照 App.tsx ModelTest）。
+  - `run_inference`（推理 handler）：确定性 boxes/categories/confidence/latency_ms
+    （seed=`f"infer-{task.id}"`，3 个预测框、类别取自 焊瘤/气孔/未熔合）。
+  - `training_logs(task, job)`：确定性训练日志文本（初始化 → 每 epoch loss/val_loss →
+    完成/等待）。
+  - 内部助手：`next_model_version_no`（取该模型最大 (major,minor) → `v{major}.{minor+1}`；
+    空 → v1.1）、`_recent_training`（最近一次已完成训练 finished_at ISO 串）、`_write_weights`
+    （延迟 `from app.storage import get_storage`，测试 monkeypatch 该引用，同 dataset 快照）。
 
 ## 坑/限制
 

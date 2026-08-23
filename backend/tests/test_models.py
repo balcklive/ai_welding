@@ -10,15 +10,28 @@
 """
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, SQLModel
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, select
 
+import app.jobs.executor as executor_mod
+from app.api.deps import get_current_user
+from app.core.db import get_session
+from app.core.seed import seed_all
+from app.jobs.executor import run_job
+from app.main import app
 from app.models import (
     AuditLog,
     DataRecord,
     DataVersion,
+    Job,
+    Model,
+    ModelVersion,
+    TrainingTask,
     User,
     ValidationReport,
     ValidationRuleResult,
@@ -267,3 +280,506 @@ def test_related_rows_insertable(engine: Engine) -> None:
             )
         )
         session.commit()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Task 16：模型中心 API（模型仓库 / 训练 / 测试 / 推理，模拟）
+#
+# 同 test_datasets.py 基础设施：内存 SQLite + StaticPool + 真实 app TestClient；
+# `seed_all` 造演示数据（3 模型 + 3 数据集 + 4 焊缝）后 override `get_session` /
+# `get_current_user`；`app.jobs.executor.SessionLocal` 指到同一测试引擎（`run_job`
+# 用独立 session，不启动后台轮询线程）；`app.storage.get_storage` → 假存储
+# （记录权重写，不连真实 MinIO）。
+# ═════════════════════════════════════════════════════════════════════════
+
+client = TestClient(app)
+
+SEED_MODEL_1 = "焊接异常检测模型"  # v1.8 生产候选（model_id=1, version_id=1）
+SEED_MODEL_2 = "熔池分割模型"      # v2.1 训练中（model_id=2, version_id=2）
+SEED_MODEL_3 = "质量预测模型"      # v0.9 实验版本（model_id=3, version_id=3）
+
+
+class FakeStorage:
+    """记录 upload_stream 的假存储（断言权重写，不连 MinIO）。"""
+
+    def __init__(self) -> None:
+        self.uploads: list[tuple] = []
+
+    def upload_stream(self, object_key, fileobj, size, content_type):
+        data = fileobj.read()
+        self.uploads.append((object_key, size, content_type, data))
+        return object_key
+
+
+@pytest.fixture()
+def db_engine():
+    """内存 SQLite + StaticPool：seed 演示数据，每用例全新引擎（环形 FK 不便 drop_all）。"""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture()
+def override_get_session(db_engine):
+    """每请求开一个独立 Session（与真实 get_session 语义一致），退出即 close。"""
+
+    def _override():
+        with Session(db_engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override
+    yield
+    app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture()
+def override_get_current_user():
+    """假登录：get_current_user 直接返回一个 User，免 seed / 免签 token。"""
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override() -> User:
+        return dummy
+
+    app.dependency_overrides[get_current_user] = _override
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture()
+def executor_sessionlocal(db_engine, monkeypatch):
+    """把 executor 的 SessionLocal 指到同一测试引擎（run_job 用独立 session，不启动线程）。"""
+    monkeypatch.setattr(
+        executor_mod,
+        "SessionLocal",
+        sessionmaker(bind=db_engine, class_=Session, expire_on_commit=False),
+    )
+
+
+@pytest.fixture()
+def fake_storage(monkeypatch):
+    """假存储：monkeypatch `app.storage.get_storage`（权重写走这里，不连 MinIO）。"""
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    return storage
+
+
+# ---------- 模型仓库：列表 / 汇总 / 详情 / 新建 ----------
+
+
+def test_list_models_summary(override_get_session, override_get_current_user) -> None:
+    data = client.get("/api/v1/models").json()["data"]
+    summary = data["summary"]
+    assert summary["total"] == 3
+    assert summary["prod_candidates"] == 1  # 仅「焊接异常检测模型」为生产候选
+    assert "recent_training" in summary  # 初始无训练任务 → None
+    assert summary["recent_training"] is None
+    assert summary["gpu_usage"] == 42
+
+    models = data["models"]
+    assert len(models) == 3
+    names = {m["name"] for m in models}
+    assert names == {SEED_MODEL_1, SEED_MODEL_2, SEED_MODEL_3}
+    by_name = {m["name"]: m for m in models}
+    m1 = by_name[SEED_MODEL_1]
+    assert m1["version"] == "v1.8" and m1["status"] == "生产候选"
+    assert m1["metric"] == {"f1": 0.955}
+    assert m1["latest_version_id"] == m1["id"] or m1["latest_version_id"]
+    for m in models:
+        assert m["id"] and m["type"]
+        assert "metric" in m and "status" in m and "file_key" in m
+
+
+def test_get_model_detail(override_get_session, override_get_current_user) -> None:
+    data = client.get("/api/v1/models/1").json()["data"]
+    assert data["name"] == SEED_MODEL_1
+    assert data["type"] == "时序分类"
+    assert len(data["versions"]) == 1
+    version = data["versions"][0]
+    assert version["version_no"] == "v1.8"
+    assert version["status"] == "生产候选"
+    assert version["file_key"] == f"models/{version['id']}/weights.pt"
+
+
+def test_create_model_and_duplicate(
+    override_get_session, override_get_current_user
+) -> None:
+    resp = client.post(
+        "/api/v1/models",
+        json={"name": "新缺陷模型", "type": "目标检测", "description": "测试用"},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    model = resp.json()["data"]
+    assert model["id"] and model["name"] == "新缺陷模型"
+    assert model["type"] == "目标检测" and model["description"] == "测试用"
+
+    # 同名 → 409 冲突（契约 §1.3）
+    resp = client.post("/api/v1/models", json={"name": "新缺陷模型", "type": "目标检测"})
+    assert resp.status_code == 409 and resp.json()["code"] == 40900
+
+    # 空名 / 空类型 → 400
+    resp = client.post("/api/v1/models", json={"name": "", "type": "目标检测"})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    resp = client.post("/api/v1/models", json={"name": "x", "type": "  "})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+# ---------- 状态流转 ----------
+
+
+def test_patch_version_status_flow(
+    override_get_session, override_get_current_user
+) -> None:
+    # 生产候选 → 实验版本
+    resp = client.patch("/api/v1/models/1/versions/1", json={"status": "实验版本"})
+    assert resp.status_code == 200, resp.text[:300]
+    assert resp.json()["data"]["status"] == "实验版本"
+
+    # 实验版本 → 生产候选（带 note，note 不落库但接口接受）
+    resp = client.patch(
+        "/api/v1/models/1/versions/1",
+        json={"status": "生产候选", "note": "跨板材验证通过"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data"]["status"] == "生产候选"
+
+    # 非法状态 → 400（白名单 生产候选/训练中/实验版本）
+    resp = client.patch("/api/v1/models/1/versions/1", json={"status": "已上线"})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+    # 落库确认
+    data = client.get("/api/v1/models/1").json()["data"]
+    assert data["versions"][0]["status"] == "生产候选"
+
+
+# ---------- 训练任务（端到端） ----------
+
+
+def test_training_end_to_end(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    # dataset_version_id=1（seed 焊接缺陷检测集 v1.3），base_model_id=1（焊接异常检测模型 v1.8）
+    resp = client.post(
+        "/api/v1/training-tasks",
+        json={
+            "dataset_version_id": 1,
+            "base_model_id": 1,
+            "epochs": 20,
+            "batch_size": 16,
+            "learning_rate": 0.001,
+            "val_ratio": 0.2,
+            "optimizer": "adamw",  # 高级参数 → hyperparams
+        },
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+    assert job_id.startswith("job_")
+
+    pending = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+    assert pending["type"] == "training" and pending["status"] == "pending"
+
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/training-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    assert done["progress"] == 100
+    result = done["result"]
+    metrics = result["metrics"]
+    assert set(metrics) == {"mAP50", "precision", "recall"}
+    assert 0.9 <= metrics["mAP50"] <= 0.99
+    assert 0.9 <= metrics["precision"] <= 0.99
+    assert 0.9 <= metrics["recall"] <= 0.99
+    loss_curve = result["loss_curve"]
+    assert set(loss_curve) == {"train", "val"}
+    assert len(loss_curve["train"]) == 20 and len(loss_curve["val"]) == 20
+    assert "model_version" in result
+    assert result["model_version"]["status"] == "实验版本"
+
+    with Session(db_engine) as session:
+        job_row = session.exec(select(Job).where(Job.job_uid == job_id)).first()
+        assert job_row is not None
+        task = session.exec(
+            select(TrainingTask).where(TrainingTask.job_id == job_row.id)
+        ).first()
+        assert task is not None
+        assert task.hyperparams["epochs"] == 20 and task.hyperparams["optimizer"] == "adamw"
+        assert task.metrics == metrics and task.loss_curve == loss_curve
+
+        # 训练成功自动生成 model_versions：实验版本、挂 base model（model 1）、版本号 +1
+        mv = session.exec(
+            select(ModelVersion)
+            .where(ModelVersion.model_id == 1)
+            .order_by(ModelVersion.id.desc())
+        ).first()
+        assert mv is not None and mv.version_no == "v1.9"
+        assert mv.status == "实验版本"
+        assert mv.metric == metrics
+        assert mv.file_key == f"models/{mv.id}/weights.pt"
+
+    # 权重占位已写 MinIO（假存储记录）
+    keys = [key for key, *_ in fake_storage.uploads]
+    assert any(key.endswith("weights.pt") for key in keys), keys
+
+    # 模型仓库最新版本已更新为 v1.9
+    models = client.get("/api/v1/models").json()["data"]["models"]
+    by_name = {m["name"]: m for m in models}
+    assert by_name[SEED_MODEL_1]["version"] == "v1.9"
+    assert by_name[SEED_MODEL_1]["status"] == "实验版本"
+    assert by_name[SEED_MODEL_1]["metric"] == metrics
+
+
+def test_training_without_base_model_creates_new_model(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    """无 base_model_id → 自动新建 Model，训练产出版本挂到新模型。"""
+    resp = client.post(
+        "/api/v1/training-tasks", json={"dataset_version_id": 1, "epochs": 10}
+    )
+    assert resp.status_code == 200
+    job_id = resp.json()["data"]["job_id"]
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/training-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    assert done["result"]["model_version"]["status"] == "实验版本"
+
+    with Session(db_engine) as session:
+        models = session.exec(select(Model).order_by(Model.id)).all()
+        assert len(models) == 4  # 3 seed + 1 自动新建
+        auto = models[-1]
+        assert auto.name.startswith("训练模型-")
+        mv = session.exec(
+            select(ModelVersion).where(ModelVersion.model_id == auto.id)
+        ).first()
+        assert mv is not None and mv.status == "实验版本"
+        assert mv.file_key == f"models/{mv.id}/weights.pt"
+
+
+def test_training_logs(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    resp = client.post(
+        "/api/v1/training-tasks",
+        json={"dataset_version_id": 1, "base_model_id": 1, "epochs": 20},
+    )
+    job_id = resp.json()["data"]["job_id"]
+
+    # 执行前：初始化日志可用
+    resp = client.get(f"/api/v1/training-tasks/{job_id}/logs")
+    assert resp.status_code == 200
+    before = resp.json()["data"]
+    assert isinstance(before, str) and "初始化" in before
+    assert "epochs=20" in before
+
+    run_job(job_id)
+
+    resp = client.get(f"/api/v1/training-tasks/{job_id}/logs")
+    after = resp.json()["data"]
+    assert "Epoch 1/20" in after
+    assert "Epoch 20/20" in after
+    assert "mAP50" in after and "模型已保存" in after
+
+
+# ---------- 测试任务（端到端） ----------
+
+
+def test_test_task_end_to_end(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    resp = client.post(
+        "/api/v1/test-tasks",
+        json={"model_version_id": 1, "dataset_version_id": 1, "tasks": ["异常分类"]},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+    assert job_id.startswith("job_")
+
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/test-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    result = done["result"]
+    assert result["confusion_matrix"] == [[612, 18], [22, 596]]
+    metrics = result["metrics"]
+    assert metrics["accuracy"] == 0.968
+    assert metrics["recall"] == 0.942
+    assert metrics["f1"] == 0.955
+    assert metrics["latency_ms"] == 18
+
+    with Session(db_engine) as session:
+        from app.models import TestTask
+
+        job_row = session.exec(select(Job).where(Job.job_uid == job_id)).first()
+        task = session.exec(select(TestTask).where(TestTask.job_id == job_row.id)).first()
+        assert task is not None
+        assert task.tasks == ["异常分类"]
+        assert task.confusion_matrix == [[612, 18], [22, 596]]
+        assert task.metrics["accuracy"] == 0.968
+
+
+# ---------- 推理任务（端到端） ----------
+
+
+def test_inference_task_end_to_end(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    resp = client.post(
+        "/api/v1/inference-tasks",
+        json={"model_version_id": 1, "input": "uploads/abc/img.jpg", "input_type": "image"},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+    assert job_id.startswith("job_")
+
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/inference-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    result = done["result"]
+    assert isinstance(result["boxes"], list) and len(result["boxes"]) >= 1
+    for box in result["boxes"]:
+        assert len(box) == 4 and all(isinstance(v, (int, float)) for v in box)
+    assert isinstance(result["categories"], list)
+    assert len(result["categories"]) == len(result["boxes"])
+    assert len(result["confidence"]) == len(result["boxes"])
+    assert all(0.0 <= c <= 1.0 for c in result["confidence"])
+    assert isinstance(result["latency_ms"], int) and result["latency_ms"] > 0
+
+    with Session(db_engine) as session:
+        from app.models import InferenceTask
+
+        job_row = session.exec(select(Job).where(Job.job_uid == job_id)).first()
+        task = session.exec(
+            select(InferenceTask).where(InferenceTask.job_id == job_row.id)
+        ).first()
+        assert task is not None
+        assert task.input_key == "uploads/abc/img.jpg" and task.input_type == "image"
+        assert task.result == result
+
+
+# ---------- 404 / 400 ----------
+
+
+def test_models_404(override_get_session, override_get_current_user) -> None:
+    assert client.get("/api/v1/models/999999").status_code == 404
+    assert client.post("/api/v1/models/999999").status_code == 405  # 无此 POST 路由
+
+    # 模型不存在 / 版本不存在 / 跨模型版本 → 404
+    resp = client.patch("/api/v1/models/999999/versions/1", json={"status": "实验版本"})
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.patch("/api/v1/models/1/versions/999999", json={"status": "实验版本"})
+    assert resp.status_code == 404 and resp.json()["code"] == 40402
+    resp = client.patch("/api/v1/models/1/versions/2", json={"status": "实验版本"})  # v2 属 model 2
+    assert resp.status_code == 404 and resp.json()["code"] == 40402
+
+    # 任务轮询 / 日志：未知 job_uid → 404
+    for path in [
+        "/api/v1/training-tasks/unknown_job",
+        "/api/v1/training-tasks/unknown_job/logs",
+        "/api/v1/test-tasks/unknown_job",
+        "/api/v1/inference-tasks/unknown_job",
+    ]:
+        resp = client.get(path)
+        assert resp.status_code == 404 and resp.json()["code"] == 40401, path
+
+    # 训练：数据集版本/基础模型版本不存在 → 404
+    resp = client.post("/api/v1/training-tasks", json={"dataset_version_id": 999999})
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.post(
+        "/api/v1/training-tasks", json={"dataset_version_id": 1, "base_model_id": 999999}
+    )
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+
+    # 测试 / 推理：模型版本/数据集版本不存在 → 404；空输入 → 400
+    resp = client.post("/api/v1/test-tasks", json={"model_version_id": 999999, "dataset_version_id": 1})
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.post("/api/v1/test-tasks", json={"model_version_id": 1, "dataset_version_id": 999999})
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.post("/api/v1/inference-tasks", json={"model_version_id": 999999, "input": "x", "input_type": "image"})
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.post("/api/v1/inference-tasks", json={"model_version_id": 1, "input": " ", "input_type": "image"})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+# ---------- 失败：handler 抛异常 → job failed ----------
+
+
+def test_training_job_failure_records_error(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    def _boom(_job_id, _session):
+        raise RuntimeError("模拟训练崩溃")
+
+    monkeypatch.setitem(executor_mod.HANDLERS, "training", _boom)
+    resp = client.post(
+        "/api/v1/training-tasks", json={"dataset_version_id": 1, "base_model_id": 1}
+    )
+    job_id = resp.json()["data"]["job_id"]
+    run_job(job_id)
+    data = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+    assert data["status"] == "failed"
+    assert data["error"] == {"message": "模拟训练崩溃"}
+
+
+# ---------- 未登录 ----------
+
+
+def test_models_endpoints_require_login(db_engine, override_get_session) -> None:
+    # 不 override get_current_user：无 Authorization 头 → 401（认证在业务逻辑前抛）。
+    cases = [
+        ("get", "/api/v1/models", None),
+        ("get", "/api/v1/models/1", None),
+        ("post", "/api/v1/models", {"name": "x", "type": "目标检测"}),
+        ("patch", "/api/v1/models/1/versions/1", {"status": "实验版本"}),
+        ("post", "/api/v1/training-tasks", {"dataset_version_id": 1}),
+        ("get", "/api/v1/training-tasks/job_x", None),
+        ("get", "/api/v1/training-tasks/job_x/logs", None),
+        ("post", "/api/v1/test-tasks", {"model_version_id": 1, "dataset_version_id": 1}),
+        ("get", "/api/v1/test-tasks/job_x", None),
+        (
+            "post",
+            "/api/v1/inference-tasks",
+            {"model_version_id": 1, "input": "x", "input_type": "image"},
+        ),
+        ("get", "/api/v1/inference-tasks/job_x", None),
+    ]
+    for method, path, body in cases:
+        resp = client.request(method, path, json=body)
+        assert resp.status_code == 401, f"{method} {path}: {resp.text[:200]}"
+        assert resp.json()["code"] == 40100

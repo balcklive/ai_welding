@@ -1,8 +1,9 @@
 # CLAUDE.md — backend/app/jobs/
 
-Job 执行器与各域 handler（Task 13 ~ Task 15）。导入本包即完成 handler 注册
+Job 执行器与各域 handler（Task 13 ~ Task 16）。导入本包即完成 handler 注册
 （`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py` /
-`app/jobs/dataset_build.py`，各模块级 `@register_handler(...)` 填充 `executor.HANDLERS`）。
+`app/jobs/dataset_build.py` / `app/jobs/training.py` / `app/jobs/testing.py` /
+`app/jobs/inference.py`，各模块级 `@register_handler(...)` 填充 `executor.HANDLERS`）。
 新增域任务（split/annotation/dataset_build/training...）在本包加一个 `xxx.py` 注册即可，
 executor 无需改动。
 
@@ -45,6 +46,18 @@ executor 无需改动。
   回填 dataset_versions + datasets → job.result `{item_count, split, quality, snapshot_id}`）。
   **完整来源（type + 各 id）随创建时 `Job.result={"source":...}` 携带**——`dataset_build_tasks.source`
   仅 VARCHAR(32) 存类型字符串（契约 §3.22），handler 从 `job.result` 读全量来源。
+- `training.py`：**Task 16**。`handle(job_id, session)`（`@register_handler("training")`）→
+  `app.services.models.run_training`（进度逐步 → 确定性指标/损失曲线 → **同事务生成
+  `model_versions`（status=实验版本，挂 base 模型或自动新建 Model）+ 权重占位写 MinIO
+  `models/{id}/weights.pt` 尽力而为** → 回填 training_tasks.metrics/loss_curve →
+  job.result `{metrics, loss_curve, model_version}`）。
+- `testing.py`：**Task 16**。`handle(job_id, session)`（`@register_handler("test")`）→
+  `app.services.models.run_test`（进度逐步 → metrics `{accuracy 0.968, recall 0.942, f1 0.955,
+  latency_ms 18}` + confusion_matrix `[[612,18],[22,596]]` → 回填 test_tasks →
+  job.result `{metrics, confusion_matrix}`）。
+- `inference.py`：**Task 16**。`handle(job_id, session)`（`@register_handler("inference")`）→
+  `app.services.models.run_inference`（进度逐步 → 确定性 boxes/categories/confidence/latency_ms
+  （seed=task.id）→ 回填 inference_tasks.result → job.result 同款）。
 
 ## 坑/限制
 

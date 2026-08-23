@@ -89,7 +89,29 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     状态经通用 `GET /jobs/{job_id}` 轮询）。
   - `GET /datasets/{dataset_id}/lineage`（4 层节点）。
   - 错误码：40401=数据集/版本不存在、40402=版本不属于该数据集、40900=同名冲突、40000=参数。
-- `models.py`：占位（`# filled in Task 16`）。模型 + 训练/测试/推理。
+- `models.py`：**Task 16 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+  统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.6，业务逻辑在
+  `app.services.models`：
+  - `GET /models`（列表 + 汇总 `{summary:{total, prod_candidates, recent_training, gpu_usage=42},
+    models[]}`，models 含最新版本号/指标/状态/权重键）、`GET /models/{model_id}`（详情 +
+    版本列表）、`POST /models`（body `{name, type, description?}`，同名 → 40900，空名/空类型 →
+    40000）、`PATCH /models/{model_id}/versions/{vid}`（body `{status?, note?}`，status 白名单
+    生产候选/训练中/实验版本 → 40000；**note 无对应列仅接受不落库**；模型不存在 40401、版本
+    不属于该模型 40402）。
+  - `POST /training-tasks`（**异步**：body `{dataset_version_id, base_model_id?, epochs,
+    batch_size, learning_rate, val_ratio, ...高级参数}`，`extra=allow` 收集高级参数进
+    hyperparams；数据集版本/基础模型版本不存在 → 40401；同事务建 pending Job(type=training) +
+    `training_tasks` 行 → `{job_id}`）、`GET /training-tasks/{task_id}`（Job 信封，result 内嵌
+    metrics/loss_curve/model_version）、`GET /training-tasks/{task_id}/logs`（确定性日志文本）。
+  - `POST /test-tasks`（body `{model_version_id, dataset_version_id, tasks[]}` → `{job_id}`）、
+    `GET /test-tasks/{task_id}`（Job 信封，result 内嵌 metrics + confusion_matrix 2×2）。
+  - `POST /inference-tasks`（body `{model_version_id, input, input_type}` → `{job_id}`，
+    空 input/input_type → 40000）、`GET /inference-tasks/{task_id}`（Job 信封，result 内嵌
+    boxes/categories/confidence/latency_ms）。
+  - 坑：各域 `{task_id}` 均为 job_uid（`get_job_by_uid`）；GET 在任务未执行/失败时保持
+    result=null，域字段（metrics/loss_curve/confusion_matrix/result）仅在 succeeded 后从
+    任务表合并进 result（对齐 alignment-tasks 模式）。错误码：40401=模型/任务/数据集版本/
+    模型版本不存在、40402=版本不属于该模型、40900=同名冲突、40000=参数。
 - `files.py`：**Task 9 已实现**。router `prefix="/files"`（完整路径 `/api/v1/files/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点：
   - `POST /upload`（multipart `file`，小文件 <100MB 后端代理）：object_key 前缀
