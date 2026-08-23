@@ -95,7 +95,7 @@ aiwelding/  (桶)
 | 位置 | 对接点 |
 |---|---|
 | API | `POST /files/upload`、`GET /files/{key}/url`（清单 §3.7）；`POST /files/presign-upload`（本文档扩展） |
-| 数据库 | `samples.object_keys`、`model_versions.file_key`、`dataset_versions.snapshot_id`、`inference_tasks.input_key` 存的就是本文档的对象键 |
-| 登记上传 | 登记表单的原始文件 → `raw/{registration_no}/...` |
+| 数据库 | `data_versions.object_keys`（v1.0 原始文件）、`samples.object_keys`、`model_versions.file_key`、`dataset_versions.snapshot_id`、`inference_tasks.input_key` 存的就是本文档的对象键 |
+| 登记上传 | 登记表单的原始文件 → `raw/{registration_no}/...`；上传后经 `POST /registrations/{id}/raw-files` 把 object_key 挂到 v1.0 原始数据版本（存 `data_versions.object_keys`） |
 
 > 一致性：所有对象键一律以本文档前缀体系为准；数据库字段与接口参数只引用 `object_key` 字符串。

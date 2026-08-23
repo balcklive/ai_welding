@@ -49,7 +49,7 @@
 - **筛选一律服务端执行**：关键词、数据来源、焊机品牌、核验状态等作为 query 参数（遵守 README 既定规则，前端不做全量过滤）。
 
 ### 1.5 异步任务（统一 Job 模型）
-- 重算接口（对齐 / 切分 / 数据集构建 / 训练 / 测试 / 推理）统一流程：
+- 重算接口（对齐 / 切分 / 标注任务创建 / 数据集构建 / 训练 / 测试 / 推理）统一流程：
   `POST` 创建 → 返回 `{ job_id }` → 前端轮询状态。
 - 统一状态结构：
 
@@ -84,13 +84,14 @@
 | 实体 | 说明 | 关键字段 |
 |---|---|---|
 | `User` | 用户（暂不细分角色） | id, username, display_name, role, avatar |
-| `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, product, modalities, quality, latest_version_id |
-| `DataVersion` | 数据版本（原始/去噪/对齐/人工修正…） | id, weld_id, version_no, action, operator, created_at, note |
+| `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, product, modalities, quality, operator, storage_bytes, latest_version_id |
+| `DataVersion` | 数据版本（原始/去噪/对齐/人工修正…） | id, weld_id, version_no, action, operator, object_keys[], created_at, note |
 | `ValidationReport` | 数据核验报告 | id, version_id, score, passed, warning, failed, duration, rules[] |
 | `ValidationRule` | 核验规则结果（15 项） | name, status(passed/warning/failed), message |
 | `AlignmentTask` | 多模态对齐任务（Job） | id, version_id, status, events{arc, weld_segment, tail}, tracks[] |
 | `SplitTask` | 数据切分任务（Job） | id, version_id, status, rules, sample_count |
-| `Sample` | 切分样本 | id, task_id, object_keys[], frame_no, annotations[] |
+| `AnnotationTask` | 标注任务（Job：从切分样本/手动选样生成） | id, job_id, split_task_id, name, status, progress |
+| `Sample` | 切分样本 | id, task_id, annotation_task_id, object_keys[], frame_no, annotations[] |
 | `Annotation` | 标注结果 | sample_id, labels[{category, box, confidence}], annotator, updated_at |
 | `LabelCategory` | 缺陷标签类别 | name（焊瘤/气孔/未熔合/咬边/正常） |
 | `FeatureExtraction` | 特征提取结果 | id, version_id, ts_features, vision_features, audio_features, unified_vector{dims, groups}, normalization, format |
@@ -127,11 +128,12 @@
 
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
-| GET | `/api/v1/welds` | 数据列表：服务端分页+筛选，按焊缝 ID 去重、仅最新版本 | query: `q`(关键词:焊缝ID/登记编号), `source`, `brand`, `status`(通过/待复核/异常), `tab`(全部最新/待核验/已归档), `page`, `page_size` |
+| GET | `/api/v1/welds` | 数据列表：服务端分页+筛选，按焊缝 ID 去重、仅最新版本 | query: `q`(关键词:焊缝ID/登记编号), `source`, `brand`, `status`(通过/待复核/异常), `tab`(全部最新/待核验/已归档/最近), `page`, `page_size` |
 | GET | `/api/v1/welds/{weld_id}` | 单条焊缝详情（来源/焊机/模态/核验状态/最新版本） | — 需登录 |
-| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号 | body: `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate` |
+| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`（`operator` 由服务端取当前登录用户） |
 | GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
 | PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息 | body 同 POST（部分字段可选） |
+| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys` 与记录容量） | body: `object_keys[]` |
 | GET | `/api/v1/welds/{weld_id}/versions` | 版本链（v1.0~v1.3 + 操作人/时间/动作） | — 需登录 |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}` | 单个版本详情 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/validation` | 执行核验（同步，15 项规则），返回质量评分+通过/警告/失败计数 | — 需登录 |
@@ -145,11 +147,13 @@
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/alignment-tasks` | 提交多模态对齐任务（**异步**） | body: `modalities[]` |
 | GET | `/api/v1/alignment-tasks/{task_id}` | 对齐任务状态/结果：时间轴、起弧/有效段/收弧事件、各模态轨道 | 轮询（Job 结构） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形（电流/电压/气体/送丝） | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2` |
-| GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/{mode}` | 单视图分析数据：`mode` ∈ `psd\|stft\|dwt\|wavelet\|phase\|pdd` | query: `channel` |
+| GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/{mode}` | 单视图分析数据：`mode` ∈ `psd\|stft\|dwt\|wavelet\|phase\|pdd` | query: `channel`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`（可选，滤波后计算，与信号页滤波联动） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/result` | AI 异常检测结果：焊接稳定度、正常/电弧不稳/飞溅比例、异常区段列表 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交数据切分任务（**异步**） | body: `fixed_rate`(帧/样本), `keep_event_buffer`(±s), `task_format`(目标检测/图像分类/语义分割/时序分类) |
 | GET | `/api/v1/split-tasks/{task_id}` | 切分任务状态/结果（生成样本数） | 轮询（Job 结构） |
 | GET | `/api/v1/label-categories` | 缺陷标签类别（焊瘤/气孔/未熔合/咬边/正常） | 需登录 |
+| POST | `/api/v1/annotation-tasks` | 创建标注任务（**异步**：从切分样本/手动选样生成，返回 `{ job_id }`） | body: `source`(`split_task` / `manual`), `split_task_id?`, `name?` |
+| POST | `/api/v1/annotation-tasks/{task_id}/import` | 导入额外样本到标注任务（补充文件或其它切分任务样本） | body: `source`(`files` / `split_task`), `object_keys[]?`, `split_task_id?` |
 | GET | `/api/v1/annotation-tasks/{task_id}/samples` | 标注样本列表（分页，如样本 0248/1209） | query: `page`, `page_size` |
 | GET | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}` | 单个样本详情（图像/信号 + 现有标注） | — 需登录 |
 | POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/ai-pretag` | AI 预标注（同步）：返回疑似缺陷区域+置信度 | 需登录 |
@@ -234,8 +238,9 @@ getProjects(): Promise<Project[]>
 // welds.ts
 listWelds(params: WeldListQuery): Promise<Page<DataRecord>>          // GET /welds
 getWeld(weldId: string): Promise<DataRecord>                          // GET /welds/{weld_id}
-createRegistration(body: RegistrationForm): Promise<Registration>     // POST /registrations
+createRegistration(body: RegistrationForm): Promise<Registration>     // POST /registrations（同时生成 v1.0 原始数据版本）
 updateRegistration(id: string, body: Partial<RegistrationForm>): Promise<Registration>
+attachRawFiles(id: string, objectKeys: string[]): Promise<DataVersion> // POST /registrations/{id}/raw-files
 getRegistration(id: string): Promise<Registration>                    // GET /registrations/{id}
 listVersions(weldId: string): Promise<DataVersion[]>                  // GET /welds/{id}/versions
 getVersion(weldId: string, versionId: string): Promise<DataVersion>   // GET /welds/{id}/versions/{version_id}
@@ -247,11 +252,13 @@ listCandidates(): Promise<DataRecord[]>
 createAlignmentTask(weldId: string, versionId: string, modalities: string[]): Promise<{ job_id: string }>
 getAlignmentTask(taskId: string): Promise<Job<AlignmentResult>>
 getSignals(weldId: string, versionId: string, opts: SignalQuery): Promise<SignalData>
-getAnalysisMode(weldId: string, versionId: string, mode: AnalysisMode, channel: string): Promise<AnalysisViewData>
+getAnalysisMode(weldId: string, versionId: string, mode: AnalysisMode, channel: string, filter?: { type: '低通'|'高通'|'带通'; cutoff: number; cutoff2?: number }): Promise<AnalysisViewData>
 getAnalysisResult(weldId: string, versionId: string): Promise<AnalysisResult>
 createSplitTask(weldId: string, versionId: string, rules: SplitRules): Promise<{ job_id: string }>
 getSplitTask(taskId: string): Promise<Job<SplitResult>>
 listLabelCategories(): Promise<LabelCategory[]>
+createAnnotationTask(body: { source: 'split_task' | 'manual'; split_task_id?: string; name?: string }): Promise<{ job_id: string }>
+importAnnotationSamples(taskId: string, body: { source: 'files' | 'split_task'; object_keys?: string[]; split_task_id?: string }): Promise<void>
 listAnnotationSamples(taskId: string, page: number): Promise<Page<Sample>>
 getAnnotationSample(taskId: string, sampleId: string): Promise<Sample>
 aiPretag(taskId: string, sampleId: string): Promise<Annotation[]>
@@ -312,8 +319,9 @@ exportReport(body: ExportRequest): Promise<{ url: string }>
 | 数据列表 · 筛选/分页/去重 | `welds.listWelds(params)` | `GET /welds` |
 | 数据列表 · 选中数据上下文 | `welds.getWeld(id)` | `GET /welds/{weld_id}` |
 | 数据登记 · 新建/编辑 | `welds.createRegistration()` `updateRegistration()` | `POST` / `PATCH /registrations` |
-| 数据登记 · 原始文件上传 | `files.uploadFile()` | `POST /files/upload` |
-| 数据登记 · 最近登记列表 | `welds.listWelds(tab=最近)` | `GET /welds` |
+| 数据登记 · 原始文件上传 | `files.uploadFile()` / `files.presignUpload()` | `POST /files/upload` / `POST /files/presign-upload` |
+| 数据登记 · 原始文件挂载到 v1.0 版本 | `welds.attachRawFiles()` | `POST /registrations/{id}/raw-files` |
+| 数据登记 · 最近登记列表 | `welds.listWelds({ tab: 'recent' })` | `GET /welds?tab=recent` |
 | 数据核验 · 执行 | `welds.runValidation()` | `POST …/validation` |
 | 数据核验 · 15 规则明细 | `welds.getValidation()` | `GET …/validation` |
 | 数据版本 · 版本链 | `welds.listVersions()` | `GET /welds/{weld_id}/versions` |
@@ -321,9 +329,11 @@ exportReport(body: ExportRequest): Promise<{ url: string }>
 | 对齐 · 时间轴/事件/轨道 | `analysis.createAlignmentTask()` + `useJob(getAlignmentTask)` | `POST` / `GET …/alignment-tasks` |
 | 切分 · 规则/预览/样本数 | `analysis.createSplitTask()` + `useJob(getSplitTask)` | `POST` / `GET …/split-tasks` |
 | 信号分析 · 时域波形+滤波 | `analysis.getSignals()` | `GET …/signals` |
-| 信号分析 · PSD/STFT/DWT/小波/相图/PDD | `analysis.getAnalysisMode(mode)` | `GET …/analysis/{mode}` |
+| 信号分析 · PSD/STFT/DWT/小波/相图/PDD | `analysis.getAnalysisMode(mode, channel, filter?)` | `GET …/analysis/{mode}`（支持滤波参数） |
 | 信号分析 · 异常区段/稳定度 | `analysis.getAnalysisResult()` | `GET …/analysis/result` |
 | 标注 · 标签类别 | `analysis.listLabelCategories()` | `GET /label-categories` |
+| 标注 · 创建任务 | `analysis.createAnnotationTask()` | `POST /annotation-tasks` |
+| 标注 · 导入样本 | `analysis.importAnnotationSamples()` | `POST …/import` |
 | 标注 · 样本列表/详情 | `analysis.listAnnotationSamples()` `getAnnotationSample()` | `GET …/samples(/{id})` |
 | 标注 · AI 预标注 | `analysis.aiPretag()` | `POST …/ai-pretag` |
 | 标注 · 保存/更新 | `analysis.saveAnnotation()` | `POST …/labels` |
@@ -361,7 +371,7 @@ pending ──► running ──► succeeded
 | 方式 | 接口 |
 |---|---|
 | 同步 | 登录、总览统计、列表/详情查询、登记增改、核验、信号分析、特征提取、AI 预标注、标注保存、上传、导出、通用轮询 |
-| 异步（Job） | 多模态对齐、数据切分、数据集构建、模型训练、模型测试、推理 |
+| 异步（Job） | 多模态对齐、数据切分、标注任务创建、数据集构建、模型训练、模型测试、推理 |
 
 ### 6.3 预留项（本期不实现，文档中占位）
 
