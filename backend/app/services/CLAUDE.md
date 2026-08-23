@@ -17,11 +17,15 @@
   - `to_job_payload(job) -> dict`：输出 §1.5 的 Job JSON
     `{id, type, status, progress, result, error, created_at, finished_at}`；`id` = `job_uid`；
     时间为 ISO-8601 UTC 字符串（`...Z`，内部 `_iso_utc`）；result/error 原样透传（None/dict，JSON 安全）。
+  - `_iso_utc(dt) -> str | None`：时间序列化。**naive datetime 一律按 UTC 补 tzinfo 再转换**
+    （SQLite/MySQL 读回时 tzinfo 被剥离，naive 即 UTC），避免 `astimezone` 按系统本地时区偏移。
 
 ## 坑/限制
 
-- **commit 归属**：本服务所有写操作**不 commit**，只 flush/改内存属性。调用方必须自行 commit
-  （如路由 `Depends(get_session)` 的 session 由请求上下文 commit/close），否则数据不落库。
+- **commit 归属**：本服务所有写操作**不 commit**，只 flush/改内存属性。**commit 永远是调用方的职责**，
+  不显式 commit 则数据不落库。特别注意：路由 `Depends(get_session)` 的请求 session
+  （`core/db.py` 的 `get_session`）退出时**只 `close()`，不 commit**——`Session.close()` 会回滚
+  未提交事务；因此路由若在响应前改了 job 状态（如异步执行器回调建/转 job），必须显式 `session.commit()`。
   测试 `tests/test_jobs.py::test_create_job_does_not_commit` 用 rollback 验证该约定。
 - 状态机仅 `pending → running → succeeded | failed`（§6.1），服务层不做状态校验（幂等粗粒度），
   跨状态调用（如未 running 直接 succeeded）由调用方约定。

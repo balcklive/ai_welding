@@ -9,6 +9,8 @@
 GET 200 信封 / 未知 uid 404 / 未登录 401。
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -175,6 +177,26 @@ def test_to_job_payload_pending_times(db_session) -> None:
     assert payload["error"] is None
     assert payload["finished_at"] is None
     assert payload["created_at"].endswith("Z")
+
+
+def test_iso_utc_naive_datetime_treated_as_utc() -> None:
+    """naive datetime（SQLite/MySQL 读回时 tzinfo 被剥离）按 UTC 处理，不被系统时区偏移。"""
+    from app.services.jobs import _iso_utc
+
+    # naive 即 UTC：不因主机非 UTC 时区产生偏移
+    naive = datetime(2026, 8, 23, 9, 42, 0)
+    assert _iso_utc(naive) == "2026-08-23T09:42:00Z"
+
+    # aware UTC 与 naive 同刻输出一致
+    aware = datetime(2026, 8, 23, 9, 42, 0, tzinfo=timezone.utc)
+    assert _iso_utc(aware) == "2026-08-23T09:42:00Z"
+
+    # 非 UTC 时区 aware 值先转 UTC 再输出
+    shifted = datetime(2026, 8, 23, 17, 42, 0, tzinfo=timezone(timedelta(hours=8)))
+    assert _iso_utc(shifted) == "2026-08-23T09:42:00Z"
+
+    # None 透传
+    assert _iso_utc(None) is None
 
 
 # ---------- 端点：GET /jobs/{job_id} ----------

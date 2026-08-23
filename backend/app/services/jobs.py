@@ -75,9 +75,16 @@ def to_job_payload(job: Job) -> dict:
 
 
 def _iso_utc(dt: datetime | None) -> str | None:
-    """datetime → ISO-8601 UTC 字符串（秒级 `2026-08-23T09:42:00Z`）；None 透传。"""
+    """datetime → ISO-8601 UTC 字符串（秒级 `2026-08-23T09:42:00Z`）；None 透传。
+
+    服务写入的一律是 UTC aware 时间，但 SQLite / MySQL `DATETIME(timezone=True)` 读回时
+    会剥离 tzinfo（变成 naive）。naive 值即 UTC，故先补上 UTC tzinfo 再 `astimezone`，
+    否则 `astimezone` 会把 naive 当系统本地时区换算，在非 UTC 主机上产生时间偏移。
+    """
     if dt is None:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
     return (
         dt.astimezone(timezone.utc)
         .replace(microsecond=0)
