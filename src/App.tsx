@@ -208,8 +208,25 @@ const mockWeldingMachines = ['Fronius CMT', 'Kemppi Minarc', 'OTC FD-V8', 'Panas
 // ── 总览/数据列表 API 接线辅助（Task 21） ─────────────────────────────
 /** 分布/缺陷统一色调板（复用 mock 常量 tone，API 数据按序取色）。 */
 const donutPalette = ['#2c9caf', '#5fb8a6', '#f0a34a', '#e88d6c', '#7ba7c4', '#b0c4b8'];
+/**
+ * 把后端返回的原始记录数归一化为百分比（和恒为 100，DonutChart 中心/图例带 %）。
+ * 用最大余数法分配取整误差，避免 round 后总和漂移（如 33/33/33=99）。
+ */
 function toDonut(items: { name: string; value: number }[]): { name: string; value: number; tone: string }[] {
-  return items.map((item, index) => ({ ...item, tone: donutPalette[index % donutPalette.length] }));
+  const total = items.reduce((sum, item) => sum + item.value, 0) || 1;
+  const floored = items.map((item) => Math.floor((item.value / total) * 100));
+  let remainder = 100 - floored.reduce((sum, v) => sum + v, 0);
+  const byFraction = items
+    .map((item, i) => ({ i, frac: (item.value / total) * 100 - Math.floor((item.value / total) * 100) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; k < byFraction.length && remainder > 0; k += 1, remainder -= 1) {
+    floored[byFraction[k].i] += 1;
+  }
+  return items.map((item, index) => ({
+    ...item,
+    value: floored[index],
+    tone: donutPalette[index % donutPalette.length],
+  }));
 }
 
 /** 多模态 token → 中文 label + icon + desc（契约 §3.2 modalities 原始 token）。 */
