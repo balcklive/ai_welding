@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/core/
 
-核心配置与基础设施。当前进度：Task 1（配置 + 日志中间件）+ Task 2（db 会话）+ Task 3（audit 写入）。
+核心配置与基础设施。当前进度：Task 1（配置 + 日志中间件）+ Task 2（db 会话）+ Task 3（audit 写入）+ Task 5（密码哈希 + JWT）。
 
 ## 脚本
 
@@ -9,6 +9,7 @@
 - `logging.py`：`setup_logging()`（loguru 控制台 + 轮转文件）+ 纯 ASGI `AccessLogMiddleware`。
 - `db.py`：**Task 2**。模块级 `engine`（MySQL，`settings.mysql_url`，`pool_pre_ping=True`）、`SessionLocal`（`sessionmaker`，`expire_on_commit=False`）、`get_session()`（FastAPI 依赖，`yield` 一个 `Session`）。
 - `audit.py`：**Task 3**。`write_audit(session, user_id, action, resource_type, resource_id=None, detail=None)` 向 `audit_logs`（模型 `AuditLog`，§3.23）插一行，`created_at=datetime.now(timezone.utc)`（UTC aware）。**只 `session.add` + `session.flush`，不 commit**——由调用方统一 commit，保证审计与业务变更同事务。
+- `security.py`：**Task 5**。`hash_password(plain) -> str` / `verify_password(plain, hash) -> bool`（pwdlib `PasswordHash.recommended()`，Argon2）；`create_access_token(user: User) -> str`（PyJWT HS256，`sub=str(user.id)`，`exp = now + access_token_expire_minutes`，`iat` 已设）；`decode_token(token) -> int`（返回 user id，失败抛 `jwt.PyJWTError`/`ValueError`）。**坑：** pwdlib `verify` 对无法识别的哈希格式（如测试里随手填的 `"hash"`）会抛 `UnknownHashError`，`verify_password` 统一捕获按不匹配处理，避免坏哈希让登录 500。
 
 ## 坑/限制
 

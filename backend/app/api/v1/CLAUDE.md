@@ -6,7 +6,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 
 - `__init__.py`：空包。
 - `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 9 个域 router。新增域时在此追加 import + include_router。
-- `auth.py`：占位（`# filled in Task 5`）。JWT 认证 + login/me。
+- `auth.py`：**Task 5 已实现**。router `prefix="/auth"`（完整路径 `/api/v1/auth/login`、`/api/v1/auth/me`）。`POST /login` body `{username,password}` → 查 `users` 表校验 → `ok({access_token, token_type:"bearer", user:{id,username,display_name,role,avatar}})`；用户名/密码错 → `err(40100, "用户名或密码错误", status=401)`。`GET /me`（依赖 `api.deps.get_current_user`）→ `ok(user)`。`user_payload(user)` 暴露对外字段。
 - `dashboard.py`：占位（`# filled in Task 8`）。四个总览端点。
 - `welds.py`：占位（`# filled in Task 10`）。焊缝数据核心 CRUD。
 - `analysis.py`：占位（`# filled in Task 11`）。分析 + DSP 真实实现。
