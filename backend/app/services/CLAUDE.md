@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）+ Task 15（数据集服务）。
 
 ## 脚本
 
@@ -92,6 +92,29 @@
   `_sample_confidence` = 当前标注置信度均值（无标注 → None）。写操作（import/pretag/
   save_labels）**不 commit**（路由提交）；`simulate_annotation` 内的 commit 是执行器专用
   session 场景。
+- `datasets.py`：**Task 15**。数据集服务，供 `app/api/v1/datasets.py` 路由调用（契约 §3.5）：
+  - `next_dataset_no` = `DS-{类别}-{全局序号}`（类别 DEFECT/POOL/QUALITY 对齐 seed，序号 =
+    全库数据集数 + 1，避免与 seed 的全局序号 001/002/003 撞号）；`get_dataset_by_identifier`
+    兼容 DB id / dataset_no。
+  - `list_datasets`（批量预查当前版本防 N+1）/ `create_dataset`（同名抛 ValueError → 路由 409）/
+    `dataset_payload`；`get_dimensions` = 7 项输入维度 `{name, status(已具备|必需|缺失), required}`
+    （照 App.tsx inputDimensions/requiredByTask，可用性由当前版本样本 object_keys 启发式判定）；
+    `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）。
+  - `list_versions` / `create_version`（下一版本号 v1.<n>）/ `version_payload`；
+    **`name`/`note` 仅接受不落库**（`dataset_versions` 表 §3.15 无对应列）。
+  - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
+    空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
+    稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落
+    `dataset_items` → 计算 quality（repeat_rate/empty_label_rate/dimension_missing_rate）→
+    快照 JSON 写 MinIO `datasets/{version.id}/snapshot.json`（**尽力而为**，失败仅告警）→
+    回填 version + dataset（current_version_id/sample_count/status 可训练）。
+  - `get_lineage` = 4 层节点：原始焊缝 / 标注任务 / 数据集版本 / 模型训练。
+  - 解析辅助 `_sample_record_id`：样本 → 所属焊缝（meta.record_id > meta.weld_id > split_task/
+    annotation_task→version→record），按焊缝分组划分的依据。
+  - **坑**：完整构建来源（type + 各 id）由创建时随 `Job.result={"source":...}` 携带
+    （`dataset_build_tasks.source` 仅 VARCHAR(32) 存类型，契约 §3.22）；`_build_snapshot` 内
+    延迟 `from app.storage import get_storage`，测试 monkeypatch `app.storage.get_storage`；
+    `run_build` 内的进度 commit 是执行器专用 session 场景（同 alignment）。
 
 ## 坑/限制
 

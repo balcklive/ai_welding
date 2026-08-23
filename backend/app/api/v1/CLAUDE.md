@@ -73,7 +73,22 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     真实计算（scipy/pywt，非罐头数字）。
   - 坑：`/analysis/result` 是具体路径，必须在 `/analysis/{mode}` 之前注册（FastAPI 按顺序匹配）；
     `cutoff/cutoff2` 为 0~1 归一化频率（相对奈奎斯特）；错误码 40401/40402/40000。
-- `datasets.py`：占位（`# filled in Task 15`）。数据集 + 构建任务。
+- `datasets.py`：**Task 15 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+  统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.5，业务逻辑在
+  `app.services.datasets`：
+  - `GET /datasets`（列表，含当前版本号/划分/质量）、`POST /datasets`（body `{name, task,
+    source?}`，同名 → 40900，空名/空任务 → 40000）、`GET /datasets/{dataset_id}`（详情；
+    `dataset_id` 兼容 DB id / dataset_no，不存在 → 40401）。
+  - `GET /datasets/{dataset_id}/dimensions`（7 项 `{name, status, required}`）、
+    `GET /datasets/{dataset_id}/readiness`（`{readiness, checks[]}`）。
+  - `GET/POST /datasets/{dataset_id}/versions`（新建固定快照占位，下一版本号）、
+    `GET /datasets/{dataset_id}/versions/{version_id}`（版本不属于数据集 → 40402）。
+  - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks`（**异步**，body `{source}` =
+    DatasetSource 字典或类型字符串；类型白名单校验 → 40000；同事务建 pending Job +
+    `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
+    状态经通用 `GET /jobs/{job_id}` 轮询）。
+  - `GET /datasets/{dataset_id}/lineage`（4 层节点）。
+  - 错误码：40401=数据集/版本不存在、40402=版本不属于该数据集、40900=同名冲突、40000=参数。
 - `models.py`：占位（`# filled in Task 16`）。模型 + 训练/测试/推理。
 - `files.py`：**Task 9 已实现**。router `prefix="/files"`（完整路径 `/api/v1/files/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点：

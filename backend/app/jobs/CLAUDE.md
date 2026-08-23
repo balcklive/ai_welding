@@ -1,9 +1,10 @@
 # CLAUDE.md — backend/app/jobs/
 
-Job 执行器与各域 handler（Task 13 + Task 14）。导入本包即完成 handler 注册
-（`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py`，
-各模块级 `@register_handler(...)` 填充 `executor.HANDLERS`）。新增域任务（split/annotation/
-training...）在本包加一个 `xxx.py` 注册即可，executor 无需改动。
+Job 执行器与各域 handler（Task 13 ~ Task 15）。导入本包即完成 handler 注册
+（`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py` /
+`app/jobs/dataset_build.py`，各模块级 `@register_handler(...)` 填充 `executor.HANDLERS`）。
+新增域任务（split/annotation/dataset_build/training...）在本包加一个 `xxx.py` 注册即可，
+executor 无需改动。
 
 ## 脚本
 
@@ -38,6 +39,12 @@ training...）在本包加一个 `xxx.py` 注册即可，executor 无需改动�
   `app.services.annotation.simulate_annotation`（进度逐步 → 若 source=split_task 把该切分任务
   样本 `annotation_task_id` 指向本任务 → 回填 job.result `{source, name, samples_count}`）。
   AI 预标注/标注保存是**同步端点**，不经 handler。
+- `dataset_build.py`：**Task 15**。`handle(job_id, session)`（`@register_handler("dataset_build")`）→
+  `app.services.datasets.run_build`（进度逐步 → 按来源 gather 候选样本 → 空则兜底合成 →
+  按 record_id 分组 8:1:1 划分防泄漏 → 落 `dataset_items` → 计算 quality → 快照写 MinIO →
+  回填 dataset_versions + datasets → job.result `{item_count, split, quality, snapshot_id}`）。
+  **完整来源（type + 各 id）随创建时 `Job.result={"source":...}` 携带**——`dataset_build_tasks.source`
+  仅 VARCHAR(32) 存类型字符串（契约 §3.22），handler 从 `job.result` 读全量来源。
 
 ## 坑/限制
 
