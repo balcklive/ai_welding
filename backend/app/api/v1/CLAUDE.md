@@ -11,7 +11,21 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。四个端点
   `GET /stats`（统计卡）/ `GET /attributes`（属性面板）/ `GET /distributions`（分布图）/
   `GET /projects`（数据项目卡片）→ `ok(...)`。聚合逻辑在 `app.services.dashboard`。
-- `welds.py`：占位（`# filled in Task 10`）。焊缝数据核心 CRUD。
+- `welds.py`：**Task 10 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+  统一要求登录（完整路径 `/api/v1/*`），端点全覆盖 `docs/API接口清单.md` §3.3：
+  - `GET /welds`（query `q/source/brand/status/tab/page/page_size`，服务端筛选+分页，
+    按焊缝去重仅最新版本，返回 `paginate(...)` 载荷，item 含 `latest_version` 对象）；
+  - `GET /welds/{weld_id}` 详情（含最新版本）；
+  - `POST/GET/PATCH /registrations(/{registration_id})`（`registration_id` 兼容
+    DB id / registration_no / weld_id 三种标识，`get_record_by_identifier`）；
+  - `POST /registrations/{registration_id}/raw-files`（body `{object_keys[], storage_bytes?}`，
+    挂 v1.0 + 累加容量 + 推导 modalities）；
+  - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
+    `去噪处理|人工修正`，事务内 bump latest_version_id）；
+  - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
+    回写 `data_records.quality`，审计 validate）。
+  - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
+    错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
 - `analysis.py`：占位（`# filled in Task 11`）。分析 + DSP 真实实现。
 - `datasets.py`：占位（`# filled in Task 15`）。数据集 + 构建任务。
 - `models.py`：占位（`# filled in Task 16`）。模型 + 训练/测试/推理。

@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）。
 
 ## 脚本
 
@@ -28,6 +28,18 @@
   时间序列化复用 `jobs._iso_utc`（不重复造轮子）。**计数一律用单条 group_by 查询**
   （`_defect_counts` 按 category、`_weld_method_counts` 按 weld_method）汇总后查 dict，
   词表缺失默认 0，**避免 per-词条 N+1 查询**（评审发现并已修复）。
+- `welds.py`：**Task 10**。焊缝核心 CRUD，供 `app/api/v1/welds.py` 路由调用（契约 §3.3）。
+  提供：业务号生成器（`next_weld_id`/`next_registration_no` = 当日前缀计数+1 零填充、
+  `next_version_no` = 同焊缝最大次版本+1）；`create_registration`（事务内 record+v1.0+
+  latest 联动，modalities=[]/quality=待复核/operator=调用方）；`list_welds`（服务端筛选+
+  分页：`q` LIKE weld_id/registration_no、`source`/`brand` 前缀、`status` 精确、
+  `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序）；版本链/新建版本；
+  `run_validation` = **15 项确定性核验引擎**（规则名照抄 seed/App.tsx，结果只依赖版本
+  `object_keys` 与登记工艺参数，无随机；score=max(0,100-警告*5-失败*20)；质量级联
+  失败>0→异常 / 仅警告→待复核 / 否则→通过）；`attach_raw_files`（去重追加 keys +
+  累加 storage_bytes + 按扩展名推导回填 modalities，video 含图像）。payload 序列化在
+  `record_payload`/`records_payload`（批量预查 latest 版本防 N+1）/`version_payload`/
+  `validation_payload`。
 
 ## 坑/限制
 

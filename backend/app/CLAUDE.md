@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/
 
-应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）。
+应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）。
 
 ## 脚本
 
@@ -17,10 +17,12 @@
 - `services/`：跨域复用业务服务。`jobs.py` = 通用 Job 生命周期
   （create_job/mark_* /to_job_payload，状态机 pending→running→succeeded/failed，**不 commit** 由调用方落库），
   `dashboard.py` = **Task 8** 总览四端点聚合查询（get_stats/get_attributes/get_distributions/get_projects），
+  `welds.py` = **Task 10** 焊缝核心 CRUD（业务号生成 / 列表筛选 / 登记 / 版本 / 15 项确定性核验引擎），
   详见 `services/CLAUDE.md`。
 - `api/`：v1 路由聚合（Task 3 骨架，各域占位）+ `deps.py` 公共依赖 `get_current_user`（Task 5），
   `v1/dashboard.py` 为 **Task 8 已实现**（四端点）、`v1/files.py` 为 **Task 9 已实现**
-  （upload / presign-upload / url），详见 `api/CLAUDE.md`。
+  （upload / presign-upload / url）、`v1/welds.py` 为 **Task 10 已实现**（welds/registrations 全端点），
+  详见 `api/CLAUDE.md`。
 
 ## 坑/限制
 
