@@ -1,0 +1,25 @@
+# CLAUDE.md — backend/
+
+后端（FastAPI + SQLModel + Alembic + uv）。当前进度：Task 1（骨架 + 配置 + 日志中间件）已完成。
+
+## 目录与脚本
+
+- `pyproject.toml`：项目元数据 + 依赖声明（`[tool.uv] package=false`，非打包安装）。依赖变更用 `uv add` 后重新 `uv sync`。
+- `.python-version`：`3.12`（uv 据此选/下载解释器）。
+- `uv.lock`：`uv sync` 生成的锁文件，勿手改。
+- `app/`：应用代码（见 `app/CLAUDE.md`）。
+- `tests/`：pytest 测试（`uv run pytest`，SQLite 内存 + TestClient，不连远程库）。
+
+## 常用命令
+
+- 安装/同步：`uv sync`
+- 测试：`uv run pytest`
+- 起服务：`uv run uvicorn app.main:app --reload`（开发期在前端 `npm run dev` 用 Vite proxy 指向 `http://localhost:8000`）
+
+## 坑/限制
+
+- **配置 `.env` 解析**：`app/core/config.py::Settings` 用 `env_file=Path(__file__).resolve().parents[3] / ".env"` 固定指向**仓库根 `.env`**（config.py → parents[3] = 仓库根），与 cwd 无关。不要改成相对 `.env`，否则在 backend/ 下跑会读不到。
+- **访问日志**：loguru 写 `backend/logs/api.log`；`API_LOG_DIR` 为相对值时自动锚定到 `backend/` 下（保证 cwd 无关）。`backend/logs/`、`backend/.venv/` 已被根 `.gitignore` 忽略。
+- **中间件只覆盖 `/api/v1`** 路由（开发规范 §2.1）；非 API 路径直接透传不记日志。
+- **管理员 seed**：`ADMIN_USERNAME`/`ADMIN_PASSWORD` 在根 `.env`（Task 6 使用）；当前是本地演示默认值 `admin`/`admin123`，生产必须改。
+- pytest 能 import `app` 依赖 `tests/__init__.py`（使 backend/ 进入 sys.path）。

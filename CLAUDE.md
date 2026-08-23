@@ -14,9 +14,17 @@
 ## 技术栈与结构
 
 - 前端在仓库根目录（`src/`），保持现有结构不动。
-- 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），尚未开始搭建。
+- 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），开发中（当前完成 Task 1：骨架 + 配置 + 日志中间件；后续任务见 `docs/superpowers/plans/`）。
 - 设计文档见 `docs/`：接口契约 `API接口清单.md` · 表结构 `数据库设计.md` · 对象存储 `OSS存储设计.md` · 目录组织 `文件与目录设计.md` · 开发规范 `开发规范.md`。
 - 部署目标：私有化服务器，单容器 Docker（多阶段构建，FastAPI 同时服务 `/api` 与前端静态文件）。当前阶段本地跑通、不部署。
+
+## 后端（backend/）
+
+- Python 一律 uv：`cd backend && uv sync && uv run pytest`；运行服务 `uv run uvicorn app.main:app --reload`（`package=false`，非打包安装）。
+- **配置读取**：`backend/app/core/config.py` 的 `Settings` 用 `env_file=Path(__file__).resolve().parents[3] / ".env"` 指向**仓库根 `.env`**（与 cwd 无关，勿改成相对 `.env`）。
+- **接口轮转日志**：loguru + `backend/app/core/logging.py::AccessLogMiddleware`（纯 ASGI），写 `backend/logs/api.log`（相对目录自动锚定到 backend/ 下），脱敏 password/token/secret，规范见 `docs/开发规范.md` §2。
+- 访问日志只覆盖 `/api/v1` 路由；健康检查 `GET /api/v1/health` 返回统一信封 `{code:0,...}`。
+- 每目录规则：`backend/CLAUDE.md`、`backend/app/CLAUDE.md` 记录结构与坑，改动同步更新。
 
 ## 远程存储
 
