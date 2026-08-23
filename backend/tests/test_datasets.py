@@ -17,6 +17,8 @@
 - 404（数据集/版本/非法来源 400）、401（10 端点全验证）、构建失败 → job failed。
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -307,6 +309,9 @@ def test_build_task_end_to_end(
     assert "repeat_rate" in result["quality"]
     assert "empty_label_rate" in result["quality"]
     assert "dimension_missing_rate" in result["quality"]
+    # 兜底合成样本含时序（.csv）→ 目标检测必需维度 Current/Voltage/GasSpeed 全具备 → 缺失率 0
+    # （回归：quality 必须用本次构建的 in-flight 样本判维度，而非 current_version_id）。
+    assert result["quality"]["dimension_missing_rate"] == 0.0
     assert result["snapshot_id"] == f"datasets/{version['id']}/snapshot.json"
 
     # dataset_items 落库：split 全三类、同焊缝样本绝不跨 split（防泄漏）
@@ -336,12 +341,15 @@ def test_build_task_end_to_end(
         assert version_row.item_count == result["item_count"]
         assert version_row.quality == result["quality"]
 
-    # 快照 JSON 已写 MinIO（假存储记录）
+    # 快照 JSON 已写 MinIO（假存储记录），且 quality 与 DB 一致（含修正后的维度缺失率）
     assert len(fake_storage.uploads) == 1
     key, size, ctype, data = fake_storage.uploads[0]
     assert key == f"datasets/{version['id']}/snapshot.json"
     assert ctype == "application/json"
     assert size == len(data) > 0
+    snapshot = json.loads(data.decode("utf-8"))
+    assert snapshot["quality"] == result["quality"]
+    assert snapshot["quality"]["dimension_missing_rate"] == 0.0
 
 
 # ---------- 构建任务（真实切分样本：单焊缝全进 train，不泄漏） ----------

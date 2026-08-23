@@ -248,8 +248,18 @@ def _current_version_samples(session: Session, dataset: Dataset) -> list[Sample]
 
 
 def _dimension_availability(session: Session, dataset: Dataset) -> dict[str, bool]:
+    """当前版本成员样本的维度可用性（`get_dimensions`/`get_readiness` 用）。"""
+    return _dimension_availability_from_samples(_current_version_samples(session, dataset))
+
+
+def _dimension_availability_from_samples(samples: list[Sample]) -> dict[str, bool]:
+    """按样本 `object_keys` 启发式判定各维度可用性（构建 quality 用**当前批样本**）。
+
+    坑：quality 计算在 `datasets.current_version_id` 回填**之前**，若按数据集当前版本查样本
+    会拿到 None/旧版本 → 必需维度恒判缺失。故 quality 必须传本次构建的 in-flight 样本。
+    """
     available: dict[str, bool] = {d: False for d in INPUT_DIMENSIONS}
-    for sample in _current_version_samples(session, dataset):
+    for sample in samples:
         for key in sample.object_keys or []:
             low = key.lower()
             if low.endswith(_VIDEO_EXTS):
@@ -656,7 +666,7 @@ def _compute_quality(
     empty_label_rate = round(empty / total, 4) if total else 0.0
 
     required = REQUIRED_BY_TASK.get(dataset.task, [])
-    dims = _dimension_availability(session, dataset)
+    dims = _dimension_availability_from_samples(samples)
     missing = sum(1 for d in required if not dims.get(d))
     dimension_missing_rate = round(missing / len(required), 4) if required else 0.0
 
