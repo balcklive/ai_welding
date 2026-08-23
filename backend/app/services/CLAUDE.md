@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）。
 
 ## 脚本
 
@@ -68,6 +68,15 @@
   特征（对齐 App.tsx 8+8+6+6+4+4+6=42）；FFT 主频依赖 fs（默认 1000）；Sobel 用 float 图
   （uint8 会被 skimage 缩到 0~1）；skimage 0.26 用 `axis_major_length`/`intensity_mean` 新 API；
   未知归一化抛 ValueError（路由先白名单校验）；librosa 懒加载（包导入慢）。
+- `alignment.py`：**Task 13**。`simulate_alignment(session, task, job)` 多模态对齐模拟
+  （编排真、内核演示，实施边界 §3.1）：进度逐步 0→100（逐次 `session.commit()` + 小睡，
+  轮询可见）→ 由任务 modalities（缺省取所属焊缝登记 modalities）推导 `tracks`/`assets`
+  （`processed/{weld_id}/align/...`）→ 同事务新建「时间对齐」`DataVersion`（v1.<n+1>、
+  operator=算法任务，经 `welds.create_version` 并更新 `latest_version_id`）→ 回填
+  `alignment_tasks.events/tracks/assets` → `mark_succeeded(job, result)`。`events` 常量
+  `ALIGN_EVENTS={arc:0.42, weld_segment:[0.78,4.28], tail:4.86}` 与 `signals.py` 生成器一致。
+  **坑**：本服务里 `session.commit()` 是执行器专用 session 场景（非请求 session 的
+  "只 flush 不 commit" 约定）；缺已知模态兜底 `video` 轨道。
 
 ## 坑/限制
 

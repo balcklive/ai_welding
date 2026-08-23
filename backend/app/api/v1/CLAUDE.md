@@ -26,8 +26,14 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     回写 `data_records.quality`，审计 validate）。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
-- `analysis.py`：**Task 11 + Task 12 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+- `analysis.py`：**Task 11 + Task 12 + Task 13 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
+  - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
+    `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
+    `ok({job_id})`；weld/version 缺失 → 40401/40402。
+  - `GET /alignment-tasks/{task_id}`（**Task 13**）：Job 信封（`task_id`=job_uid），成功时
+    `result` 内嵌 `events/tracks/assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）；
+    未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
   - `GET /analysis/candidates`：quality=通过 的可分析焊缝最小载荷（`svc.list_through_welds`）；
   - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
     写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），

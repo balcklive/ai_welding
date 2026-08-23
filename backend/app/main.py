@@ -5,6 +5,8 @@
   （统一返回 `{code,message,detail?}` 信封，见 `schemas/common.py`）。
 - Task 6：lifespan 启动时执行 `seed_all`（管理员 + 演示数据，幂等）；
   MySQL 不可达时仅告警不阻塞启动（见 `core/seed.py`）。
+- Task 13：lifespan 启动 `executor.start()`（后台 DB 轮询执行器，处理对齐等异步 Job）、
+  关闭 `executor.stop()`（见 `app/jobs/`）。
 
 异常错误码映射：
 - `RequestValidationError` → `err(42200, "参数校验失败", status=422)`
@@ -25,6 +27,7 @@ from app.core.config import settings
 from app.core.db import engine
 from app.core.logging import AccessLogMiddleware, setup_logging
 from app.core.seed import seed_all
+from app.jobs import executor
 from app.schemas.common import err, ok
 
 setup_logging()
@@ -36,9 +39,12 @@ if settings.secret_key in ("change-me", "") or settings.admin_password in ("admi
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时执行 seed（管理员 + 演示数据，幂等）。
+    """启动时 seed + 启动 Job 执行器；关闭时停止执行器。
 
-    MySQL 不可达时仅 `logger.warning` 后跳过，避免启动直接崩溃（本地演示可容忍）。
+    1. seed（管理员 + 演示数据，幂等）：MySQL 不可达时仅 `logger.warning` 后跳过，
+       避免启动直接崩溃（本地演示可容忍）。
+    2. `executor.start()`：后台线程每 ~1s 轮询 pending 的 Job 并 dispatch 到对应 handler
+       （Task 13，见 `app/jobs/executor.py`）。
     """
     try:
         with Session(engine) as session:
@@ -48,6 +54,13 @@ async def lifespan(app: FastAPI):
         logger.opt(exception=True).warning(
             "启动 seed 失败（数据库不可达？），跳过 seed，服务继续启动"
         )
+    executor.start()
+    logger.info("Job 执行器已启动（后台 DB 轮询）")
+    try:
+        yield
+    finally:
+        executor.stop()
+        logger.info("Job 执行器已停止")
 
 
 app = FastAPI(title="AI Welding Platform API", version="0.1.0", lifespan=lifespan)

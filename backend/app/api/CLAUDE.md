@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/api/
 
-API 路由层。Task 3 建立 v1 聚合骨架，各域模块为占位（后续任务逐个填充实现）；Task 7 填充 `v1/jobs.py`、Task 8 填充 `v1/dashboard.py`、Task 9 填充 `v1/files.py`、Task 10 填充 `v1/welds.py`、Task 11 填充 `v1/analysis.py`（详见 `v1/CLAUDE.md`）。
+API 路由层。Task 3 建立 v1 聚合骨架，各域模块为占位（后续任务逐个填充实现）；Task 7 填充 `v1/jobs.py`、Task 8 填充 `v1/dashboard.py`、Task 9 填充 `v1/files.py`、Task 10 填充 `v1/welds.py`、Task 11/12/13 填充 `v1/analysis.py`（详见 `v1/CLAUDE.md`）。
 
 ## 脚本
 

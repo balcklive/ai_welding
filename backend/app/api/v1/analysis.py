@@ -1,9 +1,14 @@
-"""analysis 域路由（Task 11 + Task 12）：分析候选 / 多通道信号 / 真实 DSP 六模式 /
-分析结果 / 特征提取。
+"""analysis 域路由（Task 11 + Task 12 + Task 13）：分析候选 / 多通道信号 / 真实 DSP
+六模式 / 分析结果 / 特征提取 / 对齐任务。
 
 端点契约见 `docs/API接口清单.md` §3.4；全部需登录（router 级 `Depends(get_current_user)`），
 返回统一 `ok(...)` / `err(...)` 信封；信号由 `app.services.signals` 确定性生成、
 DSP 由 `app.services.dsp` 真实计算（scipy/pywt/numpy，非罐头数字）。
+
+Task 13：对齐任务走异步 Job——`POST …/alignment-tasks` 建 pending Job + `alignment_tasks`
+行（同事务 commit）返回 `{job_id}`；后台执行器（`app.jobs`，lifespan 启动）跑 handler
+（`app.jobs.alignment`，模拟对齐 + 自动生成「时间对齐」版本 + 更新 latest_version_id）；
+`GET /alignment-tasks/{task_id}` 返回 Job 信封（result 内嵌 events/tracks/assets）。
 
 错误码约定（与 welds 域一致）：40401=焊缝/登记不存在、40402=版本不存在、40000=参数错误。
 
@@ -19,15 +24,20 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
 from app.core.db import get_session
-from app.models.analysis import FeatureExtraction
+from app.models.analysis import AlignmentTask, FeatureExtraction
 from app.schemas.common import err, ok
 from app.services import dsp, features, signals
 from app.services import welds as svc
-from app.services.jobs import _iso_utc
+from app.services.jobs import (
+    _iso_utc,
+    create_job,
+    get_job_by_uid,
+    to_job_payload,
+)
 from app.services.signals import CHANNEL_SPECS
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -45,6 +55,12 @@ class ExtractFeaturesRequest(BaseModel):
     version_id: int
     normalization: str = "无"
     format: str = "JSON"
+
+
+class AlignmentTaskCreate(BaseModel):
+    """POST …/alignment-tasks 请求体（契约 §3.4）。`modalities[]` 空时由服务端按焊缝登记模态兜底。"""
+
+    modalities: list[str] = []
 
 
 # ── 分析候选 ──────────────────────────────────────────────────────────
@@ -277,6 +293,63 @@ def get_feature_extraction(
     if extraction is None:
         return err(40401, "特征提取记录不存在", status=404)
     return ok(_extraction_payload(extraction))
+
+
+# ── 对齐任务（Task 13：异步 Job，执行器在后台跑 handler） ───────────────
+
+
+@router.post("/welds/{weld_id}/versions/{version_id}/alignment-tasks")
+def create_alignment_task(
+    weld_id: str,
+    version_id: int,
+    body: AlignmentTaskCreate,
+    session: Session = Depends(get_session),
+) -> dict:
+    """提交多模态对齐任务（**异步**，契约 §3.4）：建 pending Job + `alignment_tasks` 行。
+
+    同事务 commit，返回 `{job_id}`（job_uid）。成功后（后台执行器）自动生成
+    `action=时间对齐` 版本并更新 `latest_version_id`。
+    """
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    version = svc.get_version(session, version_id)
+    if version is None or version.record_id != record.id:
+        return err(40402, "版本不存在", status=404)
+    job = create_job(session, type="alignment")
+    task = AlignmentTask(
+        job_id=job.id,
+        version_id=version.id,
+        modalities=list(body.modalities),
+    )
+    session.add(task)
+    session.commit()
+    return ok({"job_id": job.job_uid})
+
+
+@router.get("/alignment-tasks/{task_id}")
+def get_alignment_task(
+    task_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """对齐任务状态/结果（契约 §3.4，轮询 Job 结构）：Job 信封，`result` 内嵌
+    `events`/`tracks`/`assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）。"""
+    job = get_job_by_uid(session, task_id)
+    if job is None:
+        return err(40401, "任务不存在", status=404)
+    payload = to_job_payload(job)
+    task = session.exec(
+        select(AlignmentTask).where(AlignmentTask.job_id == job.id)
+    ).first()
+    # 域字段以 alignment_tasks 行（事件/轨道/产物对象键）为准，合并进 result；
+    # 仅在对齐产生数据（succeeded）后合并——pending/failed 保持 result=null（契约 §1.5/§6.1）。
+    if task is not None and task.events is not None:
+        result = dict(payload.get("result") or {})
+        result["events"] = task.events
+        result["tracks"] = task.tracks
+        result["assets"] = task.assets
+        payload["result"] = result
+    return ok(payload)
 
 
 # ── 内部助手 ──────────────────────────────────────────────────────────
