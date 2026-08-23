@@ -36,16 +36,24 @@ export class ApiError extends Error {
 export interface RequestOptions {
   method?: string;
   body?: unknown;
-  query?: Record<string, unknown>;
+  /** 查询参数（任意对象均可；接口/类型别名皆兼容，见 buildQuery 注释）。 */
+  query?: object;
   headers?: Record<string, string>;
+  /**
+   * 为 `true` 时跳过「HTTP 401 → 清 token + 重载」流程（登录失败场景用：
+   * 密码错误是业务失败，不应清空会话/刷新页面）。401 仍照常抛 ApiError。
+   */
+  skipAuth?: boolean;
 }
 
 /**
  * 把查询参数对象拼成 URL 查询串（含前导 `?`，无参数返回空串）。
  * - `undefined` / `null` / 空串 跳过；
  * - 数组展开为重复键（`channels=a&channels=b`，对齐后端 `getlist` 读取）。
+ * - 参数用 `object`：接口/类型别名均兼容（接口无隐式索引签名，不能赋给
+ *   `Record<string, unknown>`），此处仅读取 entries，泛型无需索引签名。
  */
-export function buildQuery(params: Record<string, unknown>): string {
+export function buildQuery(params: object): string {
   const parts: string[] = [];
   for (const [key, raw] of Object.entries(params)) {
     if (raw === undefined || raw === null) continue;
@@ -100,10 +108,16 @@ export async function request<T>(
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
-  let body: string | undefined;
+  let body: BodyInit | null | undefined;
   if (options.body !== undefined) {
-    headers['Content-Type'] = 'application/json';
-    body = JSON.stringify(options.body);
+    if (options.body instanceof FormData) {
+      // multipart（files.uploadFile）：透传 FormData，不设 Content-Type
+      // （浏览器自动带 boundary）。
+      body = options.body;
+    } else {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify(options.body);
+    }
   }
 
   let res: Response;
@@ -121,8 +135,10 @@ export async function request<T>(
   const envelope = await parseEnvelope(res);
 
   if (res.status === 401) {
-    clearToken();
-    window.location.reload();
+    if (!options.skipAuth) {
+      clearToken();
+      window.location.reload();
+    }
     throw new ApiError(envelope.code, envelope.message || '未登录或令牌失效', res.status);
   }
 
