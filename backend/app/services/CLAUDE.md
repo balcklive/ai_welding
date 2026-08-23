@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）。
 
 ## 脚本
 
@@ -57,6 +57,17 @@
   anomalies `[1.92,2.34 电弧不稳, 3.58,3.86 飞溅倾向]`。`analysis_result(bundle)` 返回确定性
   模拟结果（stability≈96.8、segments 由异常时长占比算出）。**坑：种子用 `zlib.crc32(weld_id)`，
   不要用内置 `hash()`——Python 对 str 的 hash 每次进程随机（PYTHONHASHSEED），跨进程不可复现。**
+- `features.py`：**Task 12**。多模态特征提取（真实计算，非罐头数字），供 `POST /features/extract`：
+  `ts_features(x, fs=1000)` 8 维（均值/方差/峰值/偏度/峰度/RMS + FFT 主频 + 小波细节能量）；
+  `vision_features()` 8 维（合成熔池掩膜 → skimage regionprops 几何 4 + graycomatrix GLCM
+  纹理 4 + Sobel 梯度，rng=42 确定性）；`generate_audio(weld_id)` 确定性合成电弧音频
+  （22.05kHz，crc32 种子 + 固定偏移）+ `audio_features(x, fs)` 6 维（librosa 质心频率/频谱滚降/
+  过零率 + scipy welch 频带能量/功率/总 PSD）；`unify(ts, vis, audio, normalization, format)`
+  拼 42 维统一向量并归一化（Z-Score/Min-Max/L2/无，零方差/零范数退化保护），返回
+  `{total_dims, groups, normalization, format, values}`。**坑：** 气体/送丝分组只取 6 个统计
+  特征（对齐 App.tsx 8+8+6+6+4+4+6=42）；FFT 主频依赖 fs（默认 1000）；Sobel 用 float 图
+  （uint8 会被 skimage 缩到 0~1）；skimage 0.26 用 `axis_major_length`/`intensity_mean` 新 API；
+  未知归一化抛 ValueError（路由先白名单校验）；librosa 懒加载（包导入慢）。
 
 ## 坑/限制
 

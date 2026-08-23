@@ -26,7 +26,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     回写 `data_records.quality`，审计 validate）。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
-- `analysis.py`：**Task 11 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
+- `analysis.py`：**Task 11 + Task 12 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `GET /analysis/candidates`：quality=通过 的可分析焊缝最小载荷（`svc.list_through_welds`）；
   - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
@@ -35,6 +35,12 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET …/analysis/{mode}`：mode ∈ psd|stft|dwt|wavelet|phase|pdd，query `channel`（默认 cur）+
     滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；
   - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常）。
+  - `POST /features/extract`（**Task 12**）：body `{weld_id, version_id, normalization(默认无), format(默认JSON)}`
+    同步真实提取三类特征（`app.services.features`：ts 8×4 + vision 8 + audio 6）→ `unify` 拼
+    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；normalization/
+    format 白名单校验，非法 → 40000；weld/version 缺失 → 40401/40402。
+  - `GET /features/{extraction_id}`（**Task 12**）：特征提取结果（导出用）；不存在 → 40401。
+    载荷 `_extraction_payload`（created_at 复用 `jobs._iso_utc`）。
   - 信号由 `app.services.signals` 确定性生成（seed = crc32(weld_id)）、DSP 由 `app.services.dsp`
     真实计算（scipy/pywt，非罐头数字）。
   - 坑：`/analysis/result` 是具体路径，必须在 `/analysis/{mode}` 之前注册（FastAPI 按顺序匹配）；

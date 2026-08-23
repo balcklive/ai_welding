@@ -1,4 +1,5 @@
-"""analysis 域路由（Task 11）：分析候选 / 多通道信号 / 真实 DSP 六模式 / 分析结果。
+"""analysis 域路由（Task 11 + Task 12）：分析候选 / 多通道信号 / 真实 DSP 六模式 /
+分析结果 / 特征提取。
 
 端点契约见 `docs/API接口清单.md` §3.4；全部需登录（router 级 `Depends(get_current_user)`），
 返回统一 `ok(...)` / `err(...)` 信封；信号由 `app.services.signals` 确定性生成、
@@ -14,20 +15,36 @@ DSP 由 `app.services.dsp` 真实计算（scipy/pywt/numpy，非罐头数字）�
 - 滤波参数 `cutoff/cutoff2` 为 0~1 归一化频率（相对奈奎斯特），`带通` 需两者。
 """
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.api.deps import get_current_user
 from app.core.db import get_session
+from app.models.analysis import FeatureExtraction
 from app.schemas.common import err, ok
-from app.services import dsp, signals
+from app.services import dsp, features, signals
 from app.services import welds as svc
+from app.services.jobs import _iso_utc
 from app.services.signals import CHANNEL_SPECS
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _FILTER_TYPES = {"低通", "高通", "带通"}
 _DEFAULT_SAMPLE_RATE = 1000
+_NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
+_FORMATS = {"NPY", "CSV", "JSON", "PT"}
+
+
+class ExtractFeaturesRequest(BaseModel):
+    """POST /features/extract 请求体（契约 §3.4）。"""
+
+    weld_id: str
+    version_id: int
+    normalization: str = "无"
+    format: str = "JSON"
 
 
 # ── 分析候选 ──────────────────────────────────────────────────────────
@@ -199,6 +216,69 @@ def get_analysis_mode(
     return err(40000, f"未知分析模式: {mode}，需为 psd|stft|dwt|wavelet|phase|pdd", status=400)
 
 
+# ── 特征提取（Task 12：真实多模态特征） ────────────────────────────────
+
+
+@router.post("/features/extract")
+def extract_features(
+    body: ExtractFeaturesRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """执行特征提取（**同步**，契约 §3.4）：时序/视觉/声音特征 + 统一向量 → 落库。
+
+    生成确定性信号 → `features.ts_features` 逐通道（8×4）→ `vision_features`
+    （8）→ `generate_audio` + `audio_features`（6）→ `unify` 拼 42 维归一化向量，
+    写 `feature_extractions` 行（含 created_at），返回 `ok(extraction)`。
+    """
+    if body.normalization not in _NORMALIZATIONS:
+        return err(
+            40000,
+            f"normalization 需为 {'/'.join(sorted(_NORMALIZATIONS))}",
+            status=400,
+        )
+    if body.format not in _FORMATS:
+        return err(40000, f"format 需为 {'/'.join(sorted(_FORMATS))}", status=400)
+    resolved = _resolve_weld_version(session, body.weld_id, body.version_id)
+    if resolved is not None:
+        return resolved
+
+    bundle = signals.generate_signals(body.weld_id, sample_rate=_DEFAULT_SAMPLE_RATE)
+    ts: dict[str, dict] = {}
+    for chan in bundle.channels:
+        ts[chan.id] = features.ts_features(chan.values, fs=bundle.sample_rate)
+    vis = features.vision_features()
+    audio, audio_fs = features.generate_audio(body.weld_id)
+    audio_feats = features.audio_features(audio, audio_fs)
+    unified = features.unify(ts, vis, audio_feats, body.normalization, body.format)
+
+    extraction = FeatureExtraction(
+        version_id=body.version_id,
+        ts_features=ts,
+        vision_features=vis,
+        audio_features=audio_feats,
+        unified_vector=unified,
+        normalization=body.normalization,
+        format=body.format,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(extraction)
+    session.commit()
+    session.refresh(extraction)
+    return ok(_extraction_payload(extraction))
+
+
+@router.get("/features/{extraction_id}")
+def get_feature_extraction(
+    extraction_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """特征提取结果（导出时使用，契约 §3.4）→ `ok(extraction)`。"""
+    extraction = session.get(FeatureExtraction, extraction_id)
+    if extraction is None:
+        return err(40401, "特征提取记录不存在", status=404)
+    return ok(_extraction_payload(extraction))
+
+
 # ── 内部助手 ──────────────────────────────────────────────────────────
 
 
@@ -211,6 +291,21 @@ def _resolve_weld_version(session: Session, weld_id: str, version_id: int) -> di
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
     return None
+
+
+def _extraction_payload(e: FeatureExtraction) -> dict:
+    """FeatureExtraction → JSON 载荷（created_at 复用 jobs._iso_utc 序列化）。"""
+    return {
+        "id": e.id,
+        "version_id": e.version_id,
+        "ts_features": e.ts_features,
+        "vision_features": e.vision_features,
+        "audio_features": e.audio_features,
+        "unified_vector": e.unified_vector,
+        "normalization": e.normalization,
+        "format": e.format,
+        "created_at": _iso_utc(e.created_at),
+    }
 
 
 def _requested_channels(request: Request) -> list[str]:
