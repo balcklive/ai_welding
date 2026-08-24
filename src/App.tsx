@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Activity, Archive, ArrowUpRight, BarChart3, Bell, Box, Check, ChevronDown,
+  Activity, Archive, ArrowUpRight, BarChart3, Box, Check, ChevronDown,
   CircleHelp, Database, Factory, FileCheck2, Filter, Gauge, Layers3,
   MoreHorizontal, Play, Plus, Search, Settings2, SlidersHorizontal, Sparkles,
-  Tag, Terminal, TrainFront, Upload, Users, WandSparkles, Waves, Zap,
+  Tag, Terminal, TrainFront, Upload, WandSparkles, Waves, Zap,
   ClipboardCheck, FileText, GitBranch, ScanLine, Download, CheckCircle2,
   AlertTriangle, Eye, RefreshCw, ChevronLeft, ChevronRight, Cpu,
   Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
@@ -142,7 +142,6 @@ const mockProjects: ProjectCard[] = [
   { name: '表面质量巡检数据', count: '842', status: '标注中', tone: 'blue', progress: '68%' },
   { name: '红外热成像样本', count: '367', status: '待处理', tone: 'orange', progress: '24%' },
 ];
-const bars = [46, 58, 52, 67, 61, 78, 74, 92, 81, 88, 72, 96];
 
 function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
@@ -222,7 +221,7 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   let content: React.ReactNode = null;
   if (route === 'data-center/list') content = <ManagementFiltered navigate={navigate} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />;
   else if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} />;
-  else if (route === 'data-center/registration') content = selectedDataId ? <Registration embedded /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
+  else if (route === 'data-center/registration') content = selectedDataId ? <Registration /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'data-center/validation') content = selectedDataId ? <Validation embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'analysis/select') content = <AnalysisSelect onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
@@ -232,8 +231,8 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   else if (route === 'analysis/annotation') content = selectedDataId ? <Annotation embedded /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/features') content = selectedDataId ? <FeatureExtraction embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} />;
-  else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training embedded /></>;
-  else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTest embedded /></>;
+  else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training /></>;
+  else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTest /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
   return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showContext && <SelectionContext dataId={selectedDataId!} />}{content}</div>;
@@ -873,7 +872,7 @@ function ManagementFiltered({ navigate, selectedDataId, setSelectedDataId }: { n
   return <section className="panel table-panel"><div className="data-filter-strip"><label className="filter-field keyword">关键词<div className="inline-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="焊缝ID、登记编号" /></div></label><label className="filter-field">数据来源<select value={source} onChange={(event) => setSource(event.target.value)}><option>全部来源</option><option>产线相机</option><option>实训线</option></select></label><label className="filter-field">焊机品牌<select value={brand} onChange={(event) => setBrand(event.target.value)}><option>全部品牌</option><option>Fronius</option><option>OTC</option><option>Kemppi</option><option>Panasonic</option></select></label><button className="outline-button filter-reset" onClick={() => { setQuery(''); setSource('全部来源'); setBrand('全部品牌'); setTab('全部最新数据'); setPage(1); }}><RefreshCw size={13} />重置</button></div><div className="latest-version-note"><GitBranch size={14} />列表按焊缝 ID 去重，仅显示每条数据的最新版本</div><div className="table-toolbar"><div className="filter-tabs">{DATA_TABS.map((label) => <button key={label} className={tab === label ? 'active' : ''} onClick={() => setTab(label)}>{label} <b>{tab === label ? total.toLocaleString() : mockTabCounts[label].toLocaleString()}</b></button>)}</div><div className="table-actions"><button className="select-button" onClick={() => { setQuery(''); setSource('全部来源'); setBrand('全部品牌'); setTab('全部最新数据'); setPage(1); }}><RefreshCw size={14} />重置筛选</button></div></div><div className="selection-bar">{selectedDataId ? <>当前选中：<strong>{selectedDataId}</strong><span>登记、核验、版本和分析操作将基于此数据</span></> : <>尚未选择数据<span>点击任意数据行即可选择</span></>}<button className="ghost-button" onClick={() => selectedDataId && navigate('analysis/select')}>进入分析与标注 <ArrowUpRight size={14} /></button></div><div className="data-table"><div className="table-row table-head"><span>状态</span><span>焊缝 / 登记编号</span><span>采集时间</span><span>数据来源</span><span>焊机品牌 / 型号</span><span>数据模态</span><span>核验状态</span><span>最新版本</span><span>操作</span></div>{rows.map((row) => <div className={`table-row ${selectedDataId === row.id ? 'selected-row' : ''}`} onClick={() => setSelectedDataId(row.id)} key={row.id}><span><input type="radio" checked={selectedDataId === row.id} onChange={() => setSelectedDataId(row.id)} aria-label={`选择 ${row.id}`} /></span><span className="id-cell"><strong>{row.id}</strong><small>登记台账 · 最新版本</small></span><span>{row.time}</span><span>{row.source}</span><span>{row.machine}</span><span>{row.types}</span><span><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill></span><span className="mono">{row.version}</span><span><button className="table-icon" onClick={(event) => { event.stopPropagation(); setSelectedDataId(row.id); navigate('analysis/select'); }} aria-label="进入分析"><Eye size={15} /></button></span></div>)}</div><div className="table-footer"><span>显示 {rows.length} 条最新数据，共 {total.toLocaleString()} 条数据</span><div className="pagination"><button onClick={() => setPage((p) => Math.max(1, p - 1))}><ChevronLeft size={14} /></button><span>{page} / {totalPages}</span><button onClick={() => setPage((p) => Math.min(totalPages, p + 1))}><ChevronRight size={14} /></button></div></div></section>;
 }
 
-function Registration({ embedded = false }: { embedded?: boolean }) {
+function Registration() {
   const [registered, setRegistered] = useState(false);
   const [regNo, setRegNo] = useState('REG-20260815-00249');
   const [regId, setRegId] = useState<number | null>(null);
@@ -1103,7 +1102,7 @@ function modeLabel(mode: string) {
 const filterTypes = ['低通', '高通', '带通'] as const;
 type FilterType = typeof filterTypes[number];
 
-function PsdChart({ values, color, lo, hi, freqs, psd }: { values: number[]; color: string; lo: number; hi: number; freqs?: number[]; psd?: number[] }) {
+function PsdChart({ values, color, freqs, psd }: { values: number[]; color: string; lo: number; hi: number; freqs?: number[]; psd?: number[] }) {
   const hasApi = !!freqs && !!psd && freqs.length > 0 && psd.length > 0;
   const N = values.length;
   const half = Math.floor(N / 2);
@@ -1297,7 +1296,7 @@ function WaveletDecomp({ values, color, bands }: { values: number[]; color: stri
 
 
 
-function AdvancedWeldAnalysis({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
+function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string }) {
   const [mode, setMode] = useState('时域');
   const [active, setActive] = useState<Set<string>>(new Set(['cur', 'vol', 'gas']));
   const [cursor, setCursor] = useState(2.1);
@@ -1424,16 +1423,8 @@ function AdvancedWeldAnalysis({ embedded = false, dataId }: { embedded?: boolean
     </aside>
   </div></div>;
 }
-function SignalChart({ accent = '#2c9caf', secondary = '#f0a34a' }: { accent?: string; secondary?: string }) {
-  return <div className="signal-chart"><div className="chart-grid-lines" /><svg viewBox="0 0 700 180" preserveAspectRatio="none"><path d="M0 106 C26 82 39 127 65 101 S103 62 128 100 S158 138 188 94 S221 84 249 101 S280 42 307 93 S339 132 370 88 S399 73 428 95 S463 144 493 88 S531 60 558 84 S594 121 620 75 S664 98 700 58" fill="none" stroke={accent} strokeWidth="2.5" /><path d="M0 135 C32 126 46 137 76 125 S123 119 152 130 S188 108 218 126 S257 135 287 119 S325 128 354 116 S391 128 420 110 S458 131 489 118 S530 121 561 104 S600 120 632 108 S672 114 700 102" fill="none" stroke={secondary} strokeWidth="1.8" strokeDasharray="5 5" /></svg><div className="chart-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>5s</span></div></div>;
-}
 
-function WeldAnalysis({ embedded = false }: { embedded?: boolean }) {
-  const [mode, setMode] = useState('时域');
-  return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />REG-20260815-00248</span><h2>焊缝 · MAG 短路过渡样本</h2><p>Fronius CMT · Q235B · 6 mm · 2026-08-15 09:42</p></div><div className="analysis-kpis"><div><span>核验状态</span><strong className="accent-text">通过</strong></div><div><span>有效焊接段</span><strong>3.86 s</strong></div><div><span>异常区段</span><strong className="warning-text">2 个</strong></div></div></div><div className="analysis-grid"><section className="panel signal-panel"><div className="panel-heading"><div><h2>多模态信号联动</h2><p>拖动时间轴查看对应视频帧和信号片段</p></div><div className="mode-tabs">{['时域', '频域', 'STFT', 'DWT'].map((item) => <button className={mode === item ? 'active' : ''} onClick={() => setMode(item)} key={item}>{item}</button>)}</div></div><div className="signal-legend"><span><i className="legend-blue" />电流 (A)</span><span><i className="legend-mint" />电压 (V)</span><span><i className="legend-orange" />异常区段</span></div><SignalChart /><div className="event-track"><span>起弧 <b>00:00.42</b></span><i /><span>稳态焊接 <b>00:00.78 - 00:04.28</b></span><i /><span>收弧 <b>00:04.86</b></span></div><div className="signal-cards"><div><Waves size={16} /><span>电流波形<strong>180 ± 12 A</strong></span></div><div><Activity size={16} /><span>电压波形<strong>22.4 ± 1.8 V</strong></span></div><div><Gauge size={16} /><span>气体流量<strong>18 L/min</strong></span></div></div></section><aside className="analysis-aside"><section className="panel"><div className="panel-heading"><div><h2>分析结果</h2><p>AI 异常检测模型 v1.8</p></div><Sparkles size={17} className="accent-text" /></div><div className="result-score"><strong>96.8%</strong><span>焊接稳定度</span></div><div className="result-row"><span><i className="result-dot green" />正常区段</span><strong>92.4%</strong></div><div className="result-row"><span><i className="result-dot orange" />电弧不稳</span><strong>5.1%</strong></div><div className="result-row"><span><i className="result-dot red" />飞溅倾向</span><strong>2.5%</strong></div><button className="full-button small-button">查看异常详情 <ArrowUpRight size={14} /></button></section><section className="panel"><div className="panel-heading"><div><h2>快捷分析</h2><p>一键生成专业视图</p></div></div><button className="quick-action"><Gauge size={15} />生成 UI 相图 <ArrowUpRight size={14} /></button><button className="quick-action"><BarChart3 size={15} />查看 PDD 分布 <ArrowUpRight size={14} /></button><button className="quick-action"><Zap size={15} />自动提取特征 <ArrowUpRight size={14} /></button></section></aside></div></div>;
-}
-
-function Validation({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
+function Validation({ dataId }: { embedded?: boolean; dataId?: string }) {
   const mockRules = ['图像文件完整性', '时序信号连续性', '采样频率一致性', '起收弧事件完整', '电流范围合理性', '电压范围合理性', '送丝速度缺失值', '多模态时间戳', '视频帧率稳定性', '文件命名规范', '焊缝ID唯一性', '工艺参数完整性', '音频信号质量', '红外数据完整性', '元数据关联关系'];
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
@@ -1463,7 +1454,7 @@ function Validation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
   return <div className="page-wrap"><PageIntro eyebrow="数据质量中心" title="数据核验" description="通过标准化规则检查数据完整性、连续性与多模态一致性。" action={<Toolbar action="执行核验" secondary="下载核验报告" onAction={runNow} exportType="validation" exportRefIds={report ? [report.id] : undefined} />} /><div className="validation-summary"><div className="validation-score"><div className="score-ring small"><div><strong>{report ? report.score : 93.3}</strong><span>质量评分</span></div></div><div><h2>{dataId ?? 'REG-20260815-00248'}</h2><p>{lastRun}</p><StatusPill tone={statusTone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div></div><div className="validation-count"><div><strong>{passed}</strong><span>通过规则</span></div><div><strong className="warning-text">{warning}</strong><span>警告</span></div><div><strong className="danger-text">{failed}</strong><span>失败</span></div></div></div><section className="panel validation-panel"><div className="panel-heading"><div><h2>核验规则明细 <span className="inline-count">{rules.length} 项</span></h2><p>已覆盖图像、时序、视频、元数据与跨模态一致性检查</p></div><button className="select-button">全部状态 <ChevronDown size={14} /></button></div><div className="rule-grid">{rules.map((rule, index) => { const isWarn = rule.status === 'warning'; const isFail = rule.status === 'failed'; const tone = isFail ? 'red' : isWarn ? 'orange' : 'green'; const label = isFail ? '失败' : isWarn ? '警告' : '通过'; const msg = rule.message ?? (isWarn ? '存在警告，建议复核' : '检查通过 · 结果已记录'); return <div className="validation-rule" key={rule.rule_name || index}><div className={`validation-icon ${isWarn ? 'warning' : isFail ? 'failed' : ''}`}>{isFail || isWarn ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}</div><div><strong>{rule.rule_name}</strong><span>{msg}</span></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{label}</StatusPill></div>; })}</div></section></div>;
 }
 
-function Alignment({ embedded = false, splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
+function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
   const { status: jobStatus, progress, result } = useJob<SplitResult | AlignmentResult>(jobId);
@@ -1493,7 +1484,7 @@ function Alignment({ embedded = false, splitOnly = false, dataId }: { embedded?:
 function Track({ label, tone }: { label: string; tone: string }) { return <div className="timeline-row"><span>{label}</span><div className={`timeline-track ${tone}`}><i /><b /></div><small>0s</small><small>5.42s</small></div>; }
 function ScissorsIcon() { return <span className="scissors-icon">✂</span>; }
 
-function ModelTest({ embedded = false }: { embedded?: boolean }) {
+function ModelTest() {
   const [modelVersionId, setModelVersionId] = useState<number | null>(null);
   const [modelName, setModelName] = useState<string | null>(null);
   const [datasetVersionId, setDatasetVersionId] = useState<number | null>(null);
@@ -1629,7 +1620,7 @@ function mapUnifiedGroups(uv: FeatureExtraction['unified_vector'] | null | undef
   return (uv?.groups ?? []).map((g, i) => ({ group: g.name, dims: g.dims, range: `[${g.range[0]}:${g.range[1]}]`, tone: unifiedPalette[i % unifiedPalette.length] }));
 }
 
-function FeatureExtraction({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
+function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) {
   const [normMethod, setNormMethod] = useState('Z-Score');
   const [exportFmt, setExportFmt] = useState('NPY');
   const [versionId, setVersionId] = useState<number | null>(null);
@@ -1730,7 +1721,7 @@ function lossToPath(values: number[], width = 600, height = 250): string {
   });
   return `M${pts[0]} L${pts.slice(1).join(' L')}`;
 }
-function Training({ embedded = false }: { embedded?: boolean }) {
+function Training() {
   const [isTraining, setIsTraining] = useState(false);
   const [datasetVersionId, setDatasetVersionId] = useState<number | null>(null);
   const [baseModelVersionId, setBaseModelVersionId] = useState<number | null>(null);
