@@ -14,7 +14,7 @@
 ## 技术栈与结构
 
 - 前端在仓库根目录（`src/`），保持现有结构不动。
-- 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），开发中（当前完成 Task 1：骨架 + 配置 + 日志中间件；后续任务见 `docs/superpowers/plans/`）。
+- 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），**全栈已打通**：后端 Task 1–17 全部实现（含真实 DSP、Job 执行器、MinIO 存储、报告导出），前端各页已接线到 `/api/v1`（登录闸门 + 各域 api 模块）。实现细节见 `backend/CLAUDE.md`；计划与验收见 `docs/superpowers/plans/`。
 - 设计文档见 `docs/`：接口契约 `API接口清单.md` · 表结构 `数据库设计.md` · 对象存储 `OSS存储设计.md` · 目录组织 `文件与目录设计.md` · 开发规范 `开发规范.md`。
 - 部署目标：私有化服务器，单容器 Docker（多阶段构建，FastAPI 同时服务 `/api` 与前端静态文件）。当前阶段本地跑通、不部署。
 

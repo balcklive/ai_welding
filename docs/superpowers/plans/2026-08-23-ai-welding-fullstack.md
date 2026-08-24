@@ -46,7 +46,7 @@
 
 **Steps:**
 
-- [ ] 1. 写 `backend/pyproject.toml`（依赖声明；由 `uv sync` 生成 lock）：
+- [x] 1. 写 `backend/pyproject.toml`（依赖声明；由 `uv sync` 生成 lock）：
 
 ```toml
 [project]
@@ -67,7 +67,7 @@ dev = ["pytest>=8.2", "httpx>=0.27"]
 package = false
 ```
 
-- [ ] 2. 写 `backend/app/core/config.py`（pydantic-settings，读 `.env`）：
+- [x] 2. 写 `backend/app/core/config.py`（pydantic-settings，读 `.env`）：
 
 ```python
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -106,12 +106,12 @@ class Settings(BaseSettings):
 settings = Settings()
 ```
 
-- [ ] 3. 写 `backend/app/core/logging.py`：loguru 配置（`logger.add(settings.api_log_dir + "/api.log", rotation=..., retention=..., level="INFO")`，控制台同步一份）+ ASGI 中间件 `AccessLogMiddleware`，按 `docs/开发规范.md` §2.2 记录：时间(UTC)+耗时ms、调用人（JWT 解出 username，未登录 anonymous）、方法/路径/query、请求体（multipart 只记大小）、返回状态码/返回体（>16KB 截断）、IP、correlation id（取请求头或生成 uuid）；按 §2.4 脱敏。
-- [ ] 4. 写 `backend/app/main.py`：`app = FastAPI(...)`，`app.add_middleware(AccessLogMiddleware)`，注册 `/api/v1/health`，挂载路由 `include_router(api_router, prefix="/api/v1")`（router 在 Task 3 提供；本任务先用占位空 router 或 health 单端点）。**注意**：配置路径基准为仓库根 `.env`（uv run 在 backend/ 下时需 `--directory` 或 `env_file="../.env"`——以 `.env` 实际位置为准，config 用 `env_file` 指向仓库根 `.env` 绝对路径或通过 `backend/.env`，选一种并写进 CLAUDE.md）。
-- [ ] 5. 补 `.env` 缺的键与 `.env.example`、`.gitignore`；写 `backend/CLAUDE.md` 与 `backend/app/CLAUDE.md`。
-- [ ] 6. 写测试 `backend/tests/test_config.py`：断言 `settings.minio_bucket == "aiwelding"`、`settings.mysql_url` 含 `pymysql` 与库名。
-- [ ] 7. 运行：`cd backend && uv sync && uv run pytest`（预期 PASS）。
-- [ ] 8. 提交 `chore: scaffold backend with config and logging middleware`。
+- [x] 3. 写 `backend/app/core/logging.py`：loguru 配置（`logger.add(settings.api_log_dir + "/api.log", rotation=..., retention=..., level="INFO")`，控制台同步一份）+ ASGI 中间件 `AccessLogMiddleware`，按 `docs/开发规范.md` §2.2 记录：时间(UTC)+耗时ms、调用人（JWT 解出 username，未登录 anonymous）、方法/路径/query、请求体（multipart 只记大小）、返回状态码/返回体（>16KB 截断）、IP、correlation id（取请求头或生成 uuid）；按 §2.4 脱敏。
+- [x] 4. 写 `backend/app/main.py`：`app = FastAPI(...)`，`app.add_middleware(AccessLogMiddleware)`，注册 `/api/v1/health`，挂载路由 `include_router(api_router, prefix="/api/v1")`（router 在 Task 3 提供；本任务先用占位空 router 或 health 单端点）。**注意**：配置路径基准为仓库根 `.env`（uv run 在 backend/ 下时需 `--directory` 或 `env_file="../.env"`——以 `.env` 实际位置为准，config 用 `env_file` 指向仓库根 `.env` 绝对路径或通过 `backend/.env`，选一种并写进 CLAUDE.md）。
+- [x] 5. 补 `.env` 缺的键与 `.env.example`、`.gitignore`；写 `backend/CLAUDE.md` 与 `backend/app/CLAUDE.md`。
+- [x] 6. 写测试 `backend/tests/test_config.py`：断言 `settings.minio_bucket == "aiwelding"`、`settings.mysql_url` 含 `pymysql` 与库名。
+- [x] 7. 运行：`cd backend && uv sync && uv run pytest`（预期 PASS）。
+- [x] 8. 提交 `chore: scaffold backend with config and logging middleware`。
 
 **测试/验证：** `backend/tests/test_config.py` 过；`uv run uvicorn app.main:app` 可启动，`curl /api/v1/health` 返回 `{"code":0,"message":"ok","data":{"status":"ok"}}`（健康检查用同步响应即可）。
 
@@ -128,7 +128,7 @@ settings = Settings()
 
 **Steps:**
 
-- [ ] 1. 类型映射规则（**逐列对照 `docs/数据库设计.md` §3.1–§3.23**）：
+- [x] 1. 类型映射规则（**逐列对照 `docs/数据库设计.md` §3.1–§3.23**）：
   | 文档列型 | SQLModel/SQLAlchemy |
   |---|---|
   | BIGINT PK | `id: int = Field(primary_key=True)` |
@@ -140,7 +140,7 @@ settings = Settings()
   | 索引列 | `Field(index=True)` |
   | 唯一约束/复合唯一 | 类内 `__table_args__ = (UniqueConstraint(...), Index(...))` |
   - 每张表列名/类型/约束**照抄**文档 §3 对应小节；表名复数 snake_case。
-- [ ] 2. 写 `backend/app/core/db.py`：
+- [x] 2. 写 `backend/app/core/db.py`：
 
 ```python
 from sqlmodel import create_engine, Session
@@ -155,12 +155,12 @@ def get_session():
 ```
 
 （`sessionmaker` 从 `sqlalchemy.orm` 导入；SQLModel 会话可用 `Session(engine)`。）
-- [ ] 3. 逐表实现模型，重点核对：`data_records` 含 `weld_id`(UK)、`registration_no`(UK)、`weld_name`、`modalities`(JSON 默认 `[]`)、`quality`(默认 '待复核')、`storage_bytes`、`latest_version_id`(FK→data_versions.id, nullable)；`data_versions` 复合唯一 `(record_id, version_no)`；`jobs` 含 `job_uid`(UK)、`type`、`status`、`progress`、`result`、`error`、`created_at`/`finished_at`；`dataset_versions` 含 `split`(JSON)、`snapshot_id`、`quality`(JSON)；`model_versions` 含 `status` 默认 '实验版本'、`file_key`；`audit_logs` 全字段。`models`(无 created_at)、`annotations`(含 `box` JSON、`confidence` Decimal(4,3))。
-- [ ] 4. 写 Alembic：`alembic init` 后改 `alembic/env.py` 导入 `app.models` 全部 + `app.core.db.Base` 元数据，`sqlalchemy.url` 用 `settings.mysql_url`；生成 `versions/0001_initial.py`（`--autogenerate`），并把 datetime 列 render 为 `mysql.DATETIME(6)`（autogenerate 后手工调整或预置 type 注解）。
-- [ ] 5. 测试 `backend/tests/test_models.py`：用 **SQLite 内存**（`create_engine("sqlite://", connect_args={"check_same_thread": False})` + `SQLModel.metadata.create_all`）建表成功；插入 1 条 `User`、1 条 `DataRecord` + `DataVersion`，断言复合唯一冲突抛错；断言 `data_records.modalities` JSON 往返。
-- [ ] 6. 迁移冒烟（可选、可跳过）：`uv run alembic upgrade head` 对真实 MySQL，`SHOW TABLES` 含 23 张表。
-- [ ] 7. 写 `backend/app/models/CLAUDE.md`、`backend/app/core/CLAUDE.md`。
-- [ ] 8. 提交 `feat: add SQLModel entities and alembic initial migration`。
+- [x] 3. 逐表实现模型，重点核对：`data_records` 含 `weld_id`(UK)、`registration_no`(UK)、`weld_name`、`modalities`(JSON 默认 `[]`)、`quality`(默认 '待复核')、`storage_bytes`、`latest_version_id`(FK→data_versions.id, nullable)；`data_versions` 复合唯一 `(record_id, version_no)`；`jobs` 含 `job_uid`(UK)、`type`、`status`、`progress`、`result`、`error`、`created_at`/`finished_at`；`dataset_versions` 含 `split`(JSON)、`snapshot_id`、`quality`(JSON)；`model_versions` 含 `status` 默认 '实验版本'、`file_key`；`audit_logs` 全字段。`models`(无 created_at)、`annotations`(含 `box` JSON、`confidence` Decimal(4,3))。
+- [x] 4. 写 Alembic：`alembic init` 后改 `alembic/env.py` 导入 `app.models` 全部 + `app.core.db.Base` 元数据，`sqlalchemy.url` 用 `settings.mysql_url`；生成 `versions/0001_initial.py`（`--autogenerate`），并把 datetime 列 render 为 `mysql.DATETIME(6)`（autogenerate 后手工调整或预置 type 注解）。
+- [x] 5. 测试 `backend/tests/test_models.py`：用 **SQLite 内存**（`create_engine("sqlite://", connect_args={"check_same_thread": False})` + `SQLModel.metadata.create_all`）建表成功；插入 1 条 `User`、1 条 `DataRecord` + `DataVersion`，断言复合唯一冲突抛错；断言 `data_records.modalities` JSON 往返。
+- [x] 6. 迁移冒烟（可选、可跳过）：`uv run alembic upgrade head` 对真实 MySQL，`SHOW TABLES` 含 23 张表。
+- [x] 7. 写 `backend/app/models/CLAUDE.md`、`backend/app/core/CLAUDE.md`。
+- [x] 8. 提交 `feat: add SQLModel entities and alembic initial migration`。
 
 **测试/验证：** `test_models.py` 全绿（SQLite）；迁移脚本对 MySQL 无语法错误（如环境可用则真实执行一次并记录结果）。
 
@@ -178,7 +178,7 @@ def get_session():
 
 **Steps:**
 
-- [ ] 1. 写 `schemas/common.py`：
+- [x] 1. 写 `schemas/common.py`：
 
 ```python
 from typing import Any, Generic, TypeVar
@@ -197,11 +197,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 ```
 
-- [ ] 2. `main.py` 注册全局异常处理器：`RequestValidationError` → 422 `err(42200, "参数校验失败", detail=exc.errors())`；`HTTPException` → 按 status（401/403/404/409/500）映射业务码；兜底 `Exception` → 500 `err(50000, "服务内部错误")`（loguru 记 traceback）。
-- [ ] 3. `router.py`：`api_router = APIRouter()`；为后续域路由 `include_router`（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports —— 各域本任务可先建空文件占位，后续任务填实现，避免 import 断链）。
-- [ ] 4. `core/audit.py`：`write_audit(...)` 向 `audit_logs` 表插一行（`action` 取 create/update/validate/export 等，`resource_type` 取 weld/dataset/model…）。
-- [ ] 5. 测试 `backend/tests/test_common.py`：`ok()` 信封形状；`err(40101,...)` 返回 HTTP 401 + body；`paginate` 形状；TestClient 打 `/api/v1/health` 返回信封。
-- [ ] 6. 提交 `feat: unified envelope, error handlers, audit helper`。
+- [x] 2. `main.py` 注册全局异常处理器：`RequestValidationError` → 422 `err(42200, "参数校验失败", detail=exc.errors())`；`HTTPException` → 按 status（401/403/404/409/500）映射业务码；兜底 `Exception` → 500 `err(50000, "服务内部错误")`（loguru 记 traceback）。
+- [x] 3. `router.py`：`api_router = APIRouter()`；为后续域路由 `include_router`（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports —— 各域本任务可先建空文件占位，后续任务填实现，避免 import 断链）。
+- [x] 4. `core/audit.py`：`write_audit(...)` 向 `audit_logs` 表插一行（`action` 取 create/update/validate/export 等，`resource_type` 取 weld/dataset/model…）。
+- [x] 5. 测试 `backend/tests/test_common.py`：`ok()` 信封形状；`err(40101,...)` 返回 HTTP 401 + body；`paginate` 形状；TestClient 打 `/api/v1/health` 返回信封。
+- [x] 6. 提交 `feat: unified envelope, error handlers, audit helper`。
 
 **测试/验证：** `test_common.py` 全绿；`/api/v1/health` 返回 `{code:0,...}`。
 
@@ -218,11 +218,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. 按 `docs/OSS存储设计.md` §2 键体系实现 `normalize_key`：`{prefix}/{业务标识}/{文件名规范化}`；文件名小写、空格→`_`、去特殊字符、≤255。
-- [ ] 2. `minio.Minio(endpoint, access_key, secret_key, secure=settings.minio_secure)`；确认桶存在（`bucket_exists` 否则 `make_bucket`）。
-- [ ] 3. `presign_put`：`client.presigned_put_object(bucket, key, expires=timedelta(minutes=30))`；`presign_get`：`presigned_get_object(bucket, key, expires=timedelta(seconds=expires))`。
-- [ ] 4. 测试 `backend/tests/test_storage.py`：单测 `normalize_key`（中文名→规范化、超长截断）；`presign_get`/`presign_put` 用 monkeypatch 假 minio 客户端断言参数透传（不连真实 MinIO，除非环境可用）。
-- [ ] 5. 提交 `feat: MinIO storage client with key normalization`。
+- [x] 1. 按 `docs/OSS存储设计.md` §2 键体系实现 `normalize_key`：`{prefix}/{业务标识}/{文件名规范化}`；文件名小写、空格→`_`、去特殊字符、≤255。
+- [x] 2. `minio.Minio(endpoint, access_key, secret_key, secure=settings.minio_secure)`；确认桶存在（`bucket_exists` 否则 `make_bucket`）。
+- [x] 3. `presign_put`：`client.presigned_put_object(bucket, key, expires=timedelta(minutes=30))`；`presign_get`：`presigned_get_object(bucket, key, expires=timedelta(seconds=expires))`。
+- [x] 4. 测试 `backend/tests/test_storage.py`：单测 `normalize_key`（中文名→规范化、超长截断）；`presign_get`/`presign_put` 用 monkeypatch 假 minio 客户端断言参数透传（不连真实 MinIO，除非环境可用）。
+- [x] 5. 提交 `feat: MinIO storage client with key normalization`。
 
 **测试/验证：** `test_storage.py` 全绿。真实 MinIO 冒烟（可选）：presign_put 返回 `upload_url` 且可 PUT。
 
@@ -242,11 +242,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `security.py`：`PasswordHash.recommended()`（pwdlib argon2）+ `create_access_token`/`decode_token`（PyJWT `HS256`）。
-- [ ] 2. `deps.py`：`get_current_user(session=Depends(get_session), authorization: str = Header(None))`：解析 `Bearer <token>` → decode → 查 `users.id` → 返回 user；失败抛 `HTTPException(401, ...)`（统一信封由 Task 3 handler 兜）。
-- [ ] 3. `auth.py`：login/me。
-- [ ] 4. 测试 `backend/tests/test_auth.py`：SQLite 内存建表 + 插一个用户（hash）；`POST /auth/login` 正确 → 200 + token；错误密码 → 401；`GET /auth/me` 带/不带 token。**登录请求体的日志脱敏**：中间件 `POST /auth/login` 只记用户名（§2.4）——在 logging.py 里实现，本任务补断言（可选）。
-- [ ] 5. 提交 `feat: JWT auth with login/me endpoints`。
+- [x] 1. `security.py`：`PasswordHash.recommended()`（pwdlib argon2）+ `create_access_token`/`decode_token`（PyJWT `HS256`）。
+- [x] 2. `deps.py`：`get_current_user(session=Depends(get_session), authorization: str = Header(None))`：解析 `Bearer <token>` → decode → 查 `users.id` → 返回 user；失败抛 `HTTPException(401, ...)`（统一信封由 Task 3 handler 兜）。
+- [x] 3. `auth.py`：login/me。
+- [x] 4. 测试 `backend/tests/test_auth.py`：SQLite 内存建表 + 插一个用户（hash）；`POST /auth/login` 正确 → 200 + token；错误密码 → 401；`GET /auth/me` 带/不带 token。**登录请求体的日志脱敏**：中间件 `POST /auth/login` 只记用户名（§2.4）——在 logging.py 里实现，本任务补断言（可选）。
+- [x] 5. 提交 `feat: JWT auth with login/me endpoints`。
 
 **测试/验证：** `test_auth.py` 全绿（用 SQLite 内存 + TestClient 依赖覆盖）。
 
@@ -264,8 +264,8 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `seed_admin`：若无 `users.username == admin_username` 则插入（`display_name="林工"`、`role="admin"`）。
-- [ ] 2. `seed_demo`（**数值对齐 `src/App.tsx` 常量 + `docs/API接口清单.md` §2 实体**）：
+- [x] 1. `seed_admin`：若无 `users.username == admin_username` 则插入（`display_name="林工"`、`role="admin"`）。
+- [x] 2. `seed_demo`（**数值对齐 `src/App.tsx` 常量 + `docs/API接口清单.md` §2 实体**）：
   - `label_categories`：焊瘤/气孔/未熔合/咬边/正常 + 展示色。
   - 4 条焊缝 `data_records`（照抄 App.tsx `weldRows`：`WLD-20260815-0248` 等，含 `weld_name`/`source`/`machine`/`weld_method`/`material`/`thickness`/`current_voltage`/`sample_rate`/`product`/`modalities`/`quality`/`operator`/`storage_bytes`）。
   - 每条焊缝的版本链：v1.0 原始数据 → v1.1 去噪处理 → v1.2 时间对齐 → v1.3 人工修正（对齐 App.tsx VersionPanel），并维护 `latest_version_id`；v1.0 的 `object_keys` 填 `raw/{registration_no}/...` 示例键。
@@ -274,9 +274,9 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
   - 3 个 `models` + `model_versions`（照抄 `ModelRepository`：焊接异常检测模型 v1.8 F1 95.5% 生产候选 等）。
   - 1 条 `dataset_build_tasks`/`split_tasks`/`annotation_tasks` + 少量 `samples` + `annotations`（供标注页演示）。
   - `audit_logs` 若干条示例。
-- [ ] 3. `main.py` lifespan：`with Session(engine) as s: seed_all(s)`。
-- [ ] 4. 测试 `test_seed.py`（SQLite 内存）：`seed_all` 两次幂等（数量不翻倍）；断言 `label_categories` 5 个、welds 4 条、models 3 个、0248 的 validation_rule_results 15 条。
-- [ ] 5. 提交 `feat: startup seed with admin and demo data`。
+- [x] 3. `main.py` lifespan：`with Session(engine) as s: seed_all(s)`。
+- [x] 4. 测试 `test_seed.py`（SQLite 内存）：`seed_all` 两次幂等（数量不翻倍）；断言 `label_categories` 5 个、welds 4 条、models 3 个、0248 的 validation_rule_results 15 条。
+- [x] 5. 提交 `feat: startup seed with admin and demo data`。
 
 **测试/验证：** `test_seed.py` 全绿；真实 MySQL `seed_all` 可重复执行。
 
@@ -298,10 +298,10 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `services/jobs.py` 实现 CRUD + 状态机（pending→running→succeeded/failed）。
-- [ ] 2. 端点 `GET /jobs/{job_id}`（返回体形状照 `docs/API接口清单.md` §1.5 的 Job JSON）。
-- [ ] 3. 测试：`test_jobs.py` 建 job → 断言 `job_uid` 前缀 `job_`、状态流转、`GET /jobs/{uid}` 信封。
-- [ ] 4. 提交 `feat: unified job service and polling endpoint`。
+- [x] 1. `services/jobs.py` 实现 CRUD + 状态机（pending→running→succeeded/failed）。
+- [x] 2. 端点 `GET /jobs/{job_id}`（返回体形状照 `docs/API接口清单.md` §1.5 的 Job JSON）。
+- [x] 3. 测试：`test_jobs.py` 建 job → 断言 `job_uid` 前缀 `job_`、状态流转、`GET /jobs/{uid}` 信封。
+- [x] 4. 提交 `feat: unified job service and polling endpoint`。
 
 **测试/验证：** `test_jobs.py` 全绿。
 
@@ -323,10 +323,10 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. service 聚合查询 + 形状对齐 App.tsx `Overview` 消费的常量（`manufacturers`/`defectTypes`/`wordCloud`/`projects` 等）。
-- [ ] 2. 四个端点。
-- [ ] 3. 测试（SQLite + seed_demo）：`stats.data_total == 4`、`projects` 3 条、`attributes.defect_types` 非空、`distributions.defects` 含统计词表。
-- [ ] 4. 提交 `feat: dashboard stats/attributes/distributions/projects`。
+- [x] 1. service 聚合查询 + 形状对齐 App.tsx `Overview` 消费的常量（`manufacturers`/`defectTypes`/`wordCloud`/`projects` 等）。
+- [x] 2. 四个端点。
+- [x] 3. 测试（SQLite + seed_demo）：`stats.data_total == 4`、`projects` 3 条、`attributes.defect_types` 非空、`distributions.defects` 含统计词表。
+- [x] 4. 提交 `feat: dashboard stats/attributes/distributions/projects`。
 
 **测试/验证：** `test_dashboard.py` 全绿。
 
@@ -346,9 +346,9 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. 上传（`UploadFile` 流式写入 MinIO）+ 预签名 + 下载 URL。
-- [ ] 2. 测试（monkeypatch StorageClient）：三端点行为与信封；size>2GB → 400/422。
-- [ ] 3. 提交 `feat: file upload, presign and download url`。
+- [x] 1. 上传（`UploadFile` 流式写入 MinIO）+ 预签名 + 下载 URL。
+- [x] 2. 测试（monkeypatch StorageClient）：三端点行为与信封；size>2GB → 400/422。
+- [x] 3. 提交 `feat: file upload, presign and download url`。
 
 **测试/验证：** `test_files.py` 全绿；真实 MinIO（可选）小文件上传→GET url→下载字节一致。
 
@@ -375,12 +375,12 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. 业务号生成器（`WLD-YYYYMMDD-序号`：同日序号 = 当日 weld_id 数+1；registration 同理）。
-- [ ] 2. 列表筛选：`q` 匹配 `weld_id`/`registration_no`（LIKE）；`source`/`brand` 精确或前缀；`status` 映射 quality（通过/待复核/异常）；`tab` 映射（最近=按 created_at 排序前 N；待核验=quality='待复核'；已归档=...）；全部分页。
-- [ ] 3. 登记 + raw-files + 版本 + 核验（核验规则引擎：15 项规则给确定性结果——基于版本/文件存在性 + 部分随机种子，规则名照抄 App.tsx）。
-- [ ] 4. `POST /registrations`、`POST /welds/{id}/versions`、`POST .../validation` 内调用 `write_audit`。
-- [ ] 5. 测试 `test_welds.py`：登记事务（record+v1.0+latest 联动）；列表去重与筛选；版本链；核验后 quality 级联（失败>0→异常）。用 SQLite + seed_demo。
-- [ ] 6. 提交 `feat: welds CRUD, registration, versions, validation`。
+- [x] 1. 业务号生成器（`WLD-YYYYMMDD-序号`：同日序号 = 当日 weld_id 数+1；registration 同理）。
+- [x] 2. 列表筛选：`q` 匹配 `weld_id`/`registration_no`（LIKE）；`source`/`brand` 精确或前缀；`status` 映射 quality（通过/待复核/异常）；`tab` 映射（最近=按 created_at 排序前 N；待核验=quality='待复核'；已归档=...）；全部分页。
+- [x] 3. 登记 + raw-files + 版本 + 核验（核验规则引擎：15 项规则给确定性结果——基于版本/文件存在性 + 部分随机种子，规则名照抄 App.tsx）。
+- [x] 4. `POST /registrations`、`POST /welds/{id}/versions`、`POST .../validation` 内调用 `write_audit`。
+- [x] 5. 测试 `test_welds.py`：登记事务（record+v1.0+latest 联动）；列表去重与筛选；版本链；核验后 quality 级联（失败>0→异常）。用 SQLite + seed_demo。
+- [x] 6. 提交 `feat: welds CRUD, registration, versions, validation`。
 
 **测试/验证：** `test_welds.py` 全绿；`uvicorn` 起服务后 `POST /registrations` 真实返回 `REG-YYYYMMDD-00X`。
 
@@ -401,7 +401,7 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `dsp.py`（真实 DSP，输入 np 数组 + 采样率）：
+- [x] 1. `dsp.py`（真实 DSP，输入 np 数组 + 采样率）：
   - `filter_signal(x, fs, kind, cutoff, cutoff2)` → scipy `butter` + `sosfiltfilt`（kind ∈ 低通/高通/带通，cutoff 归一化）。
   - `compute_psd(x, fs)` → `scipy.signal.welch` → `{freqs, psd}`。
   - `compute_stft(x, fs)` → `scipy.signal.stft` → `{times, freqs, magnitude(2D)}`（幅度取 `|Z|`）。
@@ -409,10 +409,10 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
   - `wavelet_decomp(x, level=5)` → 多层细节分量（`pywt.wavedec` 每层重构或系数），`{bands:[{name,values}]}`。
   - `phase_trajectory(cur, vol)` → `{current:[], voltage:[]}`（供 UI 相图）。
   - `pdd_density(x, bins=28)` → `{bins:[], counts:[], kde:[]}`。
-- [ ] 2. `signals.py`：`generate_signals(weld_id) -> SignalBundle`——确定性（hash(weld_id) 做种子），按 App.tsx `currentAmp/voltVal/gasVal/wireVal` 同形态生成 4 通道、duration 5.42s、sample_rate 默认 1000Hz；含 `events{arc:0.42, weld_segment:[0.78,4.28], tail:4.86}` 与 `anomalies`（[1.92,2.34] 电弧不稳、[3.58,3.86] 飞溅倾向）。采样点数大，前端渲染由 api 层降采样（见 Task 19）。
-- [ ] 3. 六个 mode 端点（调 dsp + signals，支持滤波参数联动）。
-- [ ] 4. 测试 `test_dsp.py`：`filter_signal` 对白噪声低频保留/高频衰减（能量比断言）；`compute_psd` 对 50Hz 正弦在 50Hz 有峰；`compute_dwt` 层数=5；`pdd_density` 和为样本数。`test_analysis.py`：candidates 只含通过；signals 4 通道、anomalies 2 个；mode 端点返回形状。
-- [ ] 5. 提交 `feat: real DSP service and analysis endpoints`。
+- [x] 2. `signals.py`：`generate_signals(weld_id) -> SignalBundle`——确定性（hash(weld_id) 做种子），按 App.tsx `currentAmp/voltVal/gasVal/wireVal` 同形态生成 4 通道、duration 5.42s、sample_rate 默认 1000Hz；含 `events{arc:0.42, weld_segment:[0.78,4.28], tail:4.86}` 与 `anomalies`（[1.92,2.34] 电弧不稳、[3.58,3.86] 飞溅倾向）。采样点数大，前端渲染由 api 层降采样（见 Task 19）。
+- [x] 3. 六个 mode 端点（调 dsp + signals，支持滤波参数联动）。
+- [x] 4. 测试 `test_dsp.py`：`filter_signal` 对白噪声低频保留/高频衰减（能量比断言）；`compute_psd` 对 50Hz 正弦在 50Hz 有峰；`compute_dwt` 层数=5；`pdd_density` 和为样本数。`test_analysis.py`：candidates 只含通过；signals 4 通道、anomalies 2 个；mode 端点返回形状。
+- [x] 5. 提交 `feat: real DSP service and analysis endpoints`。
 
 **测试/验证：** `test_dsp.py`/`test_analysis.py` 全绿。数值要与 App.tsx 演示形态可对应（前端降采样后图形相似）。
 
@@ -433,14 +433,14 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `features.py`：
+- [x] 1. `features.py`：
   - `ts_features(x)` → 8 个统计/频域/时频特征（numpy/scipy/pywt）。
   - `vision_features()` → 用模拟掩膜在 skimage 上真实计算 regionprops + GLCM + Sobel（演示数据 → 生成合成熔池二值图）。
   - `audio_features(x)` → librosa：频带能量、spectral centroid/rolloff、过零率、总 PSD。
   - `unify(ts, vis, audio, normalization, format)` → 拼接 42 维 + 归一化（Z-Score/Min-Max/L2/无）+ `format`（NPY/CSV/JSON/PT——当前仅存 JSON 元数据，导出另说）。
-- [ ] 2. 端点（同步）+ 落库（`created_at`）。
-- [ ] 3. 测试：`ts_features` 长度 8、`unified_vector.dims == 42`、normalization 生效、`GET /features/{id}` 信封。
-- [ ] 4. 提交 `feat: real multi-modal feature extraction`。
+- [x] 2. 端点（同步）+ 落库（`created_at`）。
+- [x] 3. 测试：`ts_features` 长度 8、`unified_vector.dims == 42`、normalization 生效、`GET /features/{id}` 信封。
+- [x] 4. 提交 `feat: real multi-modal feature extraction`。
 
 **测试/验证：** `test_features.py` 全绿。
 
@@ -465,11 +465,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `executor.py`：线程轮询 + `run_job` 同步入口 + 每域 handler 注册表；异常 → `jobs.error` 记录 + status=failed。
-- [ ] 2. `alignment.py` handler（模拟对齐；结果结构照 `API接口清单.md` §3.4：events{arc,weld_segment,tail}、tracks[]、assets[]）。
-- [ ] 3. 端点 + 自动生成时间对齐版本。
-- [ ] 4. 测试：`run_job` 后 status=succeeded、`alignment_tasks.assets` 非空、**自动多出 v1.4 时间对齐版本且 latest_version_id 更新**、`jobs.result` 有 events。
-- [ ] 5. 提交 `feat: job executor + alignment task`。
+- [x] 1. `executor.py`：线程轮询 + `run_job` 同步入口 + 每域 handler 注册表；异常 → `jobs.error` 记录 + status=failed。
+- [x] 2. `alignment.py` handler（模拟对齐；结果结构照 `API接口清单.md` §3.4：events{arc,weld_segment,tail}、tracks[]、assets[]）。
+- [x] 3. 端点 + 自动生成时间对齐版本。
+- [x] 4. 测试：`run_job` 后 status=succeeded、`alignment_tasks.assets` 非空、**自动多出 v1.4 时间对齐版本且 latest_version_id 更新**、`jobs.result` 有 events。
+- [x] 5. 提交 `feat: job executor + alignment task`。
 
 **测试/验证：** `test_alignment.py` 全绿。
 
@@ -493,10 +493,10 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. split handler（按规则生成 sample_count + 每样本 frame_no + object_keys）。
-- [ ] 2. annotation create/import/samples/detail/ai-pretag/labels + label-categories。
-- [ ] 3. 测试：split 成功生成样本（`sample_count` 回填）；create annotation task 后样本归属更新；ai-pretag 返回 2 个；save label 后可 GET 回读；confidence 语义。
-- [ ] 4. 提交 `feat: split and annotation tasks`。
+- [x] 1. split handler（按规则生成 sample_count + 每样本 frame_no + object_keys）。
+- [x] 2. annotation create/import/samples/detail/ai-pretag/labels + label-categories。
+- [x] 3. 测试：split 成功生成样本（`sample_count` 回填）；create annotation task 后样本归属更新；ai-pretag 返回 2 个；save label 后可 GET 回读；confidence 语义。
+- [x] 4. 提交 `feat: split and annotation tasks`。
 
 **测试/验证：** `test_split_annotation.py` 全绿。
 
@@ -517,11 +517,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. CRUD + dimensions/readiness（按 task 规则表，字段照 App.tsx `requiredByTask`/`inputDimensions`）。
-- [ ] 2. build handler：分片策略 `ORDER BY record_id` 分组 → train/val/test（默认 8:1:1），固定 `dataset_items`；quality 计算；snapshot 写 MinIO。
-- [ ] 3. lineage：沿 `dataset_items→samples→annotation_tasks→split_tasks→data_records` + `training_tasks→model_versions` 组装。
-- [ ] 4. 测试：build 后 `dataset_items` 数量正确、split 全 3 类、同焊缝样本不跨 split、quality 有重复率字段；lineage 有 4 层。
-- [ ] 5. 提交 `feat: datasets, build tasks, dimensions/readiness/lineage`。
+- [x] 1. CRUD + dimensions/readiness（按 task 规则表，字段照 App.tsx `requiredByTask`/`inputDimensions`）。
+- [x] 2. build handler：分片策略 `ORDER BY record_id` 分组 → train/val/test（默认 8:1:1），固定 `dataset_items`；quality 计算；snapshot 写 MinIO。
+- [x] 3. lineage：沿 `dataset_items→samples→annotation_tasks→split_tasks→data_records` + `training_tasks→model_versions` 组装。
+- [x] 4. 测试：build 后 `dataset_items` 数量正确、split 全 3 类、同焊缝样本不跨 split、quality 有重复率字段；lineage 有 4 层。
+- [x] 5. 提交 `feat: datasets, build tasks, dimensions/readiness/lineage`。
 
 **测试/验证：** `test_datasets.py` 全绿。
 
@@ -540,11 +540,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. models CRUD + 状态流转（PATCH 校验状态枚举：生产候选/训练中/实验版本）。
-- [ ] 2. training handler：模拟训练（进度 + 损失曲线 + 指标收敛）+ 事务内生成 model_version + weights.pt（MinIO）+ 更新模型 summary。
-- [ ] 3. testing / inference handler（模拟结果，形状照 `ModelTest`/`InferencePanel`）。
-- [ ] 4. 测试：POST /models 落库；training `run_job` 后 `model_versions` 多一条实验版本 + `file_key` 形如 `models/{id}/weights.pt`；PATCH 流转到生产候选；test 返回混淆矩阵 2×2；inference result 有 boxes。
-- [ ] 5. 提交 `feat: model center with training/test/inference tasks`。
+- [x] 1. models CRUD + 状态流转（PATCH 校验状态枚举：生产候选/训练中/实验版本）。
+- [x] 2. training handler：模拟训练（进度 + 损失曲线 + 指标收敛）+ 事务内生成 model_version + weights.pt（MinIO）+ 更新模型 summary。
+- [x] 3. testing / inference handler（模拟结果，形状照 `ModelTest`/`InferencePanel`）。
+- [x] 4. 测试：POST /models 落库；training `run_job` 后 `model_versions` 多一条实验版本 + `file_key` 形如 `models/{id}/weights.pt`；PATCH 流转到生产候选；test 返回混淆矩阵 2×2；inference result 有 boxes。
+- [x] 5. 提交 `feat: model center with training/test/inference tasks`。
 
 **测试/验证：** `test_models.py` 全绿。
 
@@ -559,10 +559,10 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. 每类报告的模板 + 数据装配（至少 validation 与 data-list 有真实模板，其余可复用同构模板）。
-- [ ] 2. 端点。
-- [ ] 3. 测试：`type=validation, ref_ids=[report_id], format=json` 返回 url；`type=data-list` 返回 url；minio 写入用 monkeypatch。
-- [ ] 4. 提交 `feat: generic report export`。
+- [x] 1. 每类报告的模板 + 数据装配（至少 validation 与 data-list 有真实模板，其余可复用同构模板）。
+- [x] 2. 端点。
+- [x] 3. 测试：`type=validation, ref_ids=[report_id], format=json` 返回 url；`type=data-list` 返回 url；minio 写入用 monkeypatch。
+- [x] 4. 提交 `feat: generic report export`。
 
 **测试/验证：** `test_reports.py` 全绿；真实环境（可选）导出 PDF 可下载。
 
@@ -587,11 +587,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `client.ts` 实现（fetch + 信封解包 + 401 处理 + `ApiError`）。不引 axios。
-- [ ] 2. `types.ts` 逐实体写（与后端响应形状一致；`Page<T>={items,total,page,page_size}`；`Job<T>={id,type,status,progress,result,error,created_at,finished_at}`）。
-- [ ] 3. `vite.config.ts` proxy。
-- [ ] 4. 验证：`npm run typecheck` 通过；`npm run build` 通过。
-- [ ] 5. 提交 `feat: frontend api client and types`。
+- [x] 1. `client.ts` 实现（fetch + 信封解包 + 401 处理 + `ApiError`）。不引 axios。
+- [x] 2. `types.ts` 逐实体写（与后端响应形状一致；`Page<T>={items,total,page,page_size}`；`Job<T>={id,type,status,progress,result,error,created_at,finished_at}`）。
+- [x] 3. `vite.config.ts` proxy。
+- [x] 4. 验证：`npm run typecheck` 通过；`npm run build` 通过。
+- [x] 5. 提交 `feat: frontend api client and types`。
 
 **测试/验证：** typecheck + build 全绿；启动 vite dev 后 `fetch('/api/v1/health')` 经 proxy 命中后端。
 
@@ -610,9 +610,9 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. 依 §4.2 逐文件实现（每个函数一行式 `request(...)` 转发；`WeldListQuery`/`SignalQuery`/`SplitRules`/`FeatureExtractRequest`/`TrainingConfig`/`TestConfig`/`InferenceRequest`/`ExportRequest` 等参数类型在 `types.ts` 补齐）。
-- [ ] 2. 验证：`npm run typecheck` + `npm run build` + `npm run lint`。
-- [ ] 3. 提交 `feat: frontend api modules per contract`。
+- [x] 1. 依 §4.2 逐文件实现（每个函数一行式 `request(...)` 转发；`WeldListQuery`/`SignalQuery`/`SplitRules`/`FeatureExtractRequest`/`TrainingConfig`/`TestConfig`/`InferenceRequest`/`ExportRequest` 等参数类型在 `types.ts` 补齐）。
+- [x] 2. 验证：`npm run typecheck` + `npm run build` + `npm run lint`。
+- [x] 3. 提交 `feat: frontend api modules per contract`。
 
 **测试/验证：** typecheck/build/lint 全绿；`npx tsc --noEmit` 无未使用类型。
 
@@ -630,11 +630,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `useJob.ts` 实现。
-- [ ] 2. `Login.tsx` 实现（调 `auth.login`；成功后 `setToken` + `auth.getMe` 存 user 到 localStorage）。
-- [ ] 3. `App.tsx` 登录闸门（最小侵入：包一层，不改内部组件）。
-- [ ] 4. 验证：typecheck/build/lint；`npm run dev` 打开 → 无 token 见登录页，登录后见原界面。
-- [ ] 5. 提交 `feat: login page, auth gate, useJob hook`。
+- [x] 1. `useJob.ts` 实现。
+- [x] 2. `Login.tsx` 实现（调 `auth.login`；成功后 `setToken` + `auth.getMe` 存 user 到 localStorage）。
+- [x] 3. `App.tsx` 登录闸门（最小侵入：包一层，不改内部组件）。
+- [x] 4. 验证：typecheck/build/lint；`npm run dev` 打开 → 无 token 见登录页，登录后见原界面。
+- [x] 5. 提交 `feat: login page, auth gate, useJob hook`。
 
 **测试/验证：** typecheck/build/lint 全绿；dev 手动冒烟登录→总览。
 
@@ -650,11 +650,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `Overview`：四统计卡 ← `getStats()`；属性面板 ← `getAttributes()`；分布图 ← `getDistributions()`（适配：`defectTypes` 用统计词表、`manufacturers/transitionTypes/weldingTypes/wordCloud` 映射）；项目卡片 ← `getProjects()`（progress 字符串化、status 映射 tone）。
-- [ ] 2. `ManagementFiltered`：列表 ← `listWelds({q, source, brand, tab, page, page_size})`（**服务端筛选**：筛选状态变化时重新拉取，删除前端 filter 逻辑）；tab 计数/分页信息从响应 `total` 取；行点击选中不变。
-- [ ] 3. `SelectionContext`：← `getWeld(selectedDataId)`（展示 source/machine/version/quality）。
-- [ ] 4. 验证：typecheck/build；dev 起后端 → 总览显示后端 seed 数值、列表 4 条。
-- [ ] 5. 提交 `feat: wire overview and data list to API`。
+- [x] 1. `Overview`：四统计卡 ← `getStats()`；属性面板 ← `getAttributes()`；分布图 ← `getDistributions()`（适配：`defectTypes` 用统计词表、`manufacturers/transitionTypes/weldingTypes/wordCloud` 映射）；项目卡片 ← `getProjects()`（progress 字符串化、status 映射 tone）。
+- [x] 2. `ManagementFiltered`：列表 ← `listWelds({q, source, brand, tab, page, page_size})`（**服务端筛选**：筛选状态变化时重新拉取，删除前端 filter 逻辑）；tab 计数/分页信息从响应 `total` 取；行点击选中不变。
+- [x] 3. `SelectionContext`：← `getWeld(selectedDataId)`（展示 source/machine/version/quality）。
+- [x] 4. 验证：typecheck/build；dev 起后端 → 总览显示后端 seed 数值、列表 4 条。
+- [x] 5. 提交 `feat: wire overview and data list to API`。
 
 **测试/验证：** typecheck/build 全绿；后端运行 + seed 后，总览统计卡显示 `data_total=4` 等后端值。
 
@@ -665,12 +665,12 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `Registration`：提交 ← `createRegistration()`（成功后显示生成的 `REG-...`）；文件上传 ← `presignUpload()`（≥100MB）或 `uploadFile()`（<100MB），上传后 ← `attachRawFiles()`；最近登记 ← `listWelds({tab:'recent'})`。
-- [ ] 2. `Validation`：执行 ← `runValidation(weldId, versionId)`；明细 ← `getValidation()`（15 规则渲染已有组件结构，含 warning 高亮）。
-- [ ] 3. `VersionPanel`：← `listVersions(selectedDataId)`；「新建版本」（去噪/人工修正）触发 `createVersion`（UI 若有对应入口则接，无则只读）。
-- [ ] 4. 数据集：列表/详情 ← `listDatasets/getDataset`；维度 ← `getDimensions`；适配检查 ← `getReadiness`；版本 ← `listDatasetVersions`；血缘 ← `getLineage`；新建版本 ← `createDatasetVersion`；构建 ← `createBuildTask`+`useJob`。
-- [ ] 5. 验证：typecheck/build。
-- [ ] 6. 提交 `feat: wire data-center pages to API`。
+- [x] 1. `Registration`：提交 ← `createRegistration()`（成功后显示生成的 `REG-...`）；文件上传 ← `presignUpload()`（≥100MB）或 `uploadFile()`（<100MB），上传后 ← `attachRawFiles()`；最近登记 ← `listWelds({tab:'recent'})`。
+- [x] 2. `Validation`：执行 ← `runValidation(weldId, versionId)`；明细 ← `getValidation()`（15 规则渲染已有组件结构，含 warning 高亮）。
+- [x] 3. `VersionPanel`：← `listVersions(selectedDataId)`；「新建版本」（去噪/人工修正）触发 `createVersion`（UI 若有对应入口则接，无则只读）。
+- [x] 4. 数据集：列表/详情 ← `listDatasets/getDataset`；维度 ← `getDimensions`；适配检查 ← `getReadiness`；版本 ← `listDatasetVersions`；血缘 ← `getLineage`；新建版本 ← `createDatasetVersion`；构建 ← `createBuildTask`+`useJob`。
+- [x] 5. 验证：typecheck/build。
+- [x] 6. 提交 `feat: wire data-center pages to API`。
 
 **测试/验证：** typecheck/build 全绿；登记→列表新增一条、核验→quality 级联可见。
 
@@ -681,13 +681,13 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `AnalysisSelect`：候选 ← `listCandidates()`。
-- [ ] 2. `Alignment`（含 splitOnly 变体）：创建 ← `createAlignmentTask/createSplitTask` + `useJob(getAlignmentTask/getSplitTask)`；任务完成渲染 events/tracks/assets（播放用 `getFileUrl`）。
-- [ ] 3. `AdvancedWeldAnalysis`：信号 ← `getSignals(...)`（channel 开关/滤波参数联动 query）；六种 mode 视图 ← `getAnalysisMode(mode, channel, filter)`，**图表组件输入改为后端计算数组**：`PsdChart` 吃 `{freqs,psd}`、`StftHeatmap` 吃 `{times,freqs,magnitude}`、`DwtChart`/`WaveletDecomp` 吃 `bands[]`、`PhasePlot` 吃 `{current,voltage}`、`PddChart` 吃 `{bins,counts,kde}`——SVG 渲染逻辑保留、只换数据源；分析结果 ← `getAnalysisResult()`（稳定度/三类占比/异常区段）。
-- [ ] 4. `Annotation`：标签类别 ← `listLabelCategories()`；样本列表/详情 ← `listAnnotationSamples/getAnnotationSample`；AI 预标注 ← `aiPretag`；保存 ← `saveAnnotation`；缩略图用 `getFileUrl`。
-- [ ] 5. `FeatureExtraction`：提取 ← `extractFeatures`（归一化/格式参数从 UI 读取）；表数据 ← `getFeatureExtraction` 返回的 ts/vision/audio/unified（映射已有 `tsFeatures` 等表结构）。
-- [ ] 6. 验证：typecheck/build；dev + 后端 → 分析页各 mode 出真实图、标注样本可读。
-- [ ] 7. 提交 `feat: wire analysis pages to API with real DSP views`。
+- [x] 1. `AnalysisSelect`：候选 ← `listCandidates()`。
+- [x] 2. `Alignment`（含 splitOnly 变体）：创建 ← `createAlignmentTask/createSplitTask` + `useJob(getAlignmentTask/getSplitTask)`；任务完成渲染 events/tracks/assets（播放用 `getFileUrl`）。
+- [x] 3. `AdvancedWeldAnalysis`：信号 ← `getSignals(...)`（channel 开关/滤波参数联动 query）；六种 mode 视图 ← `getAnalysisMode(mode, channel, filter)`，**图表组件输入改为后端计算数组**：`PsdChart` 吃 `{freqs,psd}`、`StftHeatmap` 吃 `{times,freqs,magnitude}`、`DwtChart`/`WaveletDecomp` 吃 `bands[]`、`PhasePlot` 吃 `{current,voltage}`、`PddChart` 吃 `{bins,counts,kde}`——SVG 渲染逻辑保留、只换数据源；分析结果 ← `getAnalysisResult()`（稳定度/三类占比/异常区段）。
+- [x] 4. `Annotation`：标签类别 ← `listLabelCategories()`；样本列表/详情 ← `listAnnotationSamples/getAnnotationSample`；AI 预标注 ← `aiPretag`；保存 ← `saveAnnotation`；缩略图用 `getFileUrl`。
+- [x] 5. `FeatureExtraction`：提取 ← `extractFeatures`（归一化/格式参数从 UI 读取）；表数据 ← `getFeatureExtraction` 返回的 ts/vision/audio/unified（映射已有 `tsFeatures` 等表结构）。
+- [x] 6. 验证：typecheck/build；dev + 后端 → 分析页各 mode 出真实图、标注样本可读。
+- [x] 7. 提交 `feat: wire analysis pages to API with real DSP views`。
 
 **测试/验证：** typecheck/build 全绿；`getSignals` 降采样后波形形态与 mock 相似；PSD 主峰在低频。
 
@@ -698,13 +698,13 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. `ModelRepository`：列表/汇总 ← `listModels()`；「新建模型」← `createModel`（如 UI 有入口）；状态流转 ← `updateModelVersionStatus`（UI 有入口则接）。
-- [ ] 2. `Training`：配置读取当前数据集（`getDataset`）；开始训练 ← `createTrainingTask` + `useJob(getTrainingTask)`；指标/损失曲线 ← Job result（`metrics`/`loss_curve` 渲染进已有 line-chart，把 SVG 固定 path 换为数据驱动）；日志 ← `getTrainingLogs`。
-- [ ] 3. `ModelTest`：创建 ← `createTestTask` + `useJob(getTestTask)`；指标/混淆矩阵 ← result。
-- [ ] 4. `InferencePanel`：上传样本 ← `presignUpload`/`uploadFile`；提交 ← `createInferenceTask` + `useJob(getInferenceTask)`；结果框 ← result。
-- [ ] 5. `Toolbar`「导出报告/导出结果」：← `exportReport`（type 按页面映射），返回 url 后 `window.open`。
-- [ ] 6. 验证：typecheck/build/lint。
-- [ ] 7. 提交 `feat: wire model-center and exports to API`。
+- [x] 1. `ModelRepository`：列表/汇总 ← `listModels()`；「新建模型」← `createModel`（如 UI 有入口）；状态流转 ← `updateModelVersionStatus`（UI 有入口则接）。
+- [x] 2. `Training`：配置读取当前数据集（`getDataset`）；开始训练 ← `createTrainingTask` + `useJob(getTrainingTask)`；指标/损失曲线 ← Job result（`metrics`/`loss_curve` 渲染进已有 line-chart，把 SVG 固定 path 换为数据驱动）；日志 ← `getTrainingLogs`。
+- [x] 3. `ModelTest`：创建 ← `createTestTask` + `useJob(getTestTask)`；指标/混淆矩阵 ← result。
+- [x] 4. `InferencePanel`：上传样本 ← `presignUpload`/`uploadFile`；提交 ← `createInferenceTask` + `useJob(getInferenceTask)`；结果框 ← result。
+- [x] 5. `Toolbar`「导出报告/导出结果」：← `exportReport`（type 按页面映射），返回 url 后 `window.open`。
+- [x] 6. 验证：typecheck/build/lint。
+- [x] 7. 提交 `feat: wire model-center and exports to API`。
 
 **测试/验证：** typecheck/build/lint 全绿。
 
@@ -716,11 +716,11 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Steps:**
 
-- [ ] 1. 走查三份契约与实现差异，有偏差则回写文档（含分页、任何字段/端点改动）。
-- [ ] 2. 补齐所有新增目录的 CLAUDE.md（backend/ 各层、src/api、src/hooks、src/pages、docs/superpowers、backend/tests）。
-- [ ] 3. 全链路冒烟：`cd backend && uv run uvicorn app.main:app --reload` + `npm run dev` → 登录 → 逐页点查（总览统计、列表、登记、核验、版本、对齐、信号分析、切分、标注、特征、数据集、模型、训练、测试、推理、导出）；记录结果到计划附录。
-- [ ] 4. `npm run build` + `backend uv run pytest` 全绿确认。
-- [ ] 5. 提交 `docs: sync contracts and CLAUDE.md, integration smoke`。
+- [x] 1. 走查三份契约与实现差异，有偏差则回写文档（含分页、任何字段/端点改动）。
+- [x] 2. 补齐所有新增目录的 CLAUDE.md（backend/ 各层、src/api、src/hooks、src/pages、docs/superpowers、backend/tests）。
+- [x] 3. 全链路冒烟：`cd backend && uv run uvicorn app.main:app --reload` + `npm run dev` → 登录 → 逐页点查（总览统计、列表、登记、核验、版本、对齐、信号分析、切分、标注、特征、数据集、模型、训练、测试、推理、导出）；记录结果到计划附录。
+- [x] 4. `npm run build` + `backend uv run pytest` 全绿确认。
+- [x] 5. 提交 `docs: sync contracts and CLAUDE.md, integration smoke`。
 
 **测试/验证：** 全链路冒烟通过；pytest + build + lint 全绿。
 
@@ -742,3 +742,48 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 - **登录页**：条件渲染闸门（不加 react-router）。
 - **.env**：补 `SECRET_KEY/ACCESS_TOKEN_EXPIRE_MINUTES/API_LOG_*/ADMIN_USERNAME/ADMIN_PASSWORD`，不触碰既有敏感值。
 - **DB 测试**：pytest 全走 SQLite 内存，远程 MySQL 仅迁移冒烟（可选）与真实运行验证。
+
+---
+
+## 附录：全链路冒烟记录（2026-08-24 复核）
+
+> Task 25 步骤 3 要求的冒烟结果补录。以下为**实际执行验证**的结果（非文档宣称）。
+
+### 后端
+
+- `cd backend && uv run pytest` → **208 passed**（75s，SQLite 内存 + TestClient）。
+- 真实启动 `uv run uvicorn app.main:app`，逐端点冒烟：
+  - `GET /api/v1/health` → `{"code":0,"message":"ok","data":{"status":"ok"}}`
+  - `POST /auth/login`（admin/admin123）→ 200，签发 JWT；`GET /auth/me` → 返回 admin/林工。
+  - `GET /dashboard/stats` → 后端 seed 真实值（`data_total=4`、`annotated_samples=2` 等）。
+  - `GET /welds?page=1` → 4 条焊缝，分页字段完整。
+  - `GET /analysis/candidates` → 2 条核验通过的候选。
+  - `GET /welds/{WLD-…}/versions/{v}/analysis/result` → 真实 DSP：`stability=96.99`、三段占比、2 个异常区段。
+  - `GET /welds/{WLD-…}/versions/{v}/signals` → 4 通道（cur/vol/gas/wir）× 5420 点、1kHz。
+- 真实 MySQL（182.61.59.135:8206，库 `ai_welding`）：
+  - **24 张表齐全**（23 业务表 + `alembic_version`=0001），迁移已应用。
+  - seed 数据在库：users=1（admin）、data_records=4、data_versions=13、models=3、model_versions=3、
+    label_categories=5、datasets=3、samples=2、validation_rule_results=15、audit_logs=16、jobs=2。
+
+### 对象存储（MinIO）
+
+- **发现并修复一处配置缺陷**：`.env` 的 `MINIO_ENDPOINT` 曾带 `http://` scheme 前缀，
+  minio SDK（7.2.20）拒绝该值（`ValueError: path in endpoint is not allowed`），导致所有存储端点 500。
+  去掉 scheme（`182.61.59.135:8290`）后复测：
+  - `POST /files/presign-upload` → 200，返回 `object_key` + 预签名 PUT URL。
+  - `POST /reports/export`（validation/json）→ 200，报告对象 `reports/validation/1.json`（1934 B）**真实写入 MinIO**。
+  - `GET /files/{object_key}/url` → 200，返回预签名 GET URL。
+  - 桶 `aiwelding` 存在且可列。
+
+### 前端
+
+- `npm run build` ✓（1580 modules，~276 kB JS）。
+- `npx tsc -b`（typecheck）✓。
+- `npx eslint .`：复核时发现 **14 个 unused-vars 错误**（App.tsx 遗留 `embedded`/`WeldAnalysis`/`SignalChart`/`bars` 等），
+  已修复并清零；`npm run lint` 现全绿。
+- 计划 Task 25 原本宣称 lint 全绿与实际不符，已在本次复核修正。
+
+### 待办/遗留（非阻塞）
+
+- 根 `CLAUDE.md` 状态已同步为全栈打通；各目录 CLAUDE.md 全覆盖（唯一缺口 `backend/app/templates/reports/`，随本附录补齐）。
+- `.env` 属私密文件不入库；生产部署前需改 `SECRET_KEY` 与 `ADMIN_PASSWORD` 默认值。
