@@ -24,11 +24,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from threading import Lock
 
-from sqlalchemy import text
 from sqlmodel import Session, func, or_, select
 
 from app.models.data import (
@@ -83,6 +83,12 @@ _RAW_FILES_PAYLOAD_LOCK = Lock()
 _ACTIVE_RAW_FILES_KEYS: set[str] = set()
 
 
+@dataclass
+class _MySQLAdvisoryLock:
+    name: str
+    connection: object
+
+
 # ── 业务号生成器 ─────────────────────────────────────────────────────
 
 
@@ -92,27 +98,54 @@ def _is_mysql_session(session: Session) -> bool:
 
 
 
-def _acquire_registration_lock(session: Session, day: date) -> str | None:
+def _mysql_lock_connection(session: Session):
+    bind = session.get_bind()
+    if bind is None:
+        raise RuntimeError("数据库连接不可用")
+    return bind.raw_connection()
+
+
+
+def _mysql_lock_scalar(connection, sql: str, params: tuple) -> int | None:
+    cursor = connection.cursor()
+    try:
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        return None if row is None else row[0]
+    finally:
+        cursor.close()
+
+
+
+def _acquire_registration_lock(session: Session, day: date) -> _MySQLAdvisoryLock | None:
     if not _is_mysql_session(session):
         return None
     lock_name = f"data_record_seq:{day.strftime('%Y%m%d')}"
-    acquired = session.connection().execute(
-        text("SELECT GET_LOCK(:name, :timeout)"),
-        {"name": lock_name, "timeout": 1},
-    ).scalar()
-    if acquired != 1:
-        raise RuntimeError("获取登记编号锁失败")
-    return lock_name
+    connection = _mysql_lock_connection(session)
+    acquired = None
+    try:
+        acquired = _mysql_lock_scalar(connection, "SELECT GET_LOCK(%s, %s)", (lock_name, 1))
+        if acquired != 1:
+            raise RuntimeError("获取登记编号锁失败")
+        return _MySQLAdvisoryLock(lock_name, connection)
+    except Exception:
+        if acquired != 1:
+            connection.close()
+        raise
 
 
 
-def _release_registration_lock(session: Session, lock_name: str | None) -> None:
-    if lock_name is None or not _is_mysql_session(session):
+def _release_registration_lock(
+    session: Session, lock_name: _MySQLAdvisoryLock | str | None
+) -> None:
+    if lock_name is None:
         return
-    session.connection().execute(
-        text("SELECT RELEASE_LOCK(:name)"),
-        {"name": lock_name},
-    )
+    if isinstance(lock_name, _MySQLAdvisoryLock):
+        try:
+            _mysql_lock_scalar(lock_name.connection, "SELECT RELEASE_LOCK(%s)", (lock_name.name,))
+        finally:
+            lock_name.connection.close()
+        return
 
 
 
@@ -170,17 +203,21 @@ def registration_request_key(data: dict, operator: str) -> str:
 
 def _acquire_registration_payload_lock(
     session: Session, data: dict, operator: str
-) -> str:
+) -> _MySQLAdvisoryLock | str:
     request_key = registration_request_key(data, operator)
     if _is_mysql_session(session):
         lock_name = f"data_record_req:{request_key[:48]}"
-        acquired = session.connection().execute(
-            text("SELECT GET_LOCK(:name, :timeout)"),
-            {"name": lock_name, "timeout": 0},
-        ).scalar()
-        if acquired != 1:
-            raise RuntimeError("重复登记请求：相同表单正在提交")
-        return lock_name
+        connection = _mysql_lock_connection(session)
+        acquired = None
+        try:
+            acquired = _mysql_lock_scalar(connection, "SELECT GET_LOCK(%s, %s)", (lock_name, 0))
+            if acquired != 1:
+                raise RuntimeError("重复登记请求：相同表单正在提交")
+            return _MySQLAdvisoryLock(lock_name, connection)
+        except Exception:
+            if acquired != 1:
+                connection.close()
+            raise
     with _REGISTRATION_PAYLOAD_LOCK:
         if request_key in _ACTIVE_REGISTRATION_KEYS:
             raise RuntimeError("重复登记请求：相同表单正在提交")
@@ -189,14 +226,16 @@ def _acquire_registration_payload_lock(
 
 
 
-def _release_registration_payload_lock(session: Session, lock_name: str | None) -> None:
+def _release_registration_payload_lock(
+    session: Session, lock_name: _MySQLAdvisoryLock | str | None
+) -> None:
     if lock_name is None:
         return
-    if _is_mysql_session(session):
-        session.connection().execute(
-            text("SELECT RELEASE_LOCK(:name)"),
-            {"name": lock_name},
-        )
+    if isinstance(lock_name, _MySQLAdvisoryLock):
+        try:
+            _mysql_lock_scalar(lock_name.connection, "SELECT RELEASE_LOCK(%s)", (lock_name.name,))
+        finally:
+            lock_name.connection.close()
         return
     with _REGISTRATION_PAYLOAD_LOCK:
         _ACTIVE_REGISTRATION_KEYS.discard(lock_name)
@@ -215,17 +254,21 @@ def raw_files_request_key(version_id: int, object_keys: list[str]) -> str:
 
 def _acquire_raw_files_payload_lock(
     session: Session, version_id: int, object_keys: list[str]
-) -> str:
+) -> _MySQLAdvisoryLock | str:
     request_key = raw_files_request_key(version_id, object_keys)
     if _is_mysql_session(session):
         lock_name = f"raw_files_req:{request_key[:48]}"
-        acquired = session.connection().execute(
-            text("SELECT GET_LOCK(:name, :timeout)"),
-            {"name": lock_name, "timeout": 0},
-        ).scalar()
-        if acquired != 1:
-            raise RuntimeError("CSV 已存在导入任务")
-        return lock_name
+        connection = _mysql_lock_connection(session)
+        acquired = None
+        try:
+            acquired = _mysql_lock_scalar(connection, "SELECT GET_LOCK(%s, %s)", (lock_name, 0))
+            if acquired != 1:
+                raise RuntimeError("CSV 已存在导入任务")
+            return _MySQLAdvisoryLock(lock_name, connection)
+        except Exception:
+            if acquired != 1:
+                connection.close()
+            raise
     with _RAW_FILES_PAYLOAD_LOCK:
         if request_key in _ACTIVE_RAW_FILES_KEYS:
             raise RuntimeError("CSV 已存在导入任务")
@@ -234,14 +277,16 @@ def _acquire_raw_files_payload_lock(
 
 
 
-def _release_raw_files_payload_lock(session: Session, lock_name: str | None) -> None:
+def _release_raw_files_payload_lock(
+    session: Session, lock_name: _MySQLAdvisoryLock | str | None
+) -> None:
     if lock_name is None:
         return
-    if _is_mysql_session(session):
-        session.connection().execute(
-            text("SELECT RELEASE_LOCK(:name)"),
-            {"name": lock_name},
-        )
+    if isinstance(lock_name, _MySQLAdvisoryLock):
+        try:
+            _mysql_lock_scalar(lock_name.connection, "SELECT RELEASE_LOCK(%s)", (lock_name.name,))
+        finally:
+            lock_name.connection.close()
         return
     with _RAW_FILES_PAYLOAD_LOCK:
         _ACTIVE_RAW_FILES_KEYS.discard(lock_name)

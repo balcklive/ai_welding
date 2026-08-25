@@ -13,15 +13,18 @@ raw-files 挂载（追加 keys + 累加 storage_bytes + 推导 modalities）；
 """
 
 import threading
+from datetime import date
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, select
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
@@ -298,6 +301,106 @@ def test_create_registration_rejects_concurrent_duplicate_payload(
             )
         ).all()
         assert len(records) == 1
+
+
+def test_mysql_registration_lock_released_after_rollback_allows_followup_registration() -> None:
+    import app.api.v1.welds as welds_api
+
+    admin_db = settings.mysql_database
+    test_db = f"{admin_db}_lock_{uuid4().hex[:8]}"
+    admin_engine = create_engine(
+        settings.mysql_url.rsplit(f"/{admin_db}?", 1)[0] + "/mysql?charset=utf8mb4"
+    )
+    with admin_engine.connect() as conn:
+        conn.execute(text(f"CREATE DATABASE `{test_db}` CHARACTER SET utf8mb4"))
+        conn.commit()
+
+    test_engine = create_engine(
+        settings.mysql_url.replace(f"/{admin_db}?", f"/{test_db}?"),
+        pool_size=3,
+        max_overflow=0,
+        pool_use_lifo=True,
+    )
+    SQLModel.metadata.create_all(test_engine)
+    with Session(test_engine) as session:
+        session.add(
+            User(
+                id=1,
+                username="lin_eng",
+                password_hash="not-a-real-hash",
+                display_name="林工",
+                role="admin",
+            )
+        )
+        session.commit()
+
+    def _override_session():
+        with Session(test_engine) as session:
+            yield session
+
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override_user() -> User:
+        return dummy
+
+    app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_current_user] = _override_user
+
+    test_day = date(2099, 1, (uuid4().int % 28) + 1)
+    day_lock = None
+    holder_session = None
+    leaked_session = None
+    try:
+        holder_session = Session(test_engine)
+        conn_id = holder_session.connection().execute(text("SELECT CONNECTION_ID()")).scalar()
+        day_lock = welds_api.svc._acquire_registration_lock(holder_session, test_day)
+        holder_session.rollback()
+
+        leaked_session = Session(test_engine)
+        leaked_conn_id = leaked_session.connection().execute(
+            text("SELECT CONNECTION_ID()")
+        ).scalar()
+        assert leaked_conn_id == conn_id
+
+        welds_api.svc._release_registration_lock(holder_session, day_lock)
+        leaked_session.close()
+        leaked_session = None
+
+        resp = client.post(
+            "/api/v1/registrations",
+            json={
+                "source": "task5-lock-followup",
+                "collected_at": f"{test_day.isoformat()}T09:00:00Z",
+                "weld_name": "锁释放后普通登记",
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["code"] == 0
+    finally:
+        app.dependency_overrides.pop(get_session, None)
+        app.dependency_overrides.pop(get_current_user, None)
+        if leaked_session is not None:
+            try:
+                leaked_session.connection().execute(
+                    text("SELECT RELEASE_LOCK(:name)"), {"name": day_lock}
+                )
+            except Exception:
+                pass
+            leaked_session.close()
+        if holder_session is not None:
+            holder_session.close()
+        test_engine.dispose()
+        with admin_engine.connect() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS `{test_db}`"))
+            conn.commit()
+        admin_engine.dispose()
 
 
 # ---------- GET /welds ----------

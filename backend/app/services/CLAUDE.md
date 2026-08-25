@@ -33,7 +33,7 @@
   `next_version_no` = 同焊缝最大次版本+1）；`create_registration`（事务内 record+v1.0+
   latest 联动，modalities=[]/quality=待复核/operator=调用方）；`registration_request_key` +
   `_acquire/_release_registration_payload_lock`（**Task 5 P2 修复**：按 operator+表单载荷算自然幂等键；
-  MySQL 用 `GET_LOCK`、SQLite/本地并发用进程内集合锁，拦截**正在提交中的**重复登记，避免顺序编号锁把双击变两条 200，同时不阻塞稍后的合法重复登记）；`list_welds`（服务端筛选+
+  MySQL 用 `GET_LOCK`、SQLite/本地并发用进程内集合锁，拦截**正在提交中的**重复登记，避免顺序编号锁把双击变两条 200，同时不阻塞稍后的合法重复登记）；**Task 5 修复轮次 1**：MySQL 的登记编号锁 / payload 锁 / raw-files 锁改为**独立专用连接持有**，`RELEASE_LOCK` 后才 `close()` 归还池，避免 `commit/rollback` 后 session 改绑别的 pooled connection 导致 advisory lock 驻留、后续普通登记误报 `40900 获取登记编号锁失败`；`list_welds`（服务端筛选+
   分页：`q` LIKE weld_id/registration_no、`source`/`brand` 前缀、`status` 精确、
   `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序）；版本链/新建版本；
   `run_validation` = **15 项确定性核验引擎**（规则名照抄 seed/App.tsx，结果只依赖版本
@@ -194,6 +194,7 @@
 
 ## 坑/限制
 
+- **MySQL advisory lock 生命周期**：`GET_LOCK` 是**连接级**不是事务级；不能用 `session.rollback()/commit()` 之后再靠 `session.connection()` 去 `RELEASE_LOCK`，因为 Session 可能已换到别的 pooled connection。当前实现用**独立 lock connection** 持有，先显式 `RELEASE_LOCK` 再 `close()`；改这里时勿退化回“锁跟着 Session 走”。
 - **commit 归属**：本服务所有写操作**不 commit**，只 flush/改内存属性。**commit 永远是调用方的职责**，
   不显式 commit 则数据不落库。特别注意：路由 `Depends(get_session)` 的请求 session
   （`core/db.py` 的 `get_session`）退出时**只 `close()`，不 commit**——`Session.close()` 会回滚
