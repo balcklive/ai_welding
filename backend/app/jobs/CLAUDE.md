@@ -25,6 +25,7 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18**）。导入本�
     `Session`（`SessionLocal`）；同样原子领单（非 pending 跳过），失败 → `mark_failed`
     + commit。
   - 失败兜底：任意 `Exception` → loguru traceback → failed，**绝不滞留 running**；
+    对 `alignment`/`split` 还会同步清空任务行的 `active_request_key`，让 failed 请求可直接重试；
     未注册 type → `ValueError` 同样走 failed。
   - `_dispatch` / `_mark_failed_in`：handler 执行 + 失败回写（事务脏先 `rollback` 再写）。
 - `alignment.py`：**Task 13**。`handle(job_id, session)`（`@register_handler("alignment")`）——

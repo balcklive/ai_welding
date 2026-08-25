@@ -11,14 +11,15 @@ from sqlmodel import Field, SQLModel
 
 
 class AlignmentTask(SQLModel, table=True):
-    """§3.7 alignment_tasks 多模态对齐（1:1 关联 jobs；新任务靠 request_key 自然幂等）"""
+    """§3.7 alignment_tasks 多模态对齐（1:1 关联 jobs；failed 重试靠 active_request_key 释放）"""
 
     __tablename__ = "alignment_tasks"
 
     id: int | None = Field(default=None, primary_key=True)
     job_id: int = Field(foreign_key="jobs.id", unique=True)
     version_id: int = Field(foreign_key="data_versions.id", index=True)
-    request_key: str | None = Field(default=None, max_length=64, unique=True)
+    request_key: str | None = Field(default=None, max_length=64)
+    active_request_key: str | None = Field(default=None, max_length=64, unique=True)
     modalities: list = Field(default_factory=list, sa_column=Column(JSON))
     events: dict | None = Field(default=None, sa_column=Column(JSON))
     tracks: dict | None = Field(default=None, sa_column=Column(JSON))
@@ -26,14 +27,15 @@ class AlignmentTask(SQLModel, table=True):
 
 
 class SplitTask(SQLModel, table=True):
-    """§3.8 split_tasks 数据切分（新任务靠 request_key 自然幂等）"""
+    """§3.8 split_tasks 数据切分（failed 重试靠 active_request_key 释放）"""
 
     __tablename__ = "split_tasks"
 
     id: int | None = Field(default=None, primary_key=True)
     job_id: int = Field(foreign_key="jobs.id", unique=True)
     version_id: int = Field(foreign_key="data_versions.id", index=True)
-    request_key: str | None = Field(default=None, max_length=64, unique=True)
+    request_key: str | None = Field(default=None, max_length=64)
+    active_request_key: str | None = Field(default=None, max_length=64, unique=True)
     rules: dict = Field(sa_column=Column(JSON))
     task_format: str = Field(max_length=32)
     sample_count: int | None = Field(default=None)

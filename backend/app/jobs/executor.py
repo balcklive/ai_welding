@@ -93,7 +93,25 @@ def _mark_failed_in(session: Session, job_id: int, message: str) -> None:
     failed = session.get(Job, job_id)
     if failed is not None:
         mark_failed(session, failed, {"message": message})
+        _release_request_claim(session, failed)
         session.commit()
+
+
+def _release_request_claim(session: Session, job: Job) -> None:
+    if job.type == "alignment":
+        from app.models.analysis import AlignmentTask
+
+        task = session.exec(select(AlignmentTask).where(AlignmentTask.job_id == job.id)).first()
+        if task is not None:
+            task.active_request_key = None
+            session.add(task)
+    elif job.type == "split":
+        from app.models.analysis import SplitTask
+
+        task = session.exec(select(SplitTask).where(SplitTask.job_id == job.id)).first()
+        if task is not None:
+            task.active_request_key = None
+            session.add(task)
 
 
 def run_job(job_uid: str) -> None:

@@ -627,3 +627,22 @@
 - 代码提交：`47a1edc` (`fix: harden validation alignment and split idempotency`)
 - Concerns：
   - 新增 Alembic `0003_idempotency_request_keys` 只为新写入行强制填充 `request_key`；历史脏数据保持 nullable 兼容，落库前仍建议先执行迁移。
+
+## 修复 subagent 追加（2026-08-25，轮次 2）
+
+- 修复摘要：
+  - ALIGN/SPLIT：把“逻辑幂等键”与“活动占位键”拆开。`request_key` 保留请求历史，新增 `active_request_key` 只给 pending/running/succeeded 占位；failed 任务会释放占位，因此同一失败请求现在会创建新的可执行任务，不再撞唯一约束 500。
+  - ALIGN/SPLIT：创建路由在落新任务前会清理同请求 failed 行的活动占位；执行器失败兜底也会同步清空 `active_request_key`，保证失败后可直接重试，而重复点击仍只能保留一个活动任务。
+  - Alembic：新增 `0004_retry_failed_request_keys`，在线升级把现有活动任务回填到 `active_request_key`，并把唯一约束从 `request_key` 迁到 `active_request_key`；补真实 MySQL 临时库 `0002 -> 0003 -> head` 在线升级回归，避免只靠 `create_all`/offline SQL。
+- TDD 证据：
+  - RED：`cd backend && uv run pytest tests/test_alignment.py::test_alignment_create_allows_retry_after_failed_job tests/test_split_annotation.py::test_split_create_allows_retry_after_failed_job tests/test_models.py::test_alembic_upgrade_online_real_path_executes_0003 -q` → `3 failed, 1 warning`。
+  - GREEN：同一命令复跑 → `3 passed, 1 warning in 38.91s`。
+- 定向/全量验证：
+  - `cd backend && uv run pytest tests/test_models.py tests/test_alignment.py tests/test_split_annotation.py -q` → `55 passed, 1 warning in 250.00s`。
+  - `cd backend && uv run pytest` → `235 passed, 1 warning in 296.41s`。
+  - `npm run typecheck` → `tsc --noEmit` 通过。
+  - `npm run build` → `vite build` 通过（保留既有 Browserslist outdated 提示）。
+- 代码提交：本轮提交主题 `fix: allow retry after failed processing jobs`（最终 SHA 见本轮 git commit）。
+- Concerns：
+  - 在线 Alembic 回归依赖当前 `.env` 中可用的 MySQL 凭据与建库权限；测试会创建并删除临时库。
+  - `0004` 的 downgrade 为兼容旧唯一约束，会对 failed 重试留下的重复 `request_key` 做摘要重写；当前需求只要求升级路径可执行，回滚语义属 best-effort。

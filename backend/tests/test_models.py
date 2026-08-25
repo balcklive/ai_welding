@@ -9,9 +9,14 @@
 5. `DataRecord.latest_version_id` 可指向已建版本。
 """
 
+from pathlib import Path
+from uuid import uuid4
+
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +25,7 @@ from sqlmodel import Session, SQLModel, select
 
 import app.jobs.executor as executor_mod
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.jobs.executor import run_job
@@ -100,11 +106,8 @@ def test_migration_indexes_match_model_metadata() -> None:
     防止模型新增 index=True/Index() 而迁移遗漏（或反之）的索引漂移在 CI 中漏网。
     """
     import re
-    from pathlib import Path
 
-    versions_dir = (
-        Path(__file__).resolve().parents[1] / "alembic" / "versions"
-    )
+    versions_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
     text = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted(versions_dir.glob("*.py"))
@@ -134,6 +137,69 @@ def test_migration_indexes_match_model_metadata() -> None:
             if model_indexes.get(t, set()) != mig_indexes.get(t, set())
         },
     }
+
+
+def test_alembic_upgrade_online_real_path_executes_0003(monkeypatch) -> None:
+    admin_db = settings.mysql_database
+    test_db = f"{admin_db}_alembic_{uuid4().hex[:8]}"
+    admin_url = settings.mysql_url
+    original_db = settings.mysql_database
+    root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+
+    admin_engine = create_engine(admin_url.rsplit(f"/{admin_db}?", 1)[0] + "/mysql?charset=utf8mb4")
+    with admin_engine.connect() as conn:
+        conn.execute(text(f"CREATE DATABASE `{test_db}` CHARACTER SET utf8mb4"))
+        conn.commit()
+
+    try:
+        monkeypatch.setattr(settings, "mysql_database", test_db)
+        command.upgrade(cfg, "0002")
+        command.upgrade(cfg, "0003")
+        command.upgrade(cfg, "head")
+
+        migrated_engine = create_engine(settings.mysql_url)
+        with migrated_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            columns = {
+                row[0]: row[1]
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT column_name, is_nullable
+                        FROM information_schema.columns
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'alignment_tasks'
+                          AND column_name IN ('request_key', 'active_request_key')
+                        """
+                    )
+                )
+            }
+            assert columns == {"request_key": "YES", "active_request_key": "YES"}
+            constraints = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT constraint_name
+                        FROM information_schema.table_constraints
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'alignment_tasks'
+                          AND constraint_type = 'UNIQUE'
+                        """
+                    )
+                )
+            }
+            assert "uq_alignment_tasks_active_request_key" in constraints
+            assert "uq_alignment_tasks_request_key" not in constraints
+        migrated_engine.dispose()
+    finally:
+        settings.mysql_database = original_db
+        with admin_engine.connect() as conn:
+            conn.execute(text(f"DROP DATABASE IF EXISTS `{test_db}`"))
+            conn.commit()
+        admin_engine.dispose()
 
 
 def test_user_data_record_version_insert_and_json_roundtrip(engine: Engine) -> None:

@@ -390,16 +390,20 @@ def create_alignment_task(
     requested_modalities = list(body.modalities or [])
     if msg := _alignment_input_error(record, version, requested_modalities):
         return err(40000, msg, status=400)
+    request_key = _alignment_request_key(version.id)
     existing_alignment = _existing_alignment_job_uid(session, version.id)
     if existing_alignment is not None:
         return ok({"job_id": existing_alignment})
+    _release_failed_alignment_claims(session, version.id, request_key)
+    session.flush()
 
     try:
         job = create_job(session, type="alignment")
         task = AlignmentTask(
             job_id=job.id,
             version_id=version.id,
-            request_key=_alignment_request_key(version.id),
+            request_key=request_key,
+            active_request_key=request_key,
             modalities=list(body.modalities),
         )
         session.add(task)
@@ -481,6 +485,8 @@ def create_split_task(
     existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
     if existing_split is not None:
         return ok({"job_id": existing_split})
+    _release_failed_split_claims(session, version_id, request_key)
+    session.flush()
 
     try:
         job = create_job(session, type="split")
@@ -488,6 +494,7 @@ def create_split_task(
             job_id=job.id,
             version_id=version_id,
             request_key=request_key,
+            active_request_key=request_key,
             rules=rules,
             task_format=body.task_format,
         )
@@ -839,6 +846,21 @@ def _existing_alignment_job_uid(session: Session, version_id: int) -> str | None
     return None
 
 
+def _release_failed_alignment_claims(session: Session, version_id: int, request_key: str) -> None:
+    rows = session.exec(
+        select(AlignmentTask, Job)
+        .join(Job, Job.id == AlignmentTask.job_id)
+        .where(
+            AlignmentTask.version_id == version_id,
+            AlignmentTask.request_key == request_key,
+        )
+    ).all()
+    for task, job in rows:
+        if job.status == "failed" and task.active_request_key is not None:
+            task.active_request_key = None
+            session.add(task)
+
+
 def _existing_split_job_uid(
     session: Session,
     version_id: int,
@@ -860,6 +882,18 @@ def _existing_split_job_uid(
         if job.status in {"pending", "running", "succeeded"}:
             return job.job_uid
     return None
+
+
+def _release_failed_split_claims(session: Session, version_id: int, request_key: str) -> None:
+    rows = session.exec(
+        select(SplitTask, Job)
+        .join(Job, Job.id == SplitTask.job_id)
+        .where(SplitTask.version_id == version_id, SplitTask.request_key == request_key)
+    ).all()
+    for task, job in rows:
+        if job.status == "failed" and task.active_request_key is not None:
+            task.active_request_key = None
+            session.add(task)
 
 
 

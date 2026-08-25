@@ -306,6 +306,49 @@ def test_split_create_is_idempotent_for_same_version_and_config(
         assert len(matching) == 1
 
 
+def test_split_create_allows_retry_after_failed_job(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("app.jobs.split._REF_DURATION_S", 0.05)
+    vid = _version_id_by_no(WELD_0248)
+    job_id = _create_split_task(WELD_0248, vid, fixed_rate=FIXED_RATE)
+
+    def _boom(_job_id, _session):
+        raise RuntimeError("模拟切分内核崩溃")
+
+    monkeypatch.setitem(executor_mod.HANDLERS, "split", _boom)
+    run_job(job_id)
+    failed = client.get(f"/api/v1/split-tasks/{job_id}").json()["data"]
+    assert failed["status"] == "failed"
+
+    retry = client.post(
+        f"/api/v1/welds/{WELD_0248}/versions/{vid}/split-tasks",
+        json={"fixed_rate": FIXED_RATE, "keep_event_buffer": 0.2, "task_format": "目标检测"},
+    )
+    assert retry.status_code == 200, retry.text
+    retry_job_id = retry.json()["data"]["job_id"]
+    assert retry_job_id != job_id
+
+    duplicate_retry = client.post(
+        f"/api/v1/welds/{WELD_0248}/versions/{vid}/split-tasks",
+        json={"fixed_rate": FIXED_RATE, "keep_event_buffer": 0.2, "task_format": "目标检测"},
+    )
+    assert duplicate_retry.status_code == 200, duplicate_retry.text
+    assert duplicate_retry.json()["data"]["job_id"] == retry_job_id
+
+    with Session(db_engine) as session:
+        tasks = session.exec(select(SplitTask).where(SplitTask.version_id == vid)).all()
+        assert len(tasks) == 2
+        jobs = session.exec(
+            select(Job).where(Job.job_uid.in_([job_id, retry_job_id])).order_by(Job.id)
+        ).all()
+        assert [job.status for job in jobs] == ["failed", "pending"]
+
+
 def test_split_task_storage_failure_cleans_objects_and_keeps_db_job_consistent(
     db_engine,
     override_get_session,

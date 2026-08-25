@@ -32,8 +32,9 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
     `ok({job_id})`；weld/version 缺失 → 40401/40402；**缺少所需视频/时序输入 → 40000**；
-    **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**，并以
-    `alignment_tasks.request_key` 唯一约束兜底并发双击。
+    **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**；failed
+    旧任务会释放 `active_request_key`，下一次提交创建新的可执行 job；并发双击仍由
+    `alignment_tasks.active_request_key` 唯一约束兜底。
   - `GET /alignment-tasks/{task_id}`（**Task 13**）：Job 信封（`task_id`=job_uid），成功时
     `result` 内嵌 `events/tracks/assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）；
     未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
@@ -43,7 +44,8 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行并**真实写入**
     `processed/{weld_id}/split/*.jpg|*.json`；任一写失败会清理已写对象、回滚样本与任务结果；
     **缺少时序输入 → 40000**；**同 version+rules+task_format 的 pending/running/succeeded
-    重复提交返回既有 `job_id`（幂等）**，并以 `split_tasks.request_key` 唯一约束兜底并发双击。
+    重复提交返回既有 `job_id`（幂等）**；failed 旧任务会释放 `active_request_key`，下一次提交
+    创建新的可执行 job；并发双击仍由 `split_tasks.active_request_key` 唯一约束兜底。
     GET 返回 Job 信封（result 内嵌
     sample_count/samples（**review 修复**：`samples` 仅前 50 条预览，全量以 `samples` 表为准），
     sample_count 以 split_tasks 行为准合并）。

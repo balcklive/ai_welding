@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/alembic/
 
-Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）+ **Task 18（`0002_signal_ingests`，新增 `signal_ingests` 表）** + **Task 2 修复（`0003_idempotency_request_keys`，版本/对齐/切分并发幂等键）**。
+Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）+ **Task 18（`0002_signal_ingests`，新增 `signal_ingests` 表）** + **Task 2 修复（`0003_idempotency_request_keys`，版本/对齐/切分并发幂等键）** + **Task 2 修复轮次 2（`0004_retry_failed_request_keys`，failed 对齐/切分释放活动幂等占位）**。
 
 ## 文件
 
@@ -10,11 +10,13 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - `versions/0001_initial.py`：初始迁移（手写，见"手写迁移的原因"）。
 - `versions/0002_signal_ingests.py`：**Task 18**。新增 `signal_ingests` 表（手写；`job_id` UK 1:1→jobs、`(version_id, source_object_key)` UK 幂等、idx `version_id`）。
 - `versions/0003_idempotency_request_keys.py`：为 `data_versions` / `alignment_tasks` / `split_tasks` 新增 `request_key` 列与唯一约束；列保持 nullable 以兼容历史行，新代码对新写入行始终填充。
+- `versions/0004_retry_failed_request_keys.py`：为 `alignment_tasks` / `split_tasks` 新增 `active_request_key`；在线升级时把 pending/running/succeeded 的活动占位从 `request_key` 迁到 `active_request_key`，并改唯一约束到该列，允许 failed 任务保留 `request_key` 历史后重试。
 
 ## 常用命令（在 `backend/` 下执行）
 
 - 生成迁移：`uv run alembic revision --autogenerate -m "..."`（需要连上远程 MySQL）
 - 应用：`uv run alembic upgrade head`
+- 在线验证：测试 `tests/test_models.py::test_alembic_upgrade_online_real_path_executes_0003` 会在真实 MySQL 临时库按 `0002 -> 0003 -> head` 路径执行，验证 0003/0004 可升级；不要只看 `create_all` 或 `--sql`。
 - 回滚：`uv run alembic downgrade -1`
 - 离线渲染 SQL（不连库）：`uv run alembic upgrade head --sql`
 
