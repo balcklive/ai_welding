@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
 from app.api.deps import forbid_unless_record_owned, get_current_user, owned_weld_ids
@@ -87,6 +87,15 @@ def _is_safe_object_key(value: str) -> bool:
         return False
     parts = value.split("/")
     return all(part not in {"", ".", ".."} for part in parts)
+
+
+def _is_retryable_write_error(exc: Exception) -> bool:
+    if isinstance(exc, IntegrityError):
+        return True
+    if isinstance(exc, OperationalError):
+        return "locked" in str(exc).lower()
+    return False
+
 
 
 def _stat_new_object_keys(version, object_keys: list[str]) -> tuple[list[str], int] | str:
@@ -169,19 +178,51 @@ def create_registration(
     source = (body.source or "").strip()
     if not source:
         return err(40000, "数据来源不能为空", status=400)
-    record, _version = svc.create_registration(
-        session, body.model_dump(), _operator(current_user)
-    )
-    write_audit(
-        session,
-        current_user.id,
-        "create",
-        "weld",
-        record.weld_id,
-        {"registration_no": record.registration_no, "action": "登记原始数据"},
-    )
-    session.commit()
-    return ok(svc.record_payload(session, record))
+    payload = body.model_dump()
+    for attempt in range(3):
+        request_lock = None
+        day_lock = None
+        try:
+            request_lock = svc._acquire_registration_payload_lock(
+                session, payload, _operator(current_user)
+            )
+            day_lock = svc._acquire_registration_lock(
+                session,
+                svc._seq_date(svc._as_utc(payload.get("collected_at"))),
+            )
+            record, _version = svc.create_registration(
+                session, payload, _operator(current_user)
+            )
+            write_audit(
+                session,
+                current_user.id,
+                "create",
+                "weld",
+                record.weld_id,
+                {"registration_no": record.registration_no, "action": "登记原始数据"},
+            )
+            session.commit()
+            return ok(svc.record_payload(session, record))
+        except RuntimeError as exc:
+            session.rollback()
+            return err(40900, str(exc), status=409)
+        except (IntegrityError, OperationalError) as exc:
+            session.rollback()
+            if attempt < 2 and _is_retryable_write_error(exc):
+                continue
+            if isinstance(exc, IntegrityError):
+                return err(40900, "登记编号冲突，请重试", status=409)
+            raise
+        finally:
+            try:
+                svc._release_registration_lock(session, day_lock)
+            except Exception:
+                pass
+            try:
+                svc._release_registration_payload_lock(session, request_lock)
+            except Exception:
+                pass
+    return err(40900, "登记编号冲突，请重试", status=409)
 
 
 @router.get("/registrations/{registration_id}")
@@ -237,27 +278,6 @@ def attach_raw_files(
     forbid_unless_record_owned(session, current_user, record)
     if not body.object_keys:
         return err(40000, "object_keys 不能为空", status=400)
-    version = svc.get_v10_version(session, record.id)
-    if version is None:
-        return err(40402, "v1.0 原始数据版本不存在", status=404)
-    statted = _stat_new_object_keys(version, body.object_keys)
-    if isinstance(statted, str):
-        return err(40000, statted, status=400)
-    new_object_keys, storage_bytes = statted
-    svc.attach_raw_files(
-        session, record, version, new_object_keys, storage_bytes
-    )
-    write_audit(
-        session,
-        current_user.id,
-        "update",
-        "weld",
-        record.weld_id,
-        {"action": "关联原始文件", "count": len(new_object_keys), "requested_count": len(body.object_keys)},
-    )
-    # 自动触发信号导入（Task 18）：本次挂载含 .csv 键时，为每个**新** CSV 建
-    # signal_ingest Job + SignalIngest(pending)（同一事务）。`signal_ingests`
-    # 表对 (version_id, source_object_key) 唯一约束兜底并发重复挂载。
     csv_keys = []
     seen_csv_keys: set[str] = set()
     for key in body.object_keys:
@@ -265,33 +285,112 @@ def attach_raw_files(
         if key.lower().endswith(".csv") and key not in seen_csv_keys:
             seen_csv_keys.add(key)
             csv_keys.append(key)
-    if csv_keys:
-        existing = set(
-            session.exec(
-                select(SignalIngest.source_object_key).where(
-                    SignalIngest.version_id == version.id
+
+    for attempt in range(3):
+        version = svc.get_v10_version(session, record.id)
+        if version is None:
+            return err(40402, "v1.0 原始数据版本不存在", status=404)
+        request_lock = None
+        try:
+            if csv_keys:
+                request_lock = svc._acquire_raw_files_payload_lock(
+                    session, version.id, csv_keys
                 )
-            ).all()
-        )
-        for key in csv_keys:
-            if key in existing:
-                continue
-            job = create_job(
+                existing = set(
+                    session.exec(
+                        select(SignalIngest.source_object_key).where(
+                            SignalIngest.version_id == version.id
+                        )
+                    ).all()
+                )
+                if any(key in existing for key in csv_keys):
+                    return err(40900, "CSV 已存在导入任务", status=409)
+            statted = _stat_new_object_keys(version, body.object_keys)
+            if isinstance(statted, str):
+                return err(40000, statted, status=400)
+            new_object_keys, storage_bytes = statted
+            existing_csv_keys = {key for key in csv_keys if key not in set(new_object_keys)}
+            if existing_csv_keys:
+                existing = set(
+                    session.exec(
+                        select(SignalIngest.source_object_key).where(
+                            SignalIngest.version_id == version.id
+                        )
+                    ).all()
+                )
+                if any(key in existing for key in existing_csv_keys):
+                    return err(40900, "CSV 已存在导入任务", status=409)
+            svc.attach_raw_files(
+                session, record, version, new_object_keys, storage_bytes
+            )
+            write_audit(
                 session,
-                "signal_ingest",
-                result={"version_id": version.id, "source_object_key": key},
+                current_user.id,
+                "update",
+                "weld",
+                record.weld_id,
+                {"action": "关联原始文件", "count": len(new_object_keys), "requested_count": len(body.object_keys)},
             )
-            session.add(
-                SignalIngest(
-                    job_id=job.id,
-                    version_id=version.id,
-                    source_object_key=key,
-                    status="pending",
-                    created_at=datetime.now(timezone.utc),
+            # 自动触发信号导入（Task 18）：本次挂载含 .csv 键时，为每个**新** CSV 建
+            # signal_ingest Job + SignalIngest(pending)（同一事务）。`signal_ingests`
+            # 表对 (version_id, source_object_key) 唯一约束兜底并发重复挂载。
+            if csv_keys:
+                existing = set(
+                    session.exec(
+                        select(SignalIngest.source_object_key).where(
+                            SignalIngest.version_id == version.id
+                        )
+                    ).all()
                 )
-            )
-    session.commit()
-    return ok(svc.version_payload(version))
+                if any(key in existing for key in csv_keys):
+                    return err(40900, "CSV 已存在导入任务", status=409)
+                for key in csv_keys:
+                    if key in existing:
+                        continue
+                    job = create_job(
+                        session,
+                        "signal_ingest",
+                        result={"version_id": version.id, "source_object_key": key},
+                    )
+                    session.add(
+                        SignalIngest(
+                            job_id=job.id,
+                            version_id=version.id,
+                            source_object_key=key,
+                            status="pending",
+                            created_at=datetime.now(timezone.utc),
+                        )
+                    )
+            session.commit()
+            return ok(svc.version_payload(version))
+        except RuntimeError as exc:
+            session.rollback()
+            return err(40900, str(exc), status=409)
+        except (IntegrityError, OperationalError) as exc:
+            session.rollback()
+            if attempt < 2 and _is_retryable_write_error(exc):
+                continue
+            version = svc.get_v10_version(session, record.id)
+            if version is not None and csv_keys:
+                existing = set(
+                    session.exec(
+                        select(SignalIngest.source_object_key).where(
+                            SignalIngest.version_id == version.id
+                        )
+                    ).all()
+                )
+                if any(key in existing for key in csv_keys):
+                    return err(40900, "CSV 已存在导入任务", status=409)
+            if isinstance(exc, IntegrityError):
+                return err(40900, "CSV 已存在导入任务", status=409)
+            raise
+        finally:
+            try:
+                svc._release_raw_files_payload_lock(session, request_lock)
+            except Exception:
+                pass
+
+    return err(40900, "CSV 已存在导入任务", status=409)
 
 
 # ── 版本 ─────────────────────────────────────────────────────────────

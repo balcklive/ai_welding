@@ -26,7 +26,9 @@ import json
 import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from threading import Lock
 
+from sqlalchemy import text
 from sqlmodel import Session, func, or_, select
 
 from app.models.data import (
@@ -75,8 +77,43 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "sample_rate",
 )
 
+_REGISTRATION_PAYLOAD_LOCK = Lock()
+_ACTIVE_REGISTRATION_KEYS: set[str] = set()
+_RAW_FILES_PAYLOAD_LOCK = Lock()
+_ACTIVE_RAW_FILES_KEYS: set[str] = set()
+
 
 # ── 业务号生成器 ─────────────────────────────────────────────────────
+
+
+def _is_mysql_session(session: Session) -> bool:
+    bind = session.get_bind()
+    return bind is not None and bind.dialect.name == "mysql"
+
+
+
+def _acquire_registration_lock(session: Session, day: date) -> str | None:
+    if not _is_mysql_session(session):
+        return None
+    lock_name = f"data_record_seq:{day.strftime('%Y%m%d')}"
+    acquired = session.connection().execute(
+        text("SELECT GET_LOCK(:name, :timeout)"),
+        {"name": lock_name, "timeout": 1},
+    ).scalar()
+    if acquired != 1:
+        raise RuntimeError("获取登记编号锁失败")
+    return lock_name
+
+
+
+def _release_registration_lock(session: Session, lock_name: str | None) -> None:
+    if lock_name is None or not _is_mysql_session(session):
+        return
+    session.connection().execute(
+        text("SELECT RELEASE_LOCK(:name)"),
+        {"name": lock_name},
+    )
+
 
 
 def next_weld_id(session: Session, day: date) -> str:
@@ -109,6 +146,106 @@ def next_version_no(session: Session, record_id: int) -> str:
 
 
 # ── 登记 ─────────────────────────────────────────────────────────────
+
+
+def registration_request_key(data: dict, operator: str) -> str:
+    """登记自然幂等键：同 operator + 同表单载荷视为同一次提交。"""
+    payload = {
+        "source": (data.get("source") or "").strip(),
+        "collected_at": _iso_utc(_as_utc(data.get("collected_at"))),
+        "weld_name": data.get("weld_name"),
+        "product": data.get("product"),
+        "machine": data.get("machine"),
+        "weld_method": data.get("weld_method"),
+        "material": data.get("material"),
+        "thickness": data.get("thickness"),
+        "current_voltage": data.get("current_voltage"),
+        "sample_rate": data.get("sample_rate"),
+        "operator": operator,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+
+def _acquire_registration_payload_lock(
+    session: Session, data: dict, operator: str
+) -> str:
+    request_key = registration_request_key(data, operator)
+    if _is_mysql_session(session):
+        lock_name = f"data_record_req:{request_key[:48]}"
+        acquired = session.connection().execute(
+            text("SELECT GET_LOCK(:name, :timeout)"),
+            {"name": lock_name, "timeout": 0},
+        ).scalar()
+        if acquired != 1:
+            raise RuntimeError("重复登记请求：相同表单正在提交")
+        return lock_name
+    with _REGISTRATION_PAYLOAD_LOCK:
+        if request_key in _ACTIVE_REGISTRATION_KEYS:
+            raise RuntimeError("重复登记请求：相同表单正在提交")
+        _ACTIVE_REGISTRATION_KEYS.add(request_key)
+    return request_key
+
+
+
+def _release_registration_payload_lock(session: Session, lock_name: str | None) -> None:
+    if lock_name is None:
+        return
+    if _is_mysql_session(session):
+        session.connection().execute(
+            text("SELECT RELEASE_LOCK(:name)"),
+            {"name": lock_name},
+        )
+        return
+    with _REGISTRATION_PAYLOAD_LOCK:
+        _ACTIVE_REGISTRATION_KEYS.discard(lock_name)
+
+
+
+def raw_files_request_key(version_id: int, object_keys: list[str]) -> str:
+    payload = {
+        "version_id": version_id,
+        "object_keys": sorted(dict.fromkeys(object_keys)),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+
+def _acquire_raw_files_payload_lock(
+    session: Session, version_id: int, object_keys: list[str]
+) -> str:
+    request_key = raw_files_request_key(version_id, object_keys)
+    if _is_mysql_session(session):
+        lock_name = f"raw_files_req:{request_key[:48]}"
+        acquired = session.connection().execute(
+            text("SELECT GET_LOCK(:name, :timeout)"),
+            {"name": lock_name, "timeout": 0},
+        ).scalar()
+        if acquired != 1:
+            raise RuntimeError("CSV 已存在导入任务")
+        return lock_name
+    with _RAW_FILES_PAYLOAD_LOCK:
+        if request_key in _ACTIVE_RAW_FILES_KEYS:
+            raise RuntimeError("CSV 已存在导入任务")
+        _ACTIVE_RAW_FILES_KEYS.add(request_key)
+    return request_key
+
+
+
+def _release_raw_files_payload_lock(session: Session, lock_name: str | None) -> None:
+    if lock_name is None:
+        return
+    if _is_mysql_session(session):
+        session.connection().execute(
+            text("SELECT RELEASE_LOCK(:name)"),
+            {"name": lock_name},
+        )
+        return
+    with _RAW_FILES_PAYLOAD_LOCK:
+        _ACTIVE_RAW_FILES_KEYS.discard(lock_name)
+
 
 
 def create_registration(

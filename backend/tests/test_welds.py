@@ -171,12 +171,133 @@ def test_sequential_registration_numbers_same_day(
     assert second["registration_no"] == "REG-20260816-00002"
 
 
+
+def test_create_registration_retries_generated_id_conflict(
+    override_get_session, override_get_current_user, monkeypatch
+) -> None:
+    import app.api.v1.welds as welds_api
+    from sqlalchemy.exc import IntegrityError
+
+    original_create_registration = welds_api.svc.create_registration
+    calls = {"count": 0}
+
+    def _flaky_create_registration(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise IntegrityError("INSERT", {}, Exception("duplicate generated id"))
+        return original_create_registration(*args, **kwargs)
+
+    monkeypatch.setattr(welds_api.svc, "create_registration", _flaky_create_registration)
+
+    resp = client.post(
+        "/api/v1/registrations",
+        json={
+            "source": "并发测试产线",
+            "collected_at": "2026-08-16T08:00:00Z",
+            "weld_name": "并发登记",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["code"] == 0
+    assert calls["count"] == 2
+
+
 def test_create_registration_requires_source(
     override_get_session, override_get_current_user
 ) -> None:
     resp = client.post("/api/v1/registrations", json={"source": "  "})
     assert resp.status_code == 400
     assert resp.json()["code"] == 40000
+
+
+
+def test_create_registration_rejects_concurrent_duplicate_payload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import time
+    import app.api.v1.welds as welds_api
+
+    db_path = tmp_path / "weld-registration-concurrency.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+
+    def _override_session():
+        with Session(engine) as session:
+            yield session
+
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override_user() -> User:
+        return dummy
+
+    app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_current_user] = _override_user
+
+    original_create_registration = welds_api.svc.create_registration
+
+    def _slow_create_registration(*args, **kwargs):
+        time.sleep(0.2)
+        return original_create_registration(*args, **kwargs)
+
+    monkeypatch.setattr(welds_api.svc, "create_registration", _slow_create_registration)
+
+    payload = {
+        "source": "task5p2-dup",
+        "collected_at": "2026-08-16T08:00:00Z",
+        "weld_name": "重复登记",
+        "product": "测试产品",
+        "machine": "Fronius CMT",
+        "weld_method": "MAG焊",
+        "material": "Q235B",
+        "thickness": "6 mm",
+        "current_voltage": "180 A / 22 V",
+        "sample_rate": "10 kHz",
+    }
+    results: list[tuple[int, dict]] = []
+    errors: list[BaseException] = []
+
+    def _worker(delay: float = 0.0) -> None:
+        try:
+            if delay:
+                time.sleep(delay)
+            with TestClient(app) as local_client:
+                resp = local_client.post("/api/v1/registrations", json=payload)
+            results.append((resp.status_code, resp.json()))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_worker, args=(0.0,)),
+        threading.Thread(target=_worker, args=(0.05,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    app.dependency_overrides.pop(get_session, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+    assert not errors
+    assert sorted(status for status, _body in results) == [200, 409]
+    with Session(engine) as session:
+        records = session.exec(
+            select(DataRecord).where(
+                DataRecord.source == "task5p2-dup",
+                DataRecord.weld_name == "重复登记",
+            )
+        ).all()
+        assert len(records) == 1
 
 
 # ---------- GET /welds ----------
@@ -535,7 +656,7 @@ def test_attach_raw_files_is_idempotent_for_existing_keys(
 ) -> None:
     record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
     record_id = record["id"]
-    key = "raw/REG-20260815-00248/dup.csv"
+    key = "raw/REG-20260815-00248/dup.mp4"
     fake_storage.sizes = {key: 321}
 
     first = client.post(
@@ -555,6 +676,197 @@ def test_attach_raw_files_is_idempotent_for_existing_keys(
     assert after_first["storage_bytes"] == record["storage_bytes"] + 321
     assert after_second["storage_bytes"] == after_first["storage_bytes"]
     assert second.json()["data"]["object_keys"].count(key) == 1
+
+
+
+def test_attach_raw_files_second_csv_submit_returns_409(
+    override_get_session, override_get_current_user, fake_storage
+) -> None:
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    record_id = record["id"]
+    key = "raw/REG-20260815-00248/second-submit.csv"
+    fake_storage.sizes = {key: 321}
+
+    first = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": [key]},
+    )
+    assert first.status_code == 200, first.text
+
+    second = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": [key]},
+    )
+    assert second.status_code == 409, second.text
+    assert second.json()["code"] == 40900
+
+
+
+def test_attach_raw_files_rejects_concurrent_duplicate_csv_submit(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import time
+    import app.api.v1.welds as welds_api
+
+    db_path = tmp_path / "weld-raw-files-concurrency.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+
+    class FileStorage:
+        def stat_object(self, object_key: str) -> int:
+            return 321 if object_key == key else 0
+
+    def _override_session():
+        with Session(engine) as session:
+            yield session
+
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override_user() -> User:
+        return dummy
+
+    key = "raw/REG-20260815-00248/concurrent-submit.csv"
+    app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_current_user] = _override_user
+    monkeypatch.setattr("app.api.v1.welds.get_storage", lambda: FileStorage())
+
+    original_attach_raw_files = welds_api.svc.attach_raw_files
+
+    def _slow_attach_raw_files(*args, **kwargs):
+        time.sleep(0.2)
+        return original_attach_raw_files(*args, **kwargs)
+
+    monkeypatch.setattr(welds_api.svc, "attach_raw_files", _slow_attach_raw_files)
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    payload = {"object_keys": [key]}
+    results: list[tuple[int, dict]] = []
+    errors: list[BaseException] = []
+
+    def _worker(delay: float = 0.0) -> None:
+        try:
+            if delay:
+                time.sleep(delay)
+            with TestClient(app) as local_client:
+                resp = local_client.post(
+                    f"/api/v1/registrations/{record['id']}/raw-files",
+                    json=payload,
+                )
+            results.append((resp.status_code, resp.json()))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=_worker, args=(0.0,)),
+        threading.Thread(target=_worker, args=(0.05,)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    app.dependency_overrides.pop(get_session, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+    assert not errors
+    assert sorted(status for status, _body in results) == [200, 409]
+
+
+
+def test_attach_raw_files_returns_409_when_csv_ingest_already_exists(
+    override_get_session, override_get_current_user, fake_storage, db_session
+) -> None:
+    from app.models.analysis import SignalIngest
+    from app.services.jobs import create_job
+
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    record_id = record["id"]
+    version = db_session.exec(
+        select(DataVersion).where(DataVersion.record_id == record_id, DataVersion.version_no == "v1.0")
+    ).first()
+    assert version is not None
+    key = "raw/REG-20260815-00248/existing-ingest.csv"
+    fake_storage.sizes = {key: 321}
+
+    version.object_keys = list(version.object_keys or []) + [key]
+    job = create_job(
+        db_session,
+        "signal_ingest",
+        result={"version_id": version.id, "source_object_key": key},
+    )
+    db_session.add(
+        SignalIngest(
+            job_id=job.id,
+            version_id=version.id,
+            source_object_key=key,
+            status="pending",
+        )
+    )
+    db_session.commit()
+
+    before = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    resp = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": [key], "storage_bytes": 999},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == 40900
+
+    after = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    assert after["storage_bytes"] == before["storage_bytes"]
+
+
+
+def test_attach_raw_files_duplicate_ingest_conflict_returns_existing_or_409(
+    override_get_session, override_get_current_user, fake_storage, monkeypatch, db_session
+) -> None:
+    import app.api.v1.welds as welds_api
+    from app.models.analysis import SignalIngest
+    from sqlalchemy.exc import IntegrityError
+
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    record_id = record["id"]
+    key = "raw/REG-20260815-00248/concurrent.csv"
+    fake_storage.sizes = {key: 321}
+    original_commit = welds_api.Session.commit
+    triggered = {"value": False}
+
+    def _flaky_commit(self, *args, **kwargs):
+        if not triggered["value"] and any(
+            isinstance(obj, SignalIngest) and obj.source_object_key == key
+            for obj in self.new
+        ):
+            triggered["value"] = True
+            raise IntegrityError("INSERT", {}, Exception("duplicate signal ingest"))
+        return original_commit(self, *args, **kwargs)
+
+    monkeypatch.setattr(welds_api.Session, "commit", _flaky_commit)
+    resp = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": [key]},
+    )
+
+    assert resp.status_code in {200, 409}, resp.text
+    assert triggered["value"] is True
+    refreshed = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    assert refreshed["storage_bytes"] == record["storage_bytes"] + 321
+    if resp.status_code == 200:
+        assert resp.json()["data"]["object_keys"].count(key) == 1
+    version = db_session.exec(
+        select(DataVersion).where(DataVersion.record_id == record_id, DataVersion.version_no == "v1.0")
+    ).first()
+    assert version is not None
+    ingests = db_session.exec(select(SignalIngest).where(SignalIngest.version_id == version.id)).all()
+    assert len([row for row in ingests if row.source_object_key == key]) == 1
 
 
 # ---------- 核验 ----------

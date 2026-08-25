@@ -167,7 +167,7 @@ def test_alembic_upgrade_online_real_path_executes_0003(monkeypatch) -> None:
 
         migrated_engine = create_engine(settings.mysql_url)
         with migrated_engine.connect() as conn:
-            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
             for table_name, expected_columns in {
                 "data_versions": {"request_key": "YES"},
                 "alignment_tasks": {"request_key": "YES", "active_request_key": "YES"},
@@ -222,6 +222,19 @@ def test_alembic_upgrade_online_real_path_executes_0003(monkeypatch) -> None:
             }
             assert "uq_split_tasks_active_request_key" in split_constraints
             assert "uq_split_tasks_request_key" not in split_constraints
+
+            audit_resource_id = conn.execute(
+                text(
+                    """
+                    SELECT character_maximum_length
+                    FROM information_schema.columns
+                    WHERE table_schema = DATABASE()
+                      AND table_name = 'audit_logs'
+                      AND column_name = 'resource_id'
+                    """
+                )
+            ).scalar()
+            assert audit_resource_id == 255
         migrated_engine.dispose()
     finally:
         settings.mysql_database = original_db

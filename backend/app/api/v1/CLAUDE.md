@@ -17,9 +17,11 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     按焊缝去重仅最新版本，返回 `paginate(...)` 载荷，item 含 `latest_version` 对象）；
   - `GET /welds/{weld_id}` 详情（含最新版本）;
   - `POST/GET/PATCH /registrations(/{registration_id})`（`registration_id` 兼容
-    DB id / registration_no / weld_id 三种标识，`get_record_by_identifier`）；
+    DB id / registration_no / weld_id 三种标识，`get_record_by_identifier`）。**Task 5 P2 修复**：
+    `POST /registrations` 在生成编号前先抢占同 payload 的自然幂等锁（MySQL `GET_LOCK` / SQLite 进程内锁），
+    正在提交中的重复请求直接 `40900`（`重复登记请求：相同表单正在提交`），避免 MySQL 顺序编号锁把双击/重放串行成两条 200；
   - `POST /registrations/{registration_id}/raw-files`（body `{object_keys[], storage_bytes?}`，
-    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务）；
+    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务。**Task 5 P2 修复**：若请求中的任一 CSV 已有 `signal_ingests` 行，则整个挂载直接 `40900`，并保持容量不重复累计）；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
     `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
@@ -130,7 +132,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `POST /upload`（multipart `file`，小文件 <100MB 后端代理）：object_key 前缀
     固定 `uploads/{uuid}`，流式读取 + 字节计数封顶（`MAX_PROXY_UPLOAD_SIZE`，
     Content-Length 有则先快速拒绝），`upload_stream` 后 `presign_get` 返回
-    `ok({object_key, url, lifecycle})`。`lifecycle={policy:temporary,retention_days:30,prefix:'uploads/'}` 对齐 OSS `uploads/` 30 天清理策略（**不承诺立即删除**）；超限 → `err(40000, ..., status=400)`。
+    `ok({object_key, url, lifecycle})`。`lifecycle={policy:temporary,retention_days:30,prefix:'uploads/'}` 对齐 OSS `uploads/` 30 天清理策略（**不承诺立即删除**）；超限 → `err(40000, ..., status=400)`。**Task 5 P2 修复**：CSV 代理上传新增 5MB 默认门槛（`MAX_PROXY_CSV_UPLOAD_SIZE`），超限直接 `40000` 提示改走 `presign-upload` + 挂载异步导入，避免 60s+ 静默超时；长文件名/长 object key 的审计写入不再 500。
   - `POST /presign-upload`（body `{size, content_type, prefix, filename?}`）：
     校验 `0 < size ≤ 2GB`（`MAX_PRESIGN_UPLOAD_SIZE`），调 `presign_put` 返回
     `ok({object_key, upload_url, lifecycle?})`；当对象键落在 `uploads/` 前缀时附带同样的 30 天临时保留策略元数据；**Task 4 修复**：拒绝绝对路径/反斜杠/`..` 路径穿越 prefix，并写 `presign_upload/file` 审计；空 prefix（normalize_key 抛 ValueError）→ 400。

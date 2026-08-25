@@ -11,7 +11,10 @@ flush 后返回的 `entry.id` 已可用。
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha1
 from typing import Any
+
+_MAX_RESOURCE_ID_LEN = 255
 
 from sqlmodel import Session
 
@@ -30,6 +33,18 @@ def _sanitize_detail(value: Any) -> Any:
     if isinstance(value, list):
         return [_sanitize_detail(item) for item in value]
     return value
+
+
+def _normalize_resource_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value)
+    if len(value) <= _MAX_RESOURCE_ID_LEN:
+        return value
+    digest = sha1(value.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    keep = _MAX_RESOURCE_ID_LEN - len(digest) - 1
+    return f"{value[:keep]}:{digest}"
+
 
 
 def write_audit(
@@ -51,7 +66,7 @@ def write_audit(
         user_id=user_id,
         action=action,
         resource_type=resource_type,
-        resource_id=resource_id,
+        resource_id=_normalize_resource_id(resource_id),
         detail=_sanitize_detail(detail) if detail is not None else None,
         created_at=datetime.now(timezone.utc),
     )

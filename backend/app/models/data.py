@@ -138,7 +138,7 @@ class AuditLog(SQLModel, table=True):
     user_id: int | None = Field(default=None, foreign_key="users.id", index=True)
     action: str = Field(max_length=64)
     resource_type: str = Field(max_length=32)
-    resource_id: str | None = Field(default=None, max_length=64)
+    resource_id: str | None = Field(default=None, max_length=255)
     detail: dict | None = Field(default=None, sa_column=Column(JSON))
     created_at: datetime | None = Field(
         default=None,

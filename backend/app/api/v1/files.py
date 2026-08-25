@@ -33,6 +33,8 @@ router = APIRouter(prefix="/files", dependencies=[Depends(get_current_user)])
 
 #: 小文件代理上传上限（OSS §3.1：<100MB）
 MAX_PROXY_UPLOAD_SIZE = 100 * 1024 * 1024
+#: 大 CSV 不走代理上传，避免长连接超时；请改用 presign-upload + raw-files 异步导入。
+MAX_PROXY_CSV_UPLOAD_SIZE = 5 * 1024 * 1024
 #: 大文件预签名直传上限（OSS §3.2：≤2GB）
 MAX_PRESIGN_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
 #: 预签名 GET URL 有效期上限（OSS §4：长视频 24h）
@@ -55,6 +57,11 @@ def _size_msg() -> str:
     return "文件过大：小文件代理上传需 < 100MB"
 
 
+
+def _csv_size_msg() -> str:
+    return "CSV 文件过大，请改用 /api/v1/files/presign-upload 直传后再挂载异步导入"
+
+
 def _declared_length(file: UploadFile) -> int | None:
     """尽力从 multipart 部件头取 Content-Length；缺失/非法返回 None。"""
     raw = (file.headers or {}).get("content-length")
@@ -74,6 +81,13 @@ def _is_safe_object_path(value: str) -> bool:
     if any(part in {"", ".", ".."} for part in parts):
         return False
     return True
+
+
+def _is_csv_upload(file: UploadFile) -> bool:
+    filename = (file.filename or "").lower()
+    content_type = (file.content_type or "").lower()
+    return filename.endswith(".csv") or content_type in {"text/csv", "application/csv"}
+
 
 
 def _raw_object_key_from_request(request: Request) -> str | None:
@@ -106,6 +120,8 @@ def upload_file(
     declared = _declared_length(file)
     if declared is not None and declared >= MAX_PROXY_UPLOAD_SIZE:
         return err(40000, _size_msg(), status=400)
+    if declared is not None and _is_csv_upload(file) and declared > MAX_PROXY_CSV_UPLOAD_SIZE:
+        return err(40000, _csv_size_msg(), status=400)
 
     spool = tempfile.SpooledTemporaryFile(max_size=_CHUNK)
     try:
@@ -119,6 +135,8 @@ def upload_file(
             total += len(chunk)
             if total >= MAX_PROXY_UPLOAD_SIZE:
                 return err(40000, _size_msg(), status=400)
+            if _is_csv_upload(file) and total > MAX_PROXY_CSV_UPLOAD_SIZE:
+                return err(40000, _csv_size_msg(), status=400)
             spool.write(chunk)
         spool.seek(0)
         storage.upload_stream(object_key, spool, total, content_type)

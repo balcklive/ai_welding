@@ -31,7 +31,9 @@
 - `welds.py`：**Task 10**。焊缝核心 CRUD，供 `app/api/v1/welds.py` 路由调用（契约 §3.3）。
   提供：业务号生成器（`next_weld_id`/`next_registration_no` = 当日前缀计数+1 零填充、
   `next_version_no` = 同焊缝最大次版本+1）；`create_registration`（事务内 record+v1.0+
-  latest 联动，modalities=[]/quality=待复核/operator=调用方）；`list_welds`（服务端筛选+
+  latest 联动，modalities=[]/quality=待复核/operator=调用方）；`registration_request_key` +
+  `_acquire/_release_registration_payload_lock`（**Task 5 P2 修复**：按 operator+表单载荷算自然幂等键；
+  MySQL 用 `GET_LOCK`、SQLite/本地并发用进程内集合锁，拦截**正在提交中的**重复登记，避免顺序编号锁把双击变两条 200，同时不阻塞稍后的合法重复登记）；`list_welds`（服务端筛选+
   分页：`q` LIKE weld_id/registration_no、`source`/`brand` 前缀、`status` 精确、
   `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序）；版本链/新建版本；
   `run_validation` = **15 项确定性核验引擎**（规则名照抄 seed/App.tsx，结果只依赖版本

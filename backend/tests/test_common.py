@@ -155,3 +155,31 @@ def test_write_audit_inserts_row() -> None:
         assert row.resource_id == "WLD-20260823-001"
         assert row.detail == {"note": "登记新焊缝"}
         assert row.created_at is not None
+
+
+
+def test_write_audit_truncates_long_resource_id_and_masks_sensitive_detail() -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    long_resource_id = "uploads/" + "a" * 400 + "/malformed.csv"
+
+    with Session(engine) as session:
+        entry = write_audit(
+            session,
+            user_id=1,
+            action="upload",
+            resource_type="file",
+            resource_id=long_resource_id,
+            detail={"token": "secret-token", "nested": {"password": "p@ss", "safe": "ok"}},
+        )
+        session.commit()
+        assert entry.id is not None
+
+    with Session(engine) as session:
+        row = session.get(AuditLog, entry.id)
+        assert row is not None
+        assert row.resource_id is not None
+        assert len(row.resource_id) <= 255
+        assert row.resource_id.startswith("uploads/")
+        assert row.resource_id != long_resource_id
+        assert row.detail == {"token": "***", "nested": {"password": "***", "safe": "ok"}}

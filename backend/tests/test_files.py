@@ -250,6 +250,56 @@ def test_upload_over_limit(
     assert not fake.puts
 
 
+
+def test_upload_large_csv_requires_presign_upload(
+    override_get_session, override_get_current_user, storage_fixture, monkeypatch
+) -> None:
+    _, fake = storage_fixture
+    monkeypatch.setattr(files_mod, "MAX_PROXY_CSV_UPLOAD_SIZE", 4)
+    resp = client.post(
+        UPLOAD_PATH,
+        files={"file": ("signals.csv", b"12345", "text/csv")},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 40000
+    assert "presign-upload" in resp.json()["message"]
+    assert not fake.puts
+
+
+
+def test_upload_large_csv_uses_default_4xx_instead_of_hanging(
+    override_get_session, override_get_current_user, storage_fixture
+) -> None:
+    _, fake = storage_fixture
+    resp = client.post(
+        UPLOAD_PATH,
+        files={
+            "file": (
+                "valid_large_100k.csv",
+                b"0" * (files_mod.MAX_PROXY_CSV_UPLOAD_SIZE + 1),
+                "text/csv",
+            )
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 40000
+    assert "presign-upload" in resp.json()["message"]
+    assert not fake.puts
+
+
+
+def test_upload_long_filename_does_not_fail_audit(
+    override_get_session, override_get_current_user, storage_fixture
+) -> None:
+    filename = "a" * 260 + ".csv"
+    resp = client.post(
+        UPLOAD_PATH,
+        files={"file": (filename, b"t,cur\n0,1\n", "text/csv")},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["code"] == 0
+
+
 # ---------- GET /files/{object_key}/url ----------
 
 
