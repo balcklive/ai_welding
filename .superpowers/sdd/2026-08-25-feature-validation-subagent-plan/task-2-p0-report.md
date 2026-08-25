@@ -624,6 +624,6 @@
   - `cd backend && uv run pytest` → `232 passed, 1 warning in 245.29s`
   - `cd /home/pf/code/ai_welding && npm run typecheck` → `ok`
   - `cd /home/pf/code/ai_welding && npm run build` → `vite build ok`（含既有 Browserslist 过期提示，不影响构建成功）
-- 代码提交：`2e69799` (`fix: harden validation alignment and split idempotency`)
+- 代码提交：`47a1edc` (`fix: harden validation alignment and split idempotency`)
 - Concerns：
   - 新增 Alembic `0003_idempotency_request_keys` 只为新写入行强制填充 `request_key`；历史脏数据保持 nullable 兼容，落库前仍建议先执行迁移。
