@@ -40,8 +40,8 @@
   累加 storage_bytes + 按扩展名推导回填 modalities，video 含图像）；`list_through_welds`
   （quality=通过 的可分析焊缝，供 analysis candidates）。payload 序列化在
   `record_payload`/`records_payload`（批量预查 latest 版本防 N+1）/`version_payload`/
-  `validation_payload`；**`find_duplicate_version`** 按 `action+note+object_keys` 查同焊缝
-  重复加工版本，供路由返回 40900。
+  `validation_payload`；**`find_duplicate_version`** 现按 `version_request_key(action,note,object_keys)`
+  查同焊缝重复加工版本，配合 `data_versions.request_key` 唯一约束兜底并发重复请求，供路由返回 40900。
 - `dsp.py`：**Task 11**。真实 DSP 纯函数（输入 np 数组 + fs，输出 JSON 安全结构）：
   `filter_signal`（butter(4)+sosfiltfilt 零相位，kind 低通/高通/带通，cutoff 为 0~1 归一化
   频率相对奈奎斯特，带通需 cutoff<cutoff2<1）；`compute_psd`（scipy welch →
@@ -73,7 +73,7 @@
 - `alignment.py`：**Task 13**。`simulate_alignment(session, task, job)` 多模态对齐模拟
   （编排真、内核演示，实施边界 §3.1）：进度逐步 0→100（逐次 `session.commit()` + 小睡，
   轮询可见）→ 由任务 modalities（缺省取所属焊缝登记 modalities）推导 `tracks`/`assets`
-  （`processed/{weld_id}/align/...`）→ **逐个 `upload_stream` 把占位产物真实写入 MinIO，任一写失败则抛错，
+  （`processed/{weld_id}/align/...`）→ **逐个 `upload_stream` 把占位产物真实写入 MinIO，任一写失败则删除已写对象后抛错，
   不持久化虚假 assets/version** → 同事务新建「时间对齐」`DataVersion`（v1.<n+1>、
   operator=算法任务，经 `welds.create_version` 并更新 `latest_version_id`）→ 回填
   `alignment_tasks.events/tracks/assets` → `mark_succeeded(job, result)`。`events` 常量

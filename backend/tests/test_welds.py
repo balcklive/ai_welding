@@ -12,17 +12,20 @@ raw-files 挂载（追加 keys + 累加 storage_bytes + 推导 modalities）；
 全部端点未登录 401。
 """
 
+import threading
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel
+from sqlmodel import Session, SQLModel, select
 
 from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
-from app.models import User
+from app.models import DataRecord, DataVersion, User
 
 client = TestClient(app)
 
@@ -361,6 +364,81 @@ def test_create_version_rejects_duplicate_payload_with_4xx(
     assert dup.json()["code"] == 40900
     assert "重复" in dup.json()["message"]
     assert _versions_of(WELD_0248) == before
+
+
+
+def test_create_version_concurrent_duplicate_requests_only_persist_one_row(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "weld-version-concurrency.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+
+    def _override_session():
+        with Session(engine) as session:
+            yield session
+
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override_user() -> User:
+        return dummy
+
+    app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_current_user] = _override_user
+    barrier = threading.Barrier(2)
+    import app.api.v1.welds as welds_api
+
+    original_create_version = welds_api.svc.create_version
+
+    def _sync_create_version(*args, **kwargs):
+        barrier.wait(timeout=2)
+        return original_create_version(*args, **kwargs)
+
+    monkeypatch.setattr(welds_api.svc, "create_version", _sync_create_version)
+    payload = {
+        "action": "人工修正",
+        "note": "并发人工修正",
+        "object_keys": ["processed/WLD-20260815-0248/manual/concurrent-fix.jpg"],
+    }
+    results: list[tuple[int, dict]] = []
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            with TestClient(app) as local_client:
+                resp = local_client.post(f"/api/v1/welds/{WELD_0248}/versions", json=payload)
+            results.append((resp.status_code, resp.json()))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    app.dependency_overrides.pop(get_session, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+    assert not errors
+    assert sorted(status for status, _body in results) == [200, 409]
+    with Session(engine) as session:
+        record = session.exec(select(DataRecord).where(DataRecord.weld_id == WELD_0248)).first()
+        assert record is not None
+        versions = session.exec(select(DataVersion).where(DataVersion.record_id == record.id)).all()
+        assert len(versions) == 5
+        matching = [v for v in versions if v.note == payload["note"]]
+        assert len(matching) == 1
 
 
 # ---------- POST /registrations/{id}/raw-files ----------

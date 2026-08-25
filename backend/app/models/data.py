@@ -65,12 +65,15 @@ class DataRecord(SQLModel, table=True):
 
 
 class DataVersion(SQLModel, table=True):
-    """§3.3 data_versions 数据版本（同焊缝内版本号唯一）"""
+    """§3.3 data_versions 数据版本（同焊缝内版本号唯一；加工去重靠 request_key）"""
 
     __tablename__ = "data_versions"
     __table_args__ = (
         UniqueConstraint(
             "record_id", "version_no", name="uq_data_versions_record_version"
+        ),
+        UniqueConstraint(
+            "record_id", "action", "request_key", name="uq_data_versions_record_action_req"
         ),
     )
 
@@ -80,6 +83,7 @@ class DataVersion(SQLModel, table=True):
     action: str = Field(max_length=32)
     operator: str | None = Field(default=None, max_length=64)
     note: str | None = Field(default=None, max_length=255)
+    request_key: str | None = Field(default=None, max_length=64)
     object_keys: list | None = Field(default=None, sa_column=Column(JSON))
     created_at: datetime | None = Field(
         default=None,

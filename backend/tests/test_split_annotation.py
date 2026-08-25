@@ -16,6 +16,8 @@
 """
 
 import pytest
+import threading
+from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -155,6 +157,23 @@ def _sample_count_for_split(db_engine, split_task_id):
         )
 
 
+class FakeStorage:
+    def __init__(self, fail_after: int | None = None) -> None:
+        self.fail_after = fail_after
+        self.uploads: list[tuple[str, bytes, str]] = []
+        self.deletes: list[str] = []
+
+    def upload_stream(self, object_key, fileobj, size, content_type):
+        if self.fail_after is not None and len(self.uploads) >= self.fail_after:
+            raise RuntimeError("模拟 MinIO 写入失败")
+        data = fileobj.read()
+        self.uploads.append((object_key, data, content_type))
+        return object_key
+
+    def delete_object(self, object_key):
+        self.deletes.append(object_key)
+
+
 # ---------- 切分：创建 → run_job → 生成样本 + 回填 sample_count ----------
 
 
@@ -163,7 +182,11 @@ def test_split_task_end_to_end(
     override_get_session,
     override_get_current_user,
     executor_sessionlocal,
+    monkeypatch,
 ) -> None:
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    monkeypatch.setattr("app.jobs.split._REF_DURATION_S", 0.05)
     vid = _version_id_by_no(WELD_0248)
     job_id = _create_split_task(WELD_0248, vid, fixed_rate=FIXED_RATE)
 
@@ -179,25 +202,31 @@ def test_split_task_end_to_end(
     assert done["progress"] == 100
     assert done["finished_at"].endswith("Z")
     result = done["result"]
-    assert result["sample_count"] == SPLIT_SAMPLE_COUNT
-    # 结果 JSON 只内嵌前 50 条 samples 预览（防 result 塞全量），sample_count 仍完整
-    assert len(result["samples"]) == 50
+    assert result["sample_count"] == 2
+    assert len(result["samples"]) == 2
     assert result["samples"][0]["frame_no"] == 0
 
     split = _split_row(db_engine, job_id)
     assert split is not None
-    assert split.sample_count == SPLIT_SAMPLE_COUNT
-    assert _sample_count_for_split(db_engine, split.id) == SPLIT_SAMPLE_COUNT
+    assert split.sample_count == 2
+    assert _sample_count_for_split(db_engine, split.id) == 2
 
-    # 直查：样本 frame_no 0..n，object_keys 前缀 processed/{weld_id}/split/
+    # 直查：样本 frame_no 0..n，object_keys 前缀 processed/{weld_id}/split/，且对象真实写入存储
     with Session(db_engine) as session:
         samples = session.exec(
             select(Sample).where(Sample.split_task_id == split.id).order_by(Sample.id)
         ).all()
-        assert [s.frame_no for s in samples] == list(range(SPLIT_SAMPLE_COUNT))
+        assert [s.frame_no for s in samples] == [0, 1]
+        expected_keys: list[str] = []
         for s in samples:
             assert s.object_keys
             assert all(k.startswith(f"processed/{WELD_0248}/split/") for k in s.object_keys)
+            expected_keys.extend(s.object_keys)
+    assert [key for key, _data, _content_type in storage.uploads] == expected_keys
+    assert [sample["object_keys"] for sample in result["samples"]] == [
+        [expected_keys[0], expected_keys[1]],
+        [expected_keys[2], expected_keys[3]],
+    ]
 
 
 def test_split_invalid_params(
@@ -275,6 +304,115 @@ def test_split_create_is_idempotent_for_same_version_and_config(
     with Session(db_engine) as session:
         matching = session.exec(select(SplitTask).where(SplitTask.version_id == vid)).all()
         assert len(matching) == 1
+
+
+def test_split_task_storage_failure_cleans_objects_and_keeps_db_job_consistent(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    storage = FakeStorage(fail_after=1)
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    monkeypatch.setattr("app.jobs.split._REF_DURATION_S", 0.05)
+    vid = _version_id_by_no(WELD_0248)
+    job_id = _create_split_task(WELD_0248, vid, fixed_rate=FIXED_RATE)
+
+    run_job(job_id)
+
+    data = client.get(f"/api/v1/split-tasks/{job_id}").json()["data"]
+    assert data["status"] == "failed"
+    assert data["error"] == {"message": "模拟 MinIO 写入失败"}
+    assert data["result"] is None
+    uploaded_keys = [key for key, _data, _content_type in storage.uploads]
+    assert len(uploaded_keys) == 1
+    assert uploaded_keys[0].startswith(f"processed/{WELD_0248}/split/")
+    assert uploaded_keys[0].endswith(".jpg")
+    assert storage.deletes == uploaded_keys
+
+    split = _split_row(db_engine, job_id)
+    assert split is not None
+    assert split.sample_count is None
+    with Session(db_engine) as session:
+        assert session.exec(select(func.count(Sample.id))).one() == 2
+        failed_job = session.exec(select(Job).where(Job.job_uid == job_id)).first()
+        assert failed_job is not None
+        assert failed_job.status == "failed"
+
+
+
+def test_create_split_concurrent_requests_return_same_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "split-concurrency.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+
+    def _override_session():
+        with Session(engine) as session:
+            yield session
+
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override_user() -> User:
+        return dummy
+
+    app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_current_user] = _override_user
+    barrier = threading.Barrier(2)
+    original_create_job = __import__("app.api.v1.analysis", fromlist=["create_job"]).create_job
+    vid = client.get(f"/api/v1/welds/{WELD_0248}/versions").json()["data"][0]["id"]
+
+    def _sync_create_job(session, type, result=None):
+        if type == "split":
+            barrier.wait(timeout=2)
+        return original_create_job(session, type, result=result)
+
+    monkeypatch.setattr("app.api.v1.analysis.create_job", _sync_create_job)
+
+    results: list[tuple[int, dict]] = []
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            with TestClient(app) as local_client:
+                resp = local_client.post(
+                    f"/api/v1/welds/{WELD_0248}/versions/{vid}/split-tasks",
+                    json={"fixed_rate": FIXED_RATE, "keep_event_buffer": 0.2, "task_format": "目标检测"},
+                )
+            results.append((resp.status_code, resp.json()))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    app.dependency_overrides.pop(get_session, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+    assert not errors
+    assert [status for status, _body in results] == [200, 200]
+    job_ids = [body["data"]["job_id"] for _status, body in results]
+    assert len(set(job_ids)) == 1
+    with Session(engine) as session:
+        tasks = session.exec(select(SplitTask).where(SplitTask.version_id == vid)).all()
+        assert len(tasks) == 1
+        jobs = session.exec(select(Job).where(Job.job_uid == job_ids[0])).all()
+        assert len(jobs) == 1
 
 
 # ---------- 标注：从切分任务创建 → run_job → 样本归属更新 ----------

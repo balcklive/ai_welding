@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
@@ -284,23 +285,33 @@ def create_version(
     )
     if duplicate is not None:
         return err(40900, "重复版本请求：相同 action/note/object_keys 已存在", status=409)
-    version = svc.create_version(
-        session,
-        record,
-        body.action,
-        body.note,
-        body.object_keys,
-        _operator(current_user),
-    )
-    write_audit(
-        session,
-        current_user.id,
-        "update",
-        "weld",
-        record.weld_id,
-        {"action": body.action, "version_no": version.version_no},
-    )
-    session.commit()
+    try:
+        version = svc.create_version(
+            session,
+            record,
+            body.action,
+            body.note,
+            body.object_keys,
+            _operator(current_user),
+            request_key=svc.version_request_key(body.action, body.note, body.object_keys),
+        )
+        write_audit(
+            session,
+            current_user.id,
+            "update",
+            "weld",
+            record.weld_id,
+            {"action": body.action, "version_no": version.version_no},
+        )
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        duplicate = svc.find_duplicate_version(
+            session, record.id, body.action, body.note, body.object_keys
+        )
+        if duplicate is not None:
+            return err(40900, "重复版本请求：相同 action/note/object_keys 已存在", status=409)
+        raise
     return ok(svc.version_payload(version))
 
 

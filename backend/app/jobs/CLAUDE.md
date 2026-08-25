@@ -29,13 +29,14 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18**）。导入本�
   - `_dispatch` / `_mark_failed_in`：handler 执行 + 失败回写（事务脏先 `rollback` 再写）。
 - `alignment.py`：**Task 13**。`handle(job_id, session)`（`@register_handler("alignment")`）——
   按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.simulate_alignment`
-  （模拟进度 + 自动生成「时间对齐」版本 + 回填 task 域字段与 job.result）。
+  （模拟进度 + 自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
 - `split.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("split")`）→
   `simulate_split(session, task, job)`（**领域逻辑直接在本模块**，任务清单未规划 split service）：
   解析规则 `fixed_rate`（帧/样本，>=1）→ `sample_count = max(1, int(DURATION*1000)//fixed_rate)`
   （DURATION=signals 5.42s → 5420 帧，确定性）→ 进度逐步 → 逐样本建 `Sample` 行
   （frame_no 0..n，`object_keys=processed/{weld_id}/split/{sample.id}.jpg|.json`，
-  **先 flush 拿 id 再回填 object_keys**）→ 回填 `task.sample_count` + `job.result`
+  **先 flush 拿 id 再回填 object_keys**）并**真实写入 JPG/JSON 到 MinIO**；任一写失败会清理已写对象并回滚样本/
+  `task.sample_count`/`job.result` → 回填 `task.sample_count` + `job.result`
   `{sample_count, rules, task_format, samples[]}`（**review 修复**：`samples` 只内嵌前 50 条
   预览，防 fixed_rate=1 → 5420 条 ~500KB 塞进 result 每轮询回传；全量样本以 `samples` 表为准）。
 - `annotation.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("annotation")`）→

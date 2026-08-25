@@ -21,6 +21,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -226,6 +228,7 @@ def create_version(
     note: str | None,
     object_keys: list[str] | None,
     operator: str,
+    request_key: str | None = None,
 ) -> DataVersion:
     """新建加工版本（去噪处理/人工修正）+ 更新 latest_version_id。调用方 commit。"""
     version = DataVersion(
@@ -234,6 +237,7 @@ def create_version(
         action=action,
         operator=operator,
         note=note,
+        request_key=request_key,
         object_keys=list(object_keys or []),
         created_at=datetime.now(timezone.utc),
     )
@@ -252,17 +256,16 @@ def find_duplicate_version(
     object_keys: list[str] | None,
 ) -> DataVersion | None:
     """查找同焊缝下 payload 完全相同的加工版本，供路由返回明确 409。"""
-    normalized_note = note or None
-    normalized_keys = list(object_keys or [])
-    candidates = session.exec(
+    request_key = version_request_key(action, note, object_keys)
+    return session.exec(
         select(DataVersion)
-        .where(DataVersion.record_id == record_id, DataVersion.action == action)
+        .where(
+            DataVersion.record_id == record_id,
+            DataVersion.action == action,
+            DataVersion.request_key == request_key,
+        )
         .order_by(DataVersion.id.desc())
-    ).all()
-    for version in candidates:
-        if (version.note or None) == normalized_note and list(version.object_keys or []) == normalized_keys:
-            return version
-    return None
+    ).first()
 
 
 # ── 核验 ─────────────────────────────────────────────────────────────
@@ -455,6 +458,18 @@ def validation_payload(session: Session, report: ValidationReport) -> dict:
 
 
 # ── 内部实现 ─────────────────────────────────────────────────────────
+
+
+def version_request_key(action: str, note: str | None, object_keys: list[str] | None) -> str:
+    """加工版本自然幂等键：同 action/note/object_keys（键顺序无关）得到同一摘要。"""
+    payload = {
+        "action": action,
+        "note": note or None,
+        "object_keys": sorted(dict.fromkeys(object_keys or [])),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 
 def _count_prefix(session: Session, column, prefix: str) -> int:

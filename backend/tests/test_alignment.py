@@ -15,6 +15,7 @@
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,6 +44,7 @@ class FakeStorage:
     def __init__(self, fail_after: int | None = None) -> None:
         self.fail_after = fail_after
         self.uploads: list[tuple[str, bytes, str]] = []
+        self.deletes: list[str] = []
 
     def upload_stream(self, object_key, fileobj, size, content_type):
         if self.fail_after is not None and len(self.uploads) >= self.fail_after:
@@ -50,6 +52,9 @@ class FakeStorage:
         data = fileobj.read()
         self.uploads.append((object_key, data, content_type))
         return object_key
+
+    def delete_object(self, object_key):
+        self.deletes.append(object_key)
 
 
 @pytest.fixture()
@@ -222,7 +227,7 @@ def test_alignment_job_failure_records_error(
 # ---------- 404 ----------
 
 
-def test_alignment_storage_failure_does_not_persist_fake_assets_or_version(
+def test_alignment_storage_failure_cleans_uploaded_objects_and_keeps_db_consistent(
     db_engine,
     override_get_session,
     override_get_current_user,
@@ -240,6 +245,10 @@ def test_alignment_storage_failure_does_not_persist_fake_assets_or_version(
     assert data["status"] == "failed"
     assert data["error"] == {"message": "模拟 MinIO 写入失败"}
     assert data["result"] is None
+    assert [key for key, _data, _content_type in storage.uploads] == [
+        f"processed/{WELD_0248}/align/video.mp4"
+    ]
+    assert storage.deletes == [f"processed/{WELD_0248}/align/video.mp4"]
 
     with Session(db_engine) as session:
         record = session.exec(select(DataRecord).where(DataRecord.weld_id == WELD_0248)).first()
@@ -320,6 +329,79 @@ def test_alignment_create_is_idempotent_for_pending_and_succeeded_jobs(
     assert third == first
     with Session(db_engine) as session:
         assert len(session.exec(select(AlignmentTask)).all()) == 1
+
+
+def test_create_alignment_concurrent_requests_return_same_job(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    db_path = tmp_path / "alignment-concurrency.db"
+    engine = create_engine(
+        f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+
+    def _override_session():
+        with Session(engine) as session:
+            yield session
+
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override_user() -> User:
+        return dummy
+
+    app.dependency_overrides[get_session] = _override_session
+    app.dependency_overrides[get_current_user] = _override_user
+    barrier = threading.Barrier(2)
+    original_create_job = __import__("app.api.v1.analysis", fromlist=["create_job"]).create_job
+
+    def _sync_create_job(session, type, result=None):
+        if type == "alignment":
+            barrier.wait(timeout=2)
+        return original_create_job(session, type, result=result)
+
+    monkeypatch.setattr("app.api.v1.analysis.create_job", _sync_create_job)
+
+    results: list[tuple[int, dict]] = []
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            with TestClient(app) as local_client:
+                resp = local_client.post(
+                    f"/api/v1/welds/{WELD_0248}/versions/1/alignment-tasks",
+                    json={"modalities": ["video"]},
+                )
+            results.append((resp.status_code, resp.json()))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    app.dependency_overrides.pop(get_session, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+    assert not errors
+    assert [status for status, _body in results] == [200, 200]
+    job_ids = [body["data"]["job_id"] for _status, body in results]
+    assert len(set(job_ids)) == 1
+    with Session(engine) as session:
+        tasks = session.exec(select(AlignmentTask).where(AlignmentTask.version_id == 1)).all()
+        assert len(tasks) == 1
+        jobs = session.exec(select(Job).where(Job.job_uid == job_ids[0])).all()
+        assert len(jobs) == 1
+
 
 
 def test_run_job_skips_already_succeeded_job(

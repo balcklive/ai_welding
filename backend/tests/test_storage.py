@@ -134,6 +134,10 @@ class FakeMinio:
         self.calls.append(("upload", bucket, object_name, length, content_type))
         return object_name
 
+    def remove_object(self, bucket, object_name, **kw):
+        self.calls.append(("delete", bucket, object_name))
+        return object_name
+
 
 def _make(fake: FakeMinio) -> StorageClient:
     return StorageClient(client=fake, bucket="aiwelding")
@@ -172,6 +176,13 @@ def test_upload_stream_passes_through() -> None:
     storage.upload_stream("raw/REG-001/a.mp4", fileobj, 7, "video/mp4")
     # put_object(bucket, object_key, data, length, content_type=...)
     assert fake.calls[0] == ("upload", "aiwelding", "raw/REG-001/a.mp4", 7, "video/mp4")
+
+
+def test_delete_object_passes_through() -> None:
+    fake = FakeMinio()
+    storage = _make(fake)
+    storage.delete_object("processed/WLD-001/split/1.jpg")
+    assert fake.calls[0] == ("delete", "aiwelding", "processed/WLD-001/split/1.jpg")
 
 
 def test_bucket_ensure_makes_bucket_when_missing() -> None:

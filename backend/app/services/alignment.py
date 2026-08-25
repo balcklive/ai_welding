@@ -20,6 +20,8 @@ from __future__ import annotations
 import io
 import time
 
+from loguru import logger
+
 from sqlmodel import Session
 
 from app.models.analysis import AlignmentTask
@@ -130,13 +132,23 @@ def _build_assets(weld_id: str, modalities: list[str]) -> list[str]:
 
 
 def _write_alignment_assets(assets: list[str]) -> None:
-    """把对齐产物占位写入 MinIO；任一写失败则抛错，由执行器把任务标记 failed。"""
+    """把对齐产物占位写入 MinIO；任一写失败时清理已写对象后再抛错。"""
     from app.storage import get_storage
 
     storage = get_storage()
-    for key in assets:
-        data, content_type = _asset_payload(key)
-        storage.upload_stream(key, io.BytesIO(data), len(data), content_type)
+    uploaded: list[str] = []
+    try:
+        for key in assets:
+            data, content_type = _asset_payload(key)
+            storage.upload_stream(key, io.BytesIO(data), len(data), content_type)
+            uploaded.append(key)
+    except Exception:
+        for key in reversed(uploaded):
+            try:
+                storage.delete_object(key)
+            except Exception:  # noqa: BLE001 - 清理失败只记日志，不覆盖原始异常
+                logger.warning("清理对齐产物失败: {}", key)
+        raise
 
 
 def _asset_payload(object_key: str) -> tuple[bytes, str]:

@@ -20,6 +20,7 @@ MinIO 对象存储客户端（Task 4）。桶与连接信息来自 `app.core.con
       `presigned_put_object` 不支持 size/content_type）。
     - `upload_stream(object_key, fileobj, size, content_type)`：小文件代理上传，
       `put_object(bucket, key, fileobj, size, content_type=...)`。
+    - `delete_object(object_key)`：删除单个对象；供 alignment/split 失败回滚清理已写产物。
     - `presign_get(object_key, expires=3600) -> str`：预签名 GET/播放 URL，`expires` 秒
       （长视频可 86400）。
     - `get_object(object_key) -> bytes`：**Task 18**。后端代理读取对象全部字节

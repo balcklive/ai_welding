@@ -1,8 +1,8 @@
 """MinIO 对象存储客户端（Task 4）。
 
 封装 `minio.Minio` 提供：对象键规范化（`normalize_key`）、预签名直传
-（`presign_put`）、后端代理上传（`upload_stream`）、预签名下载/播放
-（`presign_get`）。桶与连接信息来自 `app.core.config.settings`
+（`presign_put`）、后端代理上传（`upload_stream`）、对象删除（`delete_object`）、
+预签名下载/播放（`presign_get`）。桶与连接信息来自 `app.core.config.settings`
 （`MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`/`MINIO_BUCKET`）。
 
 **惰性**：`get_storage()` 首次调用才构建客户端（懒加载单例）；桶存在性检查
@@ -168,6 +168,11 @@ class StorageClient:
         self._client.put_object(
             self.bucket, object_key, fileobj, size, content_type=content_type
         )
+
+    def delete_object(self, object_key: str) -> None:
+        """删除单个对象；供失败回滚清理已写占位产物。"""
+        self._ensure_bucket()
+        self._client.remove_object(self.bucket, object_key)
 
     def presign_get(self, object_key: str, expires: int = 3600) -> str:
         """生成预签名 GET / 播放 URL（OSS §4，默认 1h，支持 Range 拖动播放）。

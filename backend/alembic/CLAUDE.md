@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/alembic/
 
-Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）+ **Task 18（`0002_signal_ingests`，新增 `signal_ingests` 表）**。
+Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）+ **Task 18（`0002_signal_ingests`，新增 `signal_ingests` 表）** + **Task 2 修复（`0003_idempotency_request_keys`，版本/对齐/切分并发幂等键）**。
 
 ## 文件
 
@@ -9,6 +9,7 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - `script.py.mako`：迁移模板（alembic init 生成）。
 - `versions/0001_initial.py`：初始迁移（手写，见"手写迁移的原因"）。
 - `versions/0002_signal_ingests.py`：**Task 18**。新增 `signal_ingests` 表（手写；`job_id` UK 1:1→jobs、`(version_id, source_object_key)` UK 幂等、idx `version_id`）。
+- `versions/0003_idempotency_request_keys.py`：为 `data_versions` / `alignment_tasks` / `split_tasks` 新增 `request_key` 列与唯一约束；列保持 nullable 以兼容历史行，新代码对新写入行始终填充。
 
 ## 常用命令（在 `backend/` 下执行）
 

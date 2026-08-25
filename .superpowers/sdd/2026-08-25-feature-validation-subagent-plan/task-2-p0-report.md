@@ -605,3 +605,25 @@
 - Concerns：
   - 对齐/切分输入校验当前按现有静态原型与真实失败样本收敛到“核心视频/时序输入”边界；未把模拟编排扩展成真实算法质量承诺。
   - 前端缓冲秒数回归测试使用 Node 源码静态断言（项目当前无 Vitest/RTL 基建）；已额外用 `typecheck + build` 兜底。
+
+## 修复 subagent 追加（2026-08-25，轮次 1）
+
+- 修复摘要：
+  - VER-007：为加工版本新增 `request_key` 并在路由层捕获并发唯一约束冲突；并发重复人工修正现在稳定返回 `40900/409`，只落一条版本。
+  - ALIGN-007：为对齐任务新增数据库级 `request_key`；并发双击在事务冲突后回查既有任务并返回同一 `job_id`。
+  - ALIGN-005：对齐产物逐个真实写入 MinIO；任一对象写失败时删除已写对象，且不留下虚假 `alignment_tasks.assets` / 自动版本。
+  - SPLIT-009：为切分任务新增数据库级 `request_key`；并发双击在事务冲突后回查既有任务并返回同一 `job_id`。
+  - SPLIT-001/007：split job 现在真实写入 `result.samples` 对应的 `processed/{weld_id}/split/*.jpg|*.json`。
+  - SPLIT-005 失败路径：split 任一对象写失败时清理已写对象，回滚新样本/`sample_count`/`job.result`，保持 DB 与 Job failed 一致。
+  - 仅加固编排幂等与存储一致性，未把模拟算法改写成精度承诺。
+- TDD 证据：
+  - RED：`cd backend && uv run pytest tests/test_storage.py tests/test_welds.py::test_create_version_concurrent_duplicate_requests_only_persist_one_row tests/test_alignment.py::test_alignment_storage_failure_cleans_uploaded_objects_and_keeps_db_consistent tests/test_alignment.py::test_create_alignment_concurrent_requests_return_same_job tests/test_split_annotation.py::test_split_task_end_to_end tests/test_split_annotation.py::test_split_task_storage_failure_cleans_objects_and_keeps_db_job_consistent tests/test_split_annotation.py::test_create_split_concurrent_requests_return_same_job` → `7 failed, 22 passed`
+  - GREEN：同一命令复跑 → `29 passed`
+- 定向/全量验证：
+  - `cd backend && uv run pytest tests/test_models.py tests/test_storage.py tests/test_welds.py tests/test_alignment.py tests/test_split_annotation.py` → `93 passed, 1 warning in 224.68s`
+  - `cd backend && uv run pytest` → `232 passed, 1 warning in 245.29s`
+  - `cd /home/pf/code/ai_welding && npm run typecheck` → `ok`
+  - `cd /home/pf/code/ai_welding && npm run build` → `vite build ok`（含既有 Browserslist 过期提示，不影响构建成功）
+- 代码提交：`2e69799` (`fix: harden validation alignment and split idempotency`)
+- Concerns：
+  - 新增 Alembic `0003_idempotency_request_keys` 只为新写入行强制填充 `request_key`；历史脏数据保持 nullable 兼容，落库前仍建议先执行迁移。

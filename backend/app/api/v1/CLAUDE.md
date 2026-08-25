@@ -22,7 +22,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     挂 v1.0 + 累加容量 + 推导 modalities）；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
     `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
-    的重复版本请求返回 40900**，不再静默新建重复版本）；
+    的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
@@ -32,17 +32,19 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
     `ok({job_id})`；weld/version 缺失 → 40401/40402；**缺少所需视频/时序输入 → 40000**；
-    **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**。
+    **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**，并以
+    `alignment_tasks.request_key` 唯一约束兜底并发双击。
   - `GET /alignment-tasks/{task_id}`（**Task 13**）：Job 信封（`task_id`=job_uid），成功时
     `result` 内嵌 `events/tracks/assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）；
     未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
   - `POST /welds/{weld_id}/versions/{version_id}/split-tasks` + `GET /split-tasks/{task_id}`
     （**Task 14 切分**）：异步 Job（type=split）+ `split_tasks` 行 → `{job_id}`；body
     `{fixed_rate(>=1 帧/样本), keep_event_buffer(±s), task_format(白名单 目标检测/图像分类/
-    语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行；
+    语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行并**真实写入**
+    `processed/{weld_id}/split/*.jpg|*.json`；任一写失败会清理已写对象、回滚样本与任务结果；
     **缺少时序输入 → 40000**；**同 version+rules+task_format 的 pending/running/succeeded
-    重复提交返回既有 `job_id`（幂等）**。
-    （`processed/{weld_id}/split/...`）并回填 sample_count；GET 返回 Job 信封（result 内嵌
+    重复提交返回既有 `job_id`（幂等）**，并以 `split_tasks.request_key` 唯一约束兜底并发双击。
+    GET 返回 Job 信封（result 内嵌
     sample_count/samples（**review 修复**：`samples` 仅前 50 条预览，全量以 `samples` 表为准），
     sample_count 以 split_tasks 行为准合并）。
   - **Task 14 标注**（`app.services.annotation` 领域逻辑）：

@@ -19,7 +19,11 @@
 
 from __future__ import annotations
 
+import io
+import json
 import time
+
+from loguru import logger
 
 from sqlmodel import Session, select
 
@@ -93,19 +97,25 @@ def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
 
     weld_id = record.weld_id
     samples: list[Sample] = []
-    for i in range(sample_count):
-        sample = Sample(
-            split_task_id=task.id,
-            frame_no=i,
-            meta={"weld_id": weld_id, "frame_no": i, "source": "split"},
-        )
-        session.add(sample)
-        session.flush()  # 分配 id，object_keys 需用 sample.id
-        sample.object_keys = [
-            f"processed/{weld_id}/split/{sample.id}.jpg",
-            f"processed/{weld_id}/split/{sample.id}.json",
-        ]
-        samples.append(sample)
+    uploaded: list[str] = []
+    try:
+        for i in range(sample_count):
+            sample = Sample(
+                split_task_id=task.id,
+                frame_no=i,
+                meta={"weld_id": weld_id, "frame_no": i, "source": "split"},
+            )
+            session.add(sample)
+            session.flush()  # 分配 id，object_keys 需用 sample.id
+            sample.object_keys = [
+                f"processed/{weld_id}/split/{sample.id}.jpg",
+                f"processed/{weld_id}/split/{sample.id}.json",
+            ]
+            _write_sample_assets(sample, rules, task.task_format, uploaded)
+            samples.append(sample)
+    except Exception:
+        _cleanup_uploaded_objects(uploaded)
+        raise
 
     task.sample_count = sample_count
     session.add(task)
@@ -126,3 +136,44 @@ def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
     }
     mark_succeeded(session, job, result)
     return result
+
+
+
+def _write_sample_assets(
+    sample: Sample,
+    rules: dict,
+    task_format: str,
+    uploaded: list[str],
+) -> None:
+    from app.storage import get_storage
+
+    storage = get_storage()
+    jpg_key, json_key = sample.object_keys
+    jpg_bytes = b"\xff\xd8\xff\xd9"
+    json_bytes = json.dumps(
+        {
+            "sample_id": sample.id,
+            "frame_no": sample.frame_no,
+            "task_format": task_format,
+            "rules": rules,
+            "meta": sample.meta,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    storage.upload_stream(jpg_key, io.BytesIO(jpg_bytes), len(jpg_bytes), "image/jpeg")
+    uploaded.append(jpg_key)
+    storage.upload_stream(json_key, io.BytesIO(json_bytes), len(json_bytes), "application/json")
+    uploaded.append(json_key)
+
+
+
+def _cleanup_uploaded_objects(uploaded: list[str]) -> None:
+    from app.storage import get_storage
+
+    storage = get_storage()
+    for key in reversed(uploaded):
+        try:
+            storage.delete_object(key)
+        except Exception:  # noqa: BLE001 - 清理失败只记日志，不覆盖原始异常
+            logger.warning("清理切分产物失败: {}", key)

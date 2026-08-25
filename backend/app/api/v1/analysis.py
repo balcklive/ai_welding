@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.models.data import DataVersion
@@ -393,14 +394,22 @@ def create_alignment_task(
     if existing_alignment is not None:
         return ok({"job_id": existing_alignment})
 
-    job = create_job(session, type="alignment")
-    task = AlignmentTask(
-        job_id=job.id,
-        version_id=version.id,
-        modalities=list(body.modalities),
-    )
-    session.add(task)
-    session.commit()
+    try:
+        job = create_job(session, type="alignment")
+        task = AlignmentTask(
+            job_id=job.id,
+            version_id=version.id,
+            request_key=_alignment_request_key(version.id),
+            modalities=list(body.modalities),
+        )
+        session.add(task)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing_alignment = _existing_alignment_job_uid(session, version.id)
+        if existing_alignment is not None:
+            return ok({"job_id": existing_alignment})
+        raise
     return ok({"job_id": job.job_uid})
 
 
@@ -468,32 +477,41 @@ def create_split_task(
         "fixed_rate": body.fixed_rate,
         "keep_event_buffer": body.keep_event_buffer,
     }
+    request_key = _split_request_key(version_id, rules, body.task_format)
     existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
     if existing_split is not None:
         return ok({"job_id": existing_split})
 
-    job = create_job(session, type="split")
-    task = SplitTask(
-        job_id=job.id,
-        version_id=version_id,
-        rules=rules,
-        task_format=body.task_format,
-    )
-    session.add(task)
-    write_audit(
-        session,
-        current_user.id,
-        "create",
-        "split_task",
-        job.job_uid,
-        {
-            "weld_id": weld_id,
-            "version_id": version_id,
-            "fixed_rate": body.fixed_rate,
-            "task_format": body.task_format,
-        },
-    )
-    session.commit()
+    try:
+        job = create_job(session, type="split")
+        task = SplitTask(
+            job_id=job.id,
+            version_id=version_id,
+            request_key=request_key,
+            rules=rules,
+            task_format=body.task_format,
+        )
+        session.add(task)
+        write_audit(
+            session,
+            current_user.id,
+            "create",
+            "split_task",
+            job.job_uid,
+            {
+                "weld_id": weld_id,
+                "version_id": version_id,
+                "fixed_rate": body.fixed_rate,
+                "task_format": body.task_format,
+            },
+        )
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
+        if existing_split is not None:
+            return ok({"job_id": existing_split})
+        raise
     return ok({"job_id": job.job_uid})
 
 
@@ -806,6 +824,7 @@ def _derive_modalities_from_keys(object_keys: list[str]) -> list[str]:
 
 
 def _existing_alignment_job_uid(session: Session, version_id: int) -> str | None:
+    request_key = _alignment_request_key(version_id)
     rows = session.exec(
         select(AlignmentTask, Job)
         .join(Job, Job.id == AlignmentTask.job_id)
@@ -813,6 +832,8 @@ def _existing_alignment_job_uid(session: Session, version_id: int) -> str | None
         .order_by(AlignmentTask.id.desc())
     ).all()
     for task, job in rows:
+        if task.request_key not in {None, request_key}:
+            continue
         if job.status in {"pending", "running", "succeeded"}:
             return job.job_uid
     return None
@@ -824,6 +845,7 @@ def _existing_split_job_uid(
     rules: dict,
     task_format: str,
 ) -> str | None:
+    request_key = _split_request_key(version_id, rules, task_format)
     rows = session.exec(
         select(SplitTask, Job)
         .join(Job, Job.id == SplitTask.job_id)
@@ -831,9 +853,28 @@ def _existing_split_job_uid(
         .order_by(SplitTask.id.desc())
     ).all()
     for task, job in rows:
-        if task.rules == rules and job.status in {"pending", "running", "succeeded"}:
+        if task.request_key not in {request_key, None}:
+            continue
+        if task.request_key is None and task.rules != rules:
+            continue
+        if job.status in {"pending", "running", "succeeded"}:
             return job.job_uid
     return None
+
+
+
+def _alignment_request_key(version_id: int) -> str:
+    return f"alignment:{version_id}"
+
+
+
+def _split_request_key(version_id: int, rules: dict, task_format: str) -> str:
+    import hashlib
+    import json
+
+    payload = {"version_id": version_id, "rules": rules, "task_format": task_format}
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _filter_error(filter_type: str | None, cutoff: float | None, cutoff2: float | None) -> str | None:
