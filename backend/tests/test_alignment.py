@@ -36,6 +36,20 @@ from app.models.jobs import Job
 client = TestClient(app)
 
 WELD_0248 = "WLD-20260815-0248"
+WELD_0245 = "WLD-20260814-0245"
+
+
+class FakeStorage:
+    def __init__(self, fail_after: int | None = None) -> None:
+        self.fail_after = fail_after
+        self.uploads: list[tuple[str, bytes, str]] = []
+
+    def upload_stream(self, object_key, fileobj, size, content_type):
+        if self.fail_after is not None and len(self.uploads) >= self.fail_after:
+            raise RuntimeError("模拟 MinIO 写入失败")
+        data = fileobj.read()
+        self.uploads.append((object_key, data, content_type))
+        return object_key
 
 
 @pytest.fixture()
@@ -122,7 +136,10 @@ def test_alignment_task_end_to_end(
     override_get_session,
     override_get_current_user,
     executor_sessionlocal,
+    monkeypatch,
 ) -> None:
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
     vid = _version_id_by_no(WELD_0248)
     job_id = _post_alignment_task(WELD_0248, vid, ["video", "timeseries"])
 
@@ -148,6 +165,7 @@ def test_alignment_task_end_to_end(
     assert result["version"]["action"] == "时间对齐"
     # 对齐产物对象键前缀（OSS 设计：processed/{weld_id}/align/...）
     assert all(a.startswith(f"processed/{WELD_0248}/align/") for a in result["assets"])
+    assert [key for key, _data, _content_type in storage.uploads] == result["assets"]
 
     # alignment_tasks.assets / events 落库（直查）
     with Session(db_engine) as session:
@@ -204,6 +222,52 @@ def test_alignment_job_failure_records_error(
 # ---------- 404 ----------
 
 
+def test_alignment_storage_failure_does_not_persist_fake_assets_or_version(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    storage = FakeStorage(fail_after=1)
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    vid = _version_id_by_no(WELD_0248)
+    job_id = _post_alignment_task(WELD_0248, vid, ["video", "timeseries"])
+
+    run_job(job_id)
+
+    data = client.get(f"/api/v1/alignment-tasks/{job_id}").json()["data"]
+    assert data["status"] == "failed"
+    assert data["error"] == {"message": "模拟 MinIO 写入失败"}
+    assert data["result"] is None
+
+    with Session(db_engine) as session:
+        record = session.exec(select(DataRecord).where(DataRecord.weld_id == WELD_0248)).first()
+        assert record is not None
+        versions = session.exec(select(DataVersion).where(DataVersion.record_id == record.id)).all()
+        assert [v.version_no for v in versions] == ["v1.0", "v1.1", "v1.2", "v1.3"]
+        task = session.exec(select(AlignmentTask)).first()
+        assert task is not None
+        assert task.assets is None
+        assert task.events is None
+
+
+def test_create_alignment_rejects_missing_inputs_with_4xx(
+    override_get_session, override_get_current_user
+) -> None:
+    vid = _version_id_by_no(WELD_0245)
+    resp = client.post(
+        f"/api/v1/welds/{WELD_0245}/versions/{vid}/alignment-tasks",
+        json={"modalities": ["video", "timeseries"]},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == 40000
+    assert "输入" in resp.json()["message"]
+
+
+# ---------- 404 ----------
+
+
 def test_create_alignment_unknown_weld_or_version(
     override_get_session, override_get_current_user
 ) -> None:
@@ -231,12 +295,42 @@ def test_get_alignment_task_unknown_404(
 # ---------- 原子领单（review 修复）：已成功/非 pending 的 job 不会被重复执行 ----------
 
 
+def test_alignment_create_is_idempotent_for_pending_and_succeeded_jobs(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    vid = _version_id_by_no(WELD_0248)
+    first = _post_alignment_task(WELD_0248, vid, ["video"])
+    second = _post_alignment_task(WELD_0248, vid, ["video"])
+    assert second == first
+
+    with Session(db_engine) as session:
+        assert len(session.exec(select(AlignmentTask)).all()) == 1
+
+    run_job(first)
+    done = client.get(f"/api/v1/alignment-tasks/{first}").json()["data"]
+    assert done["status"] == "succeeded"
+
+    third = _post_alignment_task(WELD_0248, vid, ["video"])
+    assert third == first
+    with Session(db_engine) as session:
+        assert len(session.exec(select(AlignmentTask)).all()) == 1
+
+
 def test_run_job_skips_already_succeeded_job(
     db_engine,
     override_get_session,
     override_get_current_user,
     executor_sessionlocal,
+    monkeypatch,
 ) -> None:
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
     vid = _version_id_by_no(WELD_0248)
     job_id = _post_alignment_task(WELD_0248, vid, ["video"])
 

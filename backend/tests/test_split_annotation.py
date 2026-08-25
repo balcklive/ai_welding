@@ -35,6 +35,7 @@ from app.models.jobs import Job
 client = TestClient(app)
 
 WELD_0248 = "WLD-20260815-0248"
+WELD_0245 = "WLD-20260814-0245"
 FIXED_RATE = 25
 SPLIT_SAMPLE_COUNT = 5420 // FIXED_RATE  # 5.42s × 1000Hz = 5420 帧
 
@@ -215,6 +216,19 @@ def test_split_invalid_params(
     assert resp.status_code == 400 and resp.json()["code"] == 40000
 
 
+def test_create_split_rejects_missing_inputs_with_4xx(
+    override_get_session, override_get_current_user
+) -> None:
+    vid = _version_id_by_no(WELD_0245)
+    resp = client.post(
+        f"/api/v1/welds/{WELD_0245}/versions/{vid}/split-tasks",
+        json={"fixed_rate": 25, "keep_event_buffer": 0.2, "task_format": "目标检测"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == 40000
+    assert "输入" in resp.json()["message"]
+
+
 def test_create_split_unknown_weld_or_version(
     override_get_session, override_get_current_user
 ) -> None:
@@ -235,6 +249,32 @@ def test_get_split_task_unknown_404(override_get_session, override_get_current_u
     resp = client.get("/api/v1/split-tasks/job_deadbeef")
     assert resp.status_code == 404
     assert resp.json()["code"] == 40401
+
+
+def test_split_create_is_idempotent_for_same_version_and_config(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    first = _create_split_task(WELD_0248, vid, fixed_rate=FIXED_RATE)
+    second = _create_split_task(WELD_0248, vid, fixed_rate=FIXED_RATE)
+    assert second == first
+
+    with Session(db_engine) as session:
+        matching = session.exec(select(SplitTask).where(SplitTask.version_id == vid)).all()
+        assert len(matching) == 1
+
+    run_job(first)
+    done = client.get(f"/api/v1/split-tasks/{first}").json()["data"]
+    assert done["status"] == "succeeded"
+
+    third = _create_split_task(WELD_0248, vid, fixed_rate=FIXED_RATE)
+    assert third == first
+    with Session(db_engine) as session:
+        matching = session.exec(select(SplitTask).where(SplitTask.version_id == vid)).all()
+        assert len(matching) == 1
 
 
 # ---------- 标注：从切分任务创建 → run_job → 样本归属更新 ----------

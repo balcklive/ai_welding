@@ -17,6 +17,7 @@ commit 归调用方 的约定，本服务里的 commit 是执行器专用 sessio
 
 from __future__ import annotations
 
+import io
 import time
 
 from sqlmodel import Session
@@ -78,6 +79,7 @@ def simulate_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
     modalities = list(task.modalities or record.modalities or [])
     tracks = _build_tracks(modalities)
     assets = _build_assets(record.weld_id, modalities)
+    _write_alignment_assets(assets)
 
     # 同事务：时间对齐版本 + 更新 latest_version_id + 回填 task 域字段。
     aligned_version = create_version(
@@ -125,3 +127,27 @@ def _build_assets(weld_id: str, modalities: list[str]) -> list[str]:
                 assets.append(key)
     assets.append(f"{base}/tracks.json")
     return assets
+
+
+def _write_alignment_assets(assets: list[str]) -> None:
+    """把对齐产物占位写入 MinIO；任一写失败则抛错，由执行器把任务标记 failed。"""
+    from app.storage import get_storage
+
+    storage = get_storage()
+    for key in assets:
+        data, content_type = _asset_payload(key)
+        storage.upload_stream(key, io.BytesIO(data), len(data), content_type)
+
+
+def _asset_payload(object_key: str) -> tuple[bytes, str]:
+    if object_key.endswith(".json"):
+        return b'{"tracks": []}', "application/json"
+    if object_key.endswith(".csv"):
+        return b"t,value\n0,0\n", "text/csv"
+    if object_key.endswith(".mp4"):
+        return b"FAKE-MP4", "video/mp4"
+    if object_key.endswith(".avi"):
+        return b"FAKE-AVI", "video/x-msvideo"
+    if object_key.endswith(".wav"):
+        return b"RIFFFAKEWAVE", "audio/wav"
+    return b"placeholder", "application/octet-stream"

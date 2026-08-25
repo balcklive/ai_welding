@@ -1,0 +1,16 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const source = fs.readFileSync(path.join(__dirname, 'App.tsx'), 'utf8');
+
+test('Alignment split panel exposes editable buffer seconds and wires them to split API', () => {
+  assert.match(source, /bufferSeconds/);
+  assert.match(source, /setBufferSeconds/);
+  assert.match(source, /type="number"/);
+  assert.match(source, /createSplitTask\([^\n]+keep_event_buffer:/s);
+  assert.doesNotMatch(source, /createSplitTask\([^\n]+keep_event_buffer:\s*0\.2/s);
+});

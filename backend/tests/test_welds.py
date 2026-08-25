@@ -344,6 +344,25 @@ def test_single_version_endpoint(override_get_session, override_get_current_user
     assert resp.json()["code"] == 40402
 
 
+def test_create_version_rejects_duplicate_payload_with_4xx(
+    override_get_session, override_get_current_user
+) -> None:
+    payload = {
+        "action": "人工修正",
+        "note": "补充人工标注",
+        "object_keys": ["processed/WLD-20260815-0248/manual/fix.jpg"],
+    }
+    first = client.post(f"/api/v1/welds/{WELD_0248}/versions", json=payload)
+    assert first.status_code == 200, first.text
+
+    before = _versions_of(WELD_0248)
+    dup = client.post(f"/api/v1/welds/{WELD_0248}/versions", json=payload)
+    assert dup.status_code == 409, dup.text
+    assert dup.json()["code"] == 40900
+    assert "重复" in dup.json()["message"]
+    assert _versions_of(WELD_0248) == before
+
+
 # ---------- POST /registrations/{id}/raw-files ----------
 
 

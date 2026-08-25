@@ -39,6 +39,9 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app.models.data import DataVersion
+from app.models.jobs import Job
+
 from app.api.deps import get_current_user
 from app.core.audit import write_audit
 from app.core.db import get_session
@@ -383,6 +386,13 @@ def create_alignment_task(
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
+    requested_modalities = list(body.modalities or [])
+    if msg := _alignment_input_error(record, version, requested_modalities):
+        return err(40000, msg, status=400)
+    existing_alignment = _existing_alignment_job_uid(session, version.id)
+    if existing_alignment is not None:
+        return ok({"job_id": existing_alignment})
+
     job = create_job(session, type="alignment")
     task = AlignmentTask(
         job_id=job.id,
@@ -447,14 +457,26 @@ def create_split_task(
     if resolved is not None:
         return resolved
 
+    record = svc.get_record_by_weld_id(session, weld_id)
+    assert record is not None  # resolved above
+    version = svc.get_version(session, version_id)
+    assert version is not None  # resolved above
+    if msg := _split_input_error(record, version):
+        return err(40000, msg, status=400)
+
+    rules = {
+        "fixed_rate": body.fixed_rate,
+        "keep_event_buffer": body.keep_event_buffer,
+    }
+    existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
+    if existing_split is not None:
+        return ok({"job_id": existing_split})
+
     job = create_job(session, type="split")
     task = SplitTask(
         job_id=job.id,
         version_id=version_id,
-        rules={
-            "fixed_rate": body.fixed_rate,
-            "keep_event_buffer": body.keep_event_buffer,
-        },
+        rules=rules,
         task_format=body.task_format,
     )
     session.add(task)
@@ -754,6 +776,64 @@ def _requested_channels(request: Request) -> list[str]:
             seen.add(c)
             out.append(c)
     return out
+
+
+def _alignment_input_error(
+    record, version: DataVersion, requested_modalities: list[str]
+) -> str | None:
+    available = set(record.modalities or []) | set(_derive_modalities_from_keys(version.object_keys or []))
+    required = set(requested_modalities or [])
+    if not required:
+        required = {m for m in available if m in {"video", "timeseries"}}
+    if not required:
+        return "缺少可用于对齐的输入：至少需要视频或时序信号文件"
+    if "video" in required and "video" not in available:
+        return "缺少对齐输入：未找到视频/图像文件"
+    if "timeseries" in required and "timeseries" not in available:
+        return "缺少对齐输入：未找到时序信号文件"
+    return None
+
+
+def _split_input_error(record, version: DataVersion) -> str | None:
+    available = set(record.modalities or []) | set(_derive_modalities_from_keys(version.object_keys or []))
+    if "timeseries" not in available:
+        return "缺少切分输入：未找到可用的时序信号文件"
+    return None
+
+
+def _derive_modalities_from_keys(object_keys: list[str]) -> list[str]:
+    return svc._derive_modalities(object_keys)
+
+
+def _existing_alignment_job_uid(session: Session, version_id: int) -> str | None:
+    rows = session.exec(
+        select(AlignmentTask, Job)
+        .join(Job, Job.id == AlignmentTask.job_id)
+        .where(AlignmentTask.version_id == version_id)
+        .order_by(AlignmentTask.id.desc())
+    ).all()
+    for task, job in rows:
+        if job.status in {"pending", "running", "succeeded"}:
+            return job.job_uid
+    return None
+
+
+def _existing_split_job_uid(
+    session: Session,
+    version_id: int,
+    rules: dict,
+    task_format: str,
+) -> str | None:
+    rows = session.exec(
+        select(SplitTask, Job)
+        .join(Job, Job.id == SplitTask.job_id)
+        .where(SplitTask.version_id == version_id, SplitTask.task_format == task_format)
+        .order_by(SplitTask.id.desc())
+    ).all()
+    for task, job in rows:
+        if task.rules == rules and job.status in {"pending", "running", "succeeded"}:
+            return job.job_uid
+    return None
 
 
 def _filter_error(filter_type: str | None, cutoff: float | None, cutoff2: float | None) -> str | None:

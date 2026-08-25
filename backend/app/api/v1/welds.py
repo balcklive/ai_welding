@@ -5,7 +5,7 @@
 `/api/v1` 前缀由 main.py 挂载时统一添加，本 router 自身不带前缀（路径写完整相对路径）。
 
 错误码约定（与既有域一致）：40401=焊缝/登记不存在、40402=版本不存在、
-40403=该版本尚未核验、40000=参数错误。
+40403=该版本尚未核验、40900=冲突、40000=参数错误。
 """
 
 from datetime import datetime, timezone
@@ -279,6 +279,11 @@ def create_version(
         return err(40401, "焊缝不存在", status=404)
     if body.action not in VALID_ACTIONS:
         return err(40000, "action 需为去噪处理或人工修正", status=400)
+    duplicate = svc.find_duplicate_version(
+        session, record.id, body.action, body.note, body.object_keys
+    )
+    if duplicate is not None:
+        return err(40900, "重复版本请求：相同 action/note/object_keys 已存在", status=409)
     version = svc.create_version(
         session,
         record,

@@ -15,13 +15,14 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   统一要求登录（完整路径 `/api/v1/*`），端点全覆盖 `docs/API接口清单.md` §3.3：
   - `GET /welds`（query `q/source/brand/status/tab/page/page_size`，服务端筛选+分页，
     按焊缝去重仅最新版本，返回 `paginate(...)` 载荷，item 含 `latest_version` 对象）；
-  - `GET /welds/{weld_id}` 详情（含最新版本）；
+  - `GET /welds/{weld_id}` 详情（含最新版本）;
   - `POST/GET/PATCH /registrations(/{registration_id})`（`registration_id` 兼容
     DB id / registration_no / weld_id 三种标识，`get_record_by_identifier`）；
   - `POST /registrations/{registration_id}/raw-files`（body `{object_keys[], storage_bytes?}`，
     挂 v1.0 + 累加容量 + 推导 modalities）；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
-    `去噪处理|人工修正`，事务内 bump latest_version_id）；
+    `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
+    的重复版本请求返回 40900**，不再静默新建重复版本）；
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
@@ -30,14 +31,17 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
-    `ok({job_id})`；weld/version 缺失 → 40401/40402。
+    `ok({job_id})`；weld/version 缺失 → 40401/40402；**缺少所需视频/时序输入 → 40000**；
+    **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**。
   - `GET /alignment-tasks/{task_id}`（**Task 13**）：Job 信封（`task_id`=job_uid），成功时
     `result` 内嵌 `events/tracks/assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）；
     未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
   - `POST /welds/{weld_id}/versions/{version_id}/split-tasks` + `GET /split-tasks/{task_id}`
     （**Task 14 切分**）：异步 Job（type=split）+ `split_tasks` 行 → `{job_id}`；body
     `{fixed_rate(>=1 帧/样本), keep_event_buffer(±s), task_format(白名单 目标检测/图像分类/
-    语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行
+    语义分割/时序分类)}`。handler（`app.jobs.split`）按规则生成 `samples` 行；
+    **缺少时序输入 → 40000**；**同 version+rules+task_format 的 pending/running/succeeded
+    重复提交返回既有 `job_id`（幂等）**。
     （`processed/{weld_id}/split/...`）并回填 sample_count；GET 返回 Job 信封（result 内嵌
     sample_count/samples（**review 修复**：`samples` 仅前 50 条预览，全量以 `samples` 表为准），
     sample_count 以 split_tasks 行为准合并）。

@@ -244,6 +244,27 @@ def create_version(
     return version
 
 
+def find_duplicate_version(
+    session: Session,
+    record_id: int,
+    action: str,
+    note: str | None,
+    object_keys: list[str] | None,
+) -> DataVersion | None:
+    """查找同焊缝下 payload 完全相同的加工版本，供路由返回明确 409。"""
+    normalized_note = note or None
+    normalized_keys = list(object_keys or [])
+    candidates = session.exec(
+        select(DataVersion)
+        .where(DataVersion.record_id == record_id, DataVersion.action == action)
+        .order_by(DataVersion.id.desc())
+    ).all()
+    for version in candidates:
+        if (version.note or None) == normalized_note and list(version.object_keys or []) == normalized_keys:
+            return version
+    return None
+
+
 # ── 核验 ─────────────────────────────────────────────────────────────
 
 
