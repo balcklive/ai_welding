@@ -17,6 +17,7 @@
 """
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,7 +29,7 @@ from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
-from app.models import DataVersion, User, ValidationReport
+from app.models import DataVersion, FeatureExtraction, TestTask, User, ValidationReport
 
 client = TestClient(app)
 
@@ -228,6 +229,109 @@ def test_analysis_generic_template(
     parsed = json.loads(data)
     assert parsed["sections"]  # 至少一个分节（分析结论）
     assert parsed["summary"][0]["label"] == "焊缝"
+
+
+def _seed_feature_extraction(db_engine) -> int:
+    with Session(db_engine) as session:
+        version_id = _version_id(db_engine)
+        row = FeatureExtraction(
+            version_id=version_id,
+            ts_features={"cur": {"mean": 1.0}},
+            vision_features={"area": 2.0},
+            audio_features={"spectral_centroid": 3.0},
+            unified_vector={"total_dims": 3, "values": [1.0, 2.0, 3.0]},
+            normalization="Z-Score",
+            format="JSON",
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.id
+
+
+def _seed_test_task(db_engine) -> int:
+    with Session(db_engine) as session:
+        row = TestTask(
+            job_id=9991,
+            model_version_id=1,
+            dataset_version_id=1,
+            tasks=["异常分类"],
+            metrics={"accuracy": 0.91},
+            confusion_matrix=[[9, 1], [2, 8]],
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row.id
+
+
+def test_analysis_pdf_exports_current_entity(
+    db_engine, override_get_session, override_get_current_user, fake_storage
+):
+    version_id = _version_id(db_engine)
+    resp = client.post(
+        "/api/v1/reports/export",
+        json={"type": "analysis", "ref_ids": [version_id], "format": "pdf"},
+    )
+    assert resp.status_code == 200, resp.text
+    key, data = _uploaded(fake_storage, f"reports/analysis/{version_id}.pdf")
+    assert key == f"reports/analysis/{version_id}.pdf"
+    assert data[:5] == b"%PDF-"
+
+    json_resp = client.post(
+        "/api/v1/reports/export",
+        json={"type": "analysis", "ref_ids": [version_id], "format": "json"},
+    )
+    parsed = json.loads(_uploaded(fake_storage, f"reports/analysis/{version_id}.json")[1])
+    assert json_resp.status_code == 200
+    assert parsed["ref_id"] == str(version_id)
+    assert any(item["label"] == "版本" and item["value"] == "v1.0" for item in parsed["summary"])
+
+
+def test_features_pdf_exports_current_entity(
+    db_engine, override_get_session, override_get_current_user, fake_storage
+):
+    extraction_id = _seed_feature_extraction(db_engine)
+    resp = client.post(
+        "/api/v1/reports/export",
+        json={"type": "features", "ref_ids": [extraction_id], "format": "pdf"},
+    )
+    assert resp.status_code == 200, resp.text
+    key, data = _uploaded(fake_storage, f"reports/features/{extraction_id}.pdf")
+    assert key == f"reports/features/{extraction_id}.pdf"
+    assert data[:5] == b"%PDF-"
+
+    client.post(
+        "/api/v1/reports/export",
+        json={"type": "features", "ref_ids": [extraction_id], "format": "json"},
+    )
+    parsed = json.loads(_uploaded(fake_storage, f"reports/features/{extraction_id}.json")[1])
+    assert parsed["ref_id"] == str(extraction_id)
+    assert any(item["label"] == "版本" and item["value"] == "v1.0" for item in parsed["summary"])
+
+
+def test_test_pdf_exports_current_entity(
+    db_engine, override_get_session, override_get_current_user, fake_storage
+):
+    task_id = _seed_test_task(db_engine)
+    resp = client.post(
+        "/api/v1/reports/export",
+        json={"type": "test", "ref_ids": [task_id], "format": "pdf"},
+    )
+    assert resp.status_code == 200, resp.text
+    key, data = _uploaded(fake_storage, f"reports/test/{task_id}.pdf")
+    assert key == f"reports/test/{task_id}.pdf"
+    assert data[:5] == b"%PDF-"
+
+    client.post(
+        "/api/v1/reports/export",
+        json={"type": "test", "ref_ids": [task_id], "format": "json"},
+    )
+    parsed = json.loads(_uploaded(fake_storage, f"reports/test/{task_id}.json")[1])
+    assert parsed["ref_id"] == str(task_id)
+    assert any(item["label"] == "模型版本" and item["value"] == 1 for item in parsed["summary"])
+    assert any(item["label"] == "数据集版本" and item["value"] == 1 for item in parsed["summary"])
 
 
 def test_unknown_type_returns_400(

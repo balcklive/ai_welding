@@ -42,3 +42,23 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
     if scheme.lower() != "bearer" or not token:
         return None
     return token
+
+
+def is_admin(user: User) -> bool:
+    return (user.role or "").lower() == "admin"
+
+
+def operator_aliases(user: User) -> set[str]:
+    return {value for value in {user.username, user.display_name} if value}
+
+
+def can_access_operator_owned_resource(user: User, operator: str | None) -> bool:
+    if is_admin(user):
+        return True
+    return bool(operator and operator in operator_aliases(user))
+
+
+def forbid_unless_operator_owned(user: User, operator: str | None) -> None:
+    if can_access_operator_owned_resource(user, operator):
+        return
+    raise HTTPException(status_code=403, detail="无权限")

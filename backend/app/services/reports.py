@@ -282,6 +282,34 @@ def _build_annotation(session: Session, ref_id: Any) -> dict:
     }
 
 
+def report_operator(session: Session, report_type: str, ref_id: Any) -> str | None:
+    """返回报告引用实体对应的 operator；无法归属到焊缝时返回 None。"""
+    if report_type == "data-list":
+        return None
+    if report_type == "validation":
+        report = _get_by_int(session, ValidationReport, ref_id, "核验报告")
+        version = session.get(DataVersion, report.version_id) if report.version_id else None
+    elif report_type == "analysis":
+        version = _get_by_int(session, DataVersion, ref_id, "数据版本")
+    elif report_type == "features":
+        extraction = _get_by_int(session, FeatureExtraction, ref_id, "特征提取记录")
+        version = session.get(DataVersion, extraction.version_id) if extraction.version_id else None
+    elif report_type == "annotation":
+        task = _get_by_int(session, AnnotationTask, ref_id, "标注任务")
+        version = None
+        if task.split_task_id:
+            from app.models import SplitTask
+
+            split = session.get(SplitTask, task.split_task_id)
+            version = session.get(DataVersion, split.version_id) if split else None
+    elif report_type == "test":
+        return None
+    else:
+        return None
+    record = session.get(DataRecord, version.record_id) if version else None
+    return record.operator if record else None
+
+
 def _build_analysis(session: Session, ref_id: Any) -> dict:
     """分析报告：数据版本 + 分析结果（generic 模板）。
 

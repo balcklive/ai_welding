@@ -43,7 +43,12 @@ from sqlmodel import Session, select
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 
-from app.api.deps import get_current_user
+from app.api.deps import (
+    forbid_unless_operator_owned,
+    get_current_user,
+    is_admin,
+    operator_aliases,
+)
 from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import (
@@ -137,9 +142,15 @@ class SaveLabelsRequest(BaseModel):
 
 
 @router.get("/analysis/candidates")
-def list_candidates(session: Session = Depends(get_session)) -> dict:
+def list_candidates(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """选择数据页：已登记且核验通过（quality=通过）的可分析数据列表（最小载荷）。"""
-    records = svc.list_through_welds(session)
+    records = svc.list_through_welds(
+        session,
+        None if is_admin(current_user) else sorted(operator_aliases(current_user)),
+    )
     return ok(
         [
             {
@@ -172,13 +183,14 @@ def get_signals(
     cutoff: float | None = None,
     cutoff2: float | None = None,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """多通道时域波形（电流/电压/气体/送丝）。query `channels[]`、滤波参数可选。
 
     滤波给定则对选中通道真实滤波（dsp.filter_signal）。返回
     `{duration, sample_rate, channels:[{id,name,unit,values[],lo,hi,mean}], events, anomalies}`。
     """
-    resolved = _resolve_weld_version(session, weld_id, version_id)
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
     if msg := _filter_error(filter_type, cutoff, cutoff2):
@@ -230,12 +242,13 @@ def get_analysis_result(
     weld_id: str,
     version_id: int,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """AI 异常检测结果：焊接稳定度、正常/电弧不稳/飞溅占比、异常区段列表。
 
     确定性模拟结果（源自信号生成器的事件/异常区段，seeded by weld_id）。
     """
-    resolved = _resolve_weld_version(session, weld_id, version_id)
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
     bundle = signal_ingest.load_signal_bundle(session, weld_id, version_id)
@@ -255,6 +268,7 @@ def get_analysis_mode(
     cutoff: float | None = None,
     cutoff2: float | None = None,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """单视图分析数据：mode ∈ psd|stft|dwt|wavelet|phase|pdd。
 
@@ -263,7 +277,7 @@ def get_analysis_mode(
     """
     if mode == "result":  # 防御：/analysis/result 已由具体路由接管
         return err(40000, "未知分析模式: result", status=400)
-    resolved = _resolve_weld_version(session, weld_id, version_id)
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
     if msg := _filter_error(filter_type, cutoff, cutoff2):
@@ -310,6 +324,7 @@ def get_analysis_mode(
 def extract_features(
     body: ExtractFeaturesRequest,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """执行特征提取（**同步**，契约 §3.4）：时序/视觉/声音特征 + 统一向量 → 落库。
 
@@ -325,7 +340,7 @@ def extract_features(
         )
     if body.format not in _FORMATS:
         return err(40000, f"format 需为 {'/'.join(sorted(_FORMATS))}", status=400)
-    resolved = _resolve_weld_version(session, body.weld_id, body.version_id)
+    resolved = _resolve_weld_version(session, body.weld_id, body.version_id, current_user)
     if resolved is not None:
         return resolved
     record = svc.get_record_by_weld_id(session, body.weld_id)
@@ -351,6 +366,15 @@ def extract_features(
         created_at=datetime.now(timezone.utc),
     )
     session.add(extraction)
+    session.flush()
+    write_audit(
+        session,
+        current_user.id,
+        "extract",
+        "feature_extraction",
+        str(extraction.id),
+        {"weld_id": body.weld_id, "version_id": body.version_id, "normalization": body.normalization, "format": body.format},
+    )
     session.commit()
     session.refresh(extraction)
     return ok(_extraction_payload(extraction, record=record, version=version, bundle_source=bundle.source))
@@ -360,6 +384,7 @@ def extract_features(
 def get_feature_extraction(
     extraction_id: int,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """特征提取结果（导出时使用，契约 §3.4）→ `ok(extraction)`。"""
     extraction = session.get(FeatureExtraction, extraction_id)
@@ -367,6 +392,11 @@ def get_feature_extraction(
         return err(40401, "特征提取记录不存在", status=404)
     version = session.get(DataVersion, extraction.version_id)
     record = session.get(DataRecord, version.record_id) if version is not None else None
+    if record is not None:
+        try:
+            forbid_unless_operator_owned(current_user, record.operator)
+        except Exception:
+            return err(40300, "无权限", status=403)
     return ok(_extraction_payload(extraction, record=record, version=version))
 
 
@@ -379,6 +409,7 @@ def create_alignment_task(
     version_id: int,
     body: AlignmentTaskCreate,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """提交多模态对齐任务（**异步**，契约 §3.4）：建 pending Job + `alignment_tasks` 行。
 
@@ -388,6 +419,10 @@ def create_alignment_task(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    try:
+        forbid_unless_operator_owned(current_user, record.operator)
+    except Exception:
+        return err(40300, "无权限", status=403)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
@@ -411,6 +446,15 @@ def create_alignment_task(
             modalities=list(body.modalities),
         )
         session.add(task)
+        session.flush()
+        write_audit(
+            session,
+            current_user.id,
+            "create",
+            "alignment_task",
+            job.job_uid,
+            {"weld_id": weld_id, "version_id": version.id, "modalities": list(body.modalities)},
+        )
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -768,11 +812,21 @@ def _operator(user: User) -> str:
     return user.display_name or user.username
 
 
-def _resolve_weld_version(session: Session, weld_id: str, version_id: int) -> dict | None:
+def _resolve_weld_version(
+    session: Session,
+    weld_id: str,
+    version_id: int,
+    current_user: User | None = None,
+) -> dict | None:
     """按 weld_id + version_id 解析焊缝与版本；缺任一返回 err 信封，否则 None。"""
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    if current_user is not None:
+        try:
+            forbid_unless_operator_owned(current_user, record.operator)
+        except Exception:
+            return err(40300, "无权限", status=403)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)

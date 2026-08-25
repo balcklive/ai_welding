@@ -6,7 +6,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 
 - `__init__.py`：空包。
 - `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 9 个域 router。新增域时在此追加 import + include_router。
-- `auth.py`：**Task 5 已实现**。router `prefix="/auth"`（完整路径 `/api/v1/auth/login`、`/api/v1/auth/me`）。`POST /login` body `{username,password}` → 查 `users` 表校验 → `ok({access_token, token_type:"bearer", user:{id,username,display_name,role,avatar}})`；用户名/密码错 → `err(40100, "用户名或密码错误", status=401)`。**防时序用户枚举（Task 5 修复）**：用户不存在时仍对模块级 `_DUMMY_HASH`（argon2，导入时算一次）跑一次 `verify_password`，使未知/已知用户名两条路径耗时相当；返回体一致。`GET /me`（依赖 `api.deps.get_current_user`）→ `ok(user)`。`user_payload(user)` 暴露对外字段。
+- `auth.py`：**Task 5 已实现**。router `prefix="/auth"`（完整路径 `/api/v1/auth/login`、`/api/v1/auth/me`）。`POST /login` body `{username,password}` → 查 `users` 表校验 → `ok({access_token, token_type:"bearer", user:{id,username,display_name,role,avatar}})`；用户名/密码错 → `err(40100, "用户名或密码错误", status=401)`。**防时序用户枚举（Task 5 修复）**：用户不存在时仍对模块级 `_DUMMY_HASH`（argon2，导入时算一次）跑一次 `verify_password`，使未知/已知用户名两条路径耗时相当；返回体一致。**Task 4 修复**：按用户名做失败登录限速（60s 窗口内失败 ≥5 次进入 300s cooldown，返回 `42900`），成功登录会清空失败桶/冷却状态。`GET /me`（依赖 `api.deps.get_current_user`）→ `ok(user)`。`user_payload(user)` 暴露对外字段。
 - `dashboard.py`：**Task 8 已实现**。router `prefix="/dashboard"`（完整路径 `/api/v1/dashboard/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。四个端点
   `GET /stats`（统计卡）/ `GET /attributes`（属性面板）/ `GET /distributions`（分布图）/
@@ -19,18 +19,19 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `POST/GET/PATCH /registrations(/{registration_id})`（`registration_id` 兼容
     DB id / registration_no / weld_id 三种标识，`get_record_by_identifier`）；
   - `POST /registrations/{registration_id}/raw-files`（body `{object_keys[], storage_bytes?}`，
-    挂 v1.0 + 累加容量 + 推导 modalities）；
+    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务）；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
     `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
-  - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。
+  - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。**Task 4 修复**：除管理员外，列表/详情/登记编辑/版本/核验均按 `record.operator` 做 ownership ACL。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
 - `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
+    **Task 4 修复：写 `create/alignment_task` 审计，且非管理员按焊缝 operator 做 ownership ACL**；
     `ok({job_id})`；weld/version 缺失 → 40401/40402；**缺少所需视频/时序输入 → 40000**；
     **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**；failed
     旧任务会释放 `active_request_key`，下一次提交创建新的可执行 job；并发双击仍由
@@ -69,13 +70,15 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /analysis/candidates`：quality=通过 的可分析焊缝最小载荷（`svc.list_through_welds`）；
   - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
     写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
+    **Task 4 修复：非管理员按焊缝 operator 做 ownership ACL**，
+    写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
     返回 `{duration, sample_rate, channels:[{id,name,unit,values[],lo,hi,mean}], events, anomalies}`；
   - `GET …/analysis/{mode}`：mode ∈ psd|stft|dwt|wavelet|phase|pdd，query `channel`（默认 cur）+
     滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；
-  - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常）。
+  - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常，**Task 4 修复：非管理员按焊缝 operator 做 ownership ACL**）。
   - `POST /features/extract`（**Task 12**）：body `{weld_id, version_id, normalization(默认无), format(默认JSON)}`
     同步真实提取三类特征（`app.services.features`：ts 8×4 + vision 8 + audio 6）→ `unify` 拼
-    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；**返回新增 `modality_status`**（available/fallback，显式标识缺模态回退，避免把缺失模态伪装成“完整真实特征”）；normalization/
+    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；**返回新增 `modality_status`**（available/fallback，显式标识缺模态回退，避免把缺失模态伪装成“完整真实特征”）；**Task 4 修复：写 `extract/feature_extraction` 审计，且 POST/GET 均按焊缝 operator 做 ownership ACL**；normalization/
     format 白名单校验，非法 → 40000；weld/version 缺失 → 40401/40402。
   - `GET /features/{extraction_id}`（**Task 12**）：特征提取结果（导出用）；不存在 → 40401。
     载荷 `_extraction_payload`（created_at 复用 `jobs._iso_utc`）。
@@ -130,10 +133,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `ok({object_key, url, lifecycle})`。`lifecycle={policy:temporary,retention_days:30,prefix:'uploads/'}` 对齐 OSS `uploads/` 30 天清理策略（**不承诺立即删除**）；超限 → `err(40000, ..., status=400)`。
   - `POST /presign-upload`（body `{size, content_type, prefix, filename?}`）：
     校验 `0 < size ≤ 2GB`（`MAX_PRESIGN_UPLOAD_SIZE`），调 `presign_put` 返回
-    `ok({object_key, upload_url, lifecycle?})`；当对象键落在 `uploads/` 前缀时附带同样的 30 天临时保留策略元数据；空 prefix（normalize_key 抛 ValueError）→ 400。
+    `ok({object_key, upload_url, lifecycle?})`；当对象键落在 `uploads/` 前缀时附带同样的 30 天临时保留策略元数据；**Task 4 修复**：拒绝绝对路径/反斜杠/`..` 路径穿越 prefix，并写 `presign_upload/file` 审计；空 prefix（normalize_key 抛 ValueError）→ 400。
   - `GET /{object_key:path}/url?expires=`：object_key 含 `/`（如 `uploads/<uuid>/x.mp4`），
     用 `:path` 捕获；`expires` 默认 3600、上限 86400（`MAX_PRESIGN_GET_EXPIRES`），
-    空/空白 key 与越界 expires → 400。返回 `ok({url})`。
+    **Task 4 修复**：同时校验原始请求路径与归一化后的 `object_key` 一致，拒绝绝对路径/反斜杠/`..` 穿越；空/空白 key 与越界 expires → 400。返回 `ok({url})`。
   - **契约补充（Task 9 决策，T25 回写 `docs/API接口清单.md`）**：`presign-upload`
     请求体在 `{size, content_type, prefix}` 之外扩展可选 `filename`（默认 `"file"`），
     `object_key = normalize_key(prefix, filename)`——调用方只给含业务标识的 prefix
@@ -148,7 +151,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   `app.services.reports`：
   - `POST /reports/export` body `{type(validation|analysis|annotation|features|test|data-list),
     ref_ids[], format(pdf|json)}` → 每 ref_id 生成报告写 MinIO
-    `reports/{type}/{ref_id}.pdf|.json` → `ok({urls:[{ref_id, url}]})`（url 预签名下载）。
+    `reports/{type}/{ref_id}.pdf|.json` → `ok({urls:[{ref_id, url}]})`（url 预签名下载）。**Task 4 修复**：导出成功后写 `export/report` 审计；非管理员对可归属焊缝的报告类型（analysis/features/validation/部分 annotation）按 operator 做 ownership ACL。
   - 未知 type / format → 400（40000）；引用实体不存在 → 404（40401）；未登录 401（40100）。
   - `data-list`：`ref_ids=[]` → 全量单份（ref_id=`all`）；非空 → 逐标识（DB id/weld_id/
     registration_no）解析过滤，缺失 404。

@@ -193,6 +193,18 @@ def test_presign_upload_empty_prefix(
     assert resp.json()["code"] == 40000
 
 
+def test_presign_upload_rejects_traversal_absolute_and_backslash_prefix(
+    override_get_session, override_get_current_user, storage_fixture
+) -> None:
+    for prefix in ("raw/../models", "/models/1", r"raw\\REG-1"):
+        resp = client.post(
+            PRESIGN_PATH,
+            json={"size": 1024, "content_type": "video/mp4", "prefix": prefix},
+        )
+        assert resp.status_code == 400, prefix
+        assert resp.json()["code"] == 40000, prefix
+
+
 # ---------- POST /files/upload ----------
 
 
@@ -279,6 +291,20 @@ def test_get_url_bad_key(
     resp = client.get("/api/v1/files/%20/url")
     assert resp.status_code == 400
     assert resp.json()["code"] == 40000
+
+
+def test_get_url_rejects_traversal_absolute_and_backslash(
+    override_get_session, override_get_current_user, storage_fixture
+) -> None:
+    cases = [
+        "/api/v1/files/uploads/%2E%2E/models/5/weights.pt/url",
+        "/api/v1/files/%2Fmodels/5/weights.pt/url",
+        "/api/v1/files/uploads%5Cuuid-1%5C0001.mp4/url",
+    ]
+    for path in cases:
+        resp = client.get(path)
+        assert resp.status_code == 400, path
+        assert resp.json()["code"] == 40000, path
 
 
 # ---------- 未登录 ----------

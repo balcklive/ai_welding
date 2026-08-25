@@ -17,12 +17,15 @@ main.py 挂载时统一添加。对象键契约见 `docs/OSS存储设计.md` §2
 
 import tempfile
 from typing import Annotated
+from urllib.parse import unquote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.api.deps import get_current_user
+from app.core.audit import write_audit
+from app.core.db import get_session
 from app.schemas.common import err, ok
 from app.storage import get_storage
 
@@ -63,8 +66,34 @@ def _declared_length(file: UploadFile) -> int | None:
         return None
 
 
+def _is_safe_object_path(value: str) -> bool:
+    value = value.strip()
+    if not value or value.startswith("/") or "\\" in value:
+        return False
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    return True
+
+
+def _raw_object_key_from_request(request: Request) -> str | None:
+    raw_path = request.scope.get("raw_path")
+    if not raw_path:
+        return None
+    path = unquote(raw_path.decode("utf-8", errors="ignore"))
+    prefix = "/api/v1/files/"
+    suffix = "/url"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    return path[len(prefix):-len(suffix)]
+
+
 @router.post("/upload")
-def upload_file(file: Annotated[UploadFile, File(...)]) -> object:
+def upload_file(
+    file: Annotated[UploadFile, File(...)],
+    current_user=Depends(get_current_user),
+    session=Depends(get_session),
+) -> object:
     """小文件（<100MB）后端代理上传：流式转发到 MinIO，返回 `{object_key, url}`。
 
     - object_key 前缀固定 `uploads/{uuid}`（临时上传区，OSS §2）。
@@ -97,11 +126,25 @@ def upload_file(file: Annotated[UploadFile, File(...)]) -> object:
         spool.close()
 
     url = storage.presign_get(object_key)
+    if session is not None:
+        write_audit(
+            session,
+            getattr(current_user, "id", None),
+            "upload",
+            "file",
+            object_key,
+            {"content_type": content_type, "size": total},
+        )
+        session.commit()
     return ok({"object_key": object_key, "url": url, "lifecycle": dict(_UPLOADS_LIFECYCLE)})
 
 
 @router.post("/presign-upload")
-def presign_upload(body: PresignUploadRequest) -> object:
+def presign_upload(
+    body: PresignUploadRequest,
+    current_user=Depends(get_current_user),
+    session=Depends(get_session),
+) -> object:
     """大文件（≥100MB 且 ≤2GB）预签名直传：返回 `{object_key, upload_url}`。
 
     `size` 需满足 `0 < size ≤ 2GB`（OSS §3.2）；`prefix` 含业务标识
@@ -110,6 +153,8 @@ def presign_upload(body: PresignUploadRequest) -> object:
     size = body.size
     if not (0 < size <= MAX_PRESIGN_UPLOAD_SIZE):
         return err(40000, "size 需满足 0 < size ≤ 2GB", status=400)
+    if not _is_safe_object_path(body.prefix):
+        return err(40000, "prefix 非法：禁止绝对路径、反斜杠或路径穿越", status=400)
     storage = get_storage()
     try:
         object_key, upload_url = storage.presign_put(
@@ -118,17 +163,33 @@ def presign_upload(body: PresignUploadRequest) -> object:
     except ValueError as exc:  # prefix 为空等 → normalize_key 抛错
         return err(40000, str(exc), status=400)
     lifecycle = dict(_UPLOADS_LIFECYCLE) if object_key.startswith("uploads/") else None
+    if session is not None:
+        write_audit(
+            session,
+            getattr(current_user, "id", None),
+            "presign_upload",
+            "file",
+            object_key,
+            {"size": size, "content_type": body.content_type, "prefix": body.prefix},
+        )
+        session.commit()
     return ok({"object_key": object_key, "upload_url": upload_url, "lifecycle": lifecycle})
 
 
 @router.get("/{object_key:path}/url")
 def get_file_url(
+    request: Request,
     object_key: str,
     expires: Annotated[int | None, Query()] = None,
 ) -> object:
     """预签名下载/播放 URL（支持 Range）。`expires` 秒，默认 1h，上限 24h。"""
     if not object_key or not object_key.strip():
         return err(40000, "object_key 不能为空", status=400)
+    raw_object_key = _raw_object_key_from_request(request)
+    if raw_object_key is not None and raw_object_key != object_key:
+        return err(40000, "object_key 非法：禁止路径归一化跨前缀访问", status=400)
+    if not _is_safe_object_path(object_key):
+        return err(40000, "object_key 非法：禁止绝对路径、反斜杠或路径穿越", status=400)
     if expires is None:
         expires = 3600
     if not (0 < expires <= MAX_PRESIGN_GET_EXPIRES):

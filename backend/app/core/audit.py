@@ -18,6 +18,20 @@ from sqlmodel import Session
 from app.models.data import AuditLog
 
 
+def _sanitize_detail(value: Any) -> Any:
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            if any(token in str(key).lower() for token in ("password", "token", "secret")):
+                out[key] = "***"
+            else:
+                out[key] = _sanitize_detail(item)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_detail(item) for item in value]
+    return value
+
+
 def write_audit(
     session: Session,
     user_id: int | None,
@@ -38,7 +52,7 @@ def write_audit(
         action=action,
         resource_type=resource_type,
         resource_id=resource_id,
-        detail=detail,
+        detail=_sanitize_detail(detail) if detail is not None else None,
         created_at=datetime.now(timezone.utc),
     )
     session.add(entry)

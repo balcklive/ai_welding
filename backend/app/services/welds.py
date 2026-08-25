@@ -338,6 +338,7 @@ def list_welds(
     tab: str | None = None,
     page: int = 1,
     page_size: int = 20,
+    operators: list[str] | None = None,
 ) -> tuple[list[DataRecord], int]:
     """数据列表：服务端筛选 + 分页。去重由 `latest_version_id` 反规范化保证。
 
@@ -348,7 +349,7 @@ def list_welds(
     - status: quality 精确（通过/待复核/异常）
     - tab: 待核验→待复核 / 已归档→通过 / 最近·全部最新→仅排序
     """
-    conditions = _build_filters(q, source, brand, status, tab)
+    conditions = _build_filters(q, source, brand, status, tab, operators)
     total = int(
         session.exec(select(func.count(DataRecord.id)).where(*conditions)).one()
     )
@@ -366,13 +367,14 @@ def get_record_by_weld_id(session: Session, weld_id: str) -> DataRecord | None:
     return session.exec(select(DataRecord).where(DataRecord.weld_id == weld_id)).first()
 
 
-def list_through_welds(session: Session) -> list[DataRecord]:
+def list_through_welds(session: Session, operators: list[str] | None = None) -> list[DataRecord]:
     """核验通过（quality=通过）的可分析焊缝，created_at 倒序。供 analysis candidates。"""
+    stmt = select(DataRecord).where(DataRecord.quality == "通过")
+    if operators:
+        stmt = stmt.where(DataRecord.operator.in_(operators))
     return list(
         session.exec(
-            select(DataRecord)
-            .where(DataRecord.quality == "通过")
-            .order_by(DataRecord.created_at.desc(), DataRecord.id.desc())
+            stmt.order_by(DataRecord.created_at.desc(), DataRecord.id.desc())
         ).all()
     )
 
@@ -488,7 +490,7 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _build_filters(q, source, brand, status, tab) -> list:
+def _build_filters(q, source, brand, status, tab, operators=None) -> list:
     conditions = []
     if q:
         like = f"%{q}%"
@@ -501,6 +503,8 @@ def _build_filters(q, source, brand, status, tab) -> list:
         conditions.append(DataRecord.machine.like(f"{brand}%"))
     if status:
         conditions.append(DataRecord.quality == status)
+    if operators:
+        conditions.append(DataRecord.operator.in_(operators))
     if tab == "待核验":
         conditions.append(DataRecord.quality == "待复核")
     elif tab == "已归档":

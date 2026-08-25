@@ -12,7 +12,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from app.api.deps import get_current_user
+from app.api.deps import can_access_operator_owned_resource, get_current_user, is_admin
+from app.core.audit import write_audit
 from app.core.db import get_session
 from app.schemas.common import err, ok
 from app.services.reports import (
@@ -20,6 +21,7 @@ from app.services.reports import (
     FORMATS,
     REPORT_TYPES,
     export_reports,
+    report_operator,
 )
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -35,13 +37,31 @@ class ExportRequest(BaseModel):
 def export_report(
     body: ExportRequest,
     session: Session = Depends(get_session),
+    current_user=Depends(get_current_user),
 ):
     if body.type not in REPORT_TYPES:
         return err(40000, f"未知报告类型: {body.type}", status=400)
     if body.format not in FORMATS:
         return err(40000, f"未知导出格式: {body.format}", status=400)
+    if not is_admin(current_user):
+        for ref_id in body.ref_ids:
+            try:
+                operator = report_operator(session, body.type, ref_id)
+            except EntityNotFoundError as exc:
+                return err(40401, str(exc), status=404)
+            if operator is not None and not can_access_operator_owned_resource(current_user, operator):
+                return err(40300, "无权限", status=403)
     try:
         urls = export_reports(session, body.type, body.ref_ids, body.format)
     except EntityNotFoundError as exc:
         return err(40401, str(exc), status=404)
+    write_audit(
+        session,
+        getattr(current_user, "id", None),
+        "export",
+        "report",
+        body.type,
+        {"type": body.type, "format": body.format, "ref_ids": list(body.ref_ids)},
+    )
+    session.commit()
     return ok({"urls": urls})

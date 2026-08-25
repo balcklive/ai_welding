@@ -15,7 +15,12 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.api.deps import get_current_user
+from app.api.deps import (
+    forbid_unless_operator_owned,
+    get_current_user,
+    is_admin,
+    operator_aliases,
+)
 from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import SignalIngest
@@ -23,6 +28,7 @@ from app.models.data import User
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
 from app.services.jobs import create_job
+from app.storage import get_storage
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -80,6 +86,35 @@ def _operator(user: User) -> str:
     return user.display_name or user.username
 
 
+def _is_safe_object_key(value: str) -> bool:
+    value = value.strip()
+    if not value or value.startswith("/") or "\\" in value:
+        return False
+    parts = value.split("/")
+    return all(part not in {"", ".", ".."} for part in parts)
+
+
+def _stat_new_object_keys(version, object_keys: list[str]) -> tuple[list[str], int] | str:
+    existing = set(version.object_keys or [])
+    new_keys = []
+    total = 0
+    storage = get_storage()
+    for key in object_keys:
+        if not _is_safe_object_key(key):
+            return f"object_key 非法: {key}"
+        if key in existing or key in new_keys:
+            continue
+        try:
+            size = int(storage.stat_object(key))
+        except Exception:
+            return f"对象不存在或不可访问: {key}"
+        if size <= 0:
+            return f"对象大小非法: {key}"
+        new_keys.append(key)
+        total += size
+    return new_keys, total
+
+
 # ── 列表 / 详情 ──────────────────────────────────────────────────────
 
 
@@ -93,6 +128,7 @@ def list_welds(
     page: int = 1,
     page_size: int = 20,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """数据列表：服务端筛选 + 分页，按焊缝 ID 去重、仅最新版本（§3.3）。"""
     page = max(1, page)
@@ -106,16 +142,22 @@ def list_welds(
         tab=tab,
         page=page,
         page_size=page_size,
+        operators=None if is_admin(current_user) else sorted(operator_aliases(current_user)),
     )
     return ok(paginate(svc.records_payload(session, items), total, page, page_size))
 
 
 @router.get("/welds/{weld_id}")
-def get_weld(weld_id: str, session: Session = Depends(get_session)) -> dict:
+def get_weld(
+    weld_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """单条焊缝详情（含最新版本信息）。"""
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     return ok(svc.record_payload(session, record))
 
 
@@ -148,11 +190,16 @@ def create_registration(
 
 
 @router.get("/registrations/{registration_id}")
-def get_registration(registration_id: str, session: Session = Depends(get_session)) -> dict:
+def get_registration(
+    registration_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """登记信息详情（兼容 DB id / registration_no / weld_id 标识）。"""
     record = svc.get_record_by_identifier(session, registration_id)
     if record is None:
         return err(40401, "登记信息不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     return ok(svc.record_payload(session, record))
 
 
@@ -167,6 +214,7 @@ def update_registration(
     record = svc.get_record_by_identifier(session, registration_id)
     if record is None:
         return err(40401, "登记信息不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     svc.update_registration(session, record, body.model_dump(exclude_unset=True))
     write_audit(
         session,
@@ -191,13 +239,18 @@ def attach_raw_files(
     record = svc.get_record_by_identifier(session, registration_id)
     if record is None:
         return err(40401, "登记信息不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     if not body.object_keys:
         return err(40000, "object_keys 不能为空", status=400)
     version = svc.get_v10_version(session, record.id)
     if version is None:
         return err(40402, "v1.0 原始数据版本不存在", status=404)
+    statted = _stat_new_object_keys(version, body.object_keys)
+    if isinstance(statted, str):
+        return err(40000, statted, status=400)
+    new_object_keys, storage_bytes = statted
     svc.attach_raw_files(
-        session, record, version, body.object_keys, body.storage_bytes
+        session, record, version, new_object_keys, storage_bytes
     )
     write_audit(
         session,
@@ -205,12 +258,18 @@ def attach_raw_files(
         "update",
         "weld",
         record.weld_id,
-        {"action": "关联原始文件", "count": len(body.object_keys)},
+        {"action": "关联原始文件", "count": len(new_object_keys), "requested_count": len(body.object_keys)},
     )
     # 自动触发信号导入（Task 18）：本次挂载含 .csv 键时，为每个**新** CSV 建
     # signal_ingest Job + SignalIngest(pending)（同一事务）。`signal_ingests`
     # 表对 (version_id, source_object_key) 唯一约束兜底并发重复挂载。
-    csv_keys = [k for k in body.object_keys if k.lower().endswith(".csv")]
+    csv_keys = []
+    seen_csv_keys: set[str] = set()
+    for key in body.object_keys:
+        key = (key or "").strip()
+        if key.lower().endswith(".csv") and key not in seen_csv_keys:
+            seen_csv_keys.add(key)
+            csv_keys.append(key)
     if csv_keys:
         existing = set(
             session.exec(
@@ -244,23 +303,32 @@ def attach_raw_files(
 
 
 @router.get("/welds/{weld_id}/versions")
-def list_versions(weld_id: str, session: Session = Depends(get_session)) -> dict:
+def list_versions(
+    weld_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """版本链（v1.0→v1.n，含操作人/时间/动作）。"""
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     versions = svc.list_versions(session, record.id)
     return ok([svc.version_payload(v) for v in versions])
 
 
 @router.get("/welds/{weld_id}/versions/{version_id}")
 def get_version(
-    weld_id: str, version_id: int, session: Session = Depends(get_session)
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """单个版本详情。"""
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
@@ -278,6 +346,7 @@ def create_version(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     if body.action not in VALID_ACTIONS:
         return err(40000, "action 需为去噪处理或人工修正", status=400)
     duplicate = svc.find_duplicate_version(
@@ -329,6 +398,7 @@ def run_validation(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
@@ -347,12 +417,16 @@ def run_validation(
 
 @router.get("/welds/{weld_id}/versions/{version_id}/validation")
 def get_validation(
-    weld_id: str, version_id: int, session: Session = Depends(get_session)
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """核验明细：报告 + 15 条规则状态与异常原因。"""
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
+    forbid_unless_operator_owned(current_user, record.operator)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)

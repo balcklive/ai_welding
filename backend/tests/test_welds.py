@@ -60,6 +60,23 @@ def override_get_session(db_session):
     app.dependency_overrides.pop(get_session, None)
 
 
+class FakeStorage:
+    def __init__(self) -> None:
+        self.sizes: dict[str, int] = {}
+
+    def stat_object(self, object_key: str) -> int:
+        if object_key not in self.sizes:
+            raise FileNotFoundError(object_key)
+        return self.sizes[object_key]
+
+
+@pytest.fixture()
+def fake_storage(monkeypatch):
+    storage = FakeStorage()
+    monkeypatch.setattr("app.api.v1.welds.get_storage", lambda: storage)
+    return storage
+
+
 @pytest.fixture()
 def override_get_current_user():
     """假登录：get_current_user 直接返回一个 User，免 seed/免签 token。"""
@@ -444,10 +461,17 @@ def test_create_version_concurrent_duplicate_requests_only_persist_one_row(
 # ---------- POST /registrations/{id}/raw-files ----------
 
 
-def test_attach_raw_files(override_get_session, override_get_current_user) -> None:
+def test_attach_raw_files(
+    override_get_session, override_get_current_user, fake_storage
+) -> None:
     record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
     record_id = record["id"]
     before_bytes = record["storage_bytes"]
+    fake_storage.sizes = {
+        "raw/REG-20260815-00248/0003.mp4": 600,
+        "raw/REG-20260815-00248/timeseries2.csv": 400,
+        "raw/REG-20260815-00248/audio2.wav": 5,
+    }
 
     resp = client.post(
         f"/api/v1/registrations/{record_id}/raw-files",
@@ -482,6 +506,55 @@ def test_attach_raw_files(override_get_session, override_get_current_user) -> No
         json={"object_keys": ["raw/REG-20260815-00248/audio2.wav"], "storage_bytes": 5},
     )
     assert resp.status_code == 200
+
+
+def test_attach_raw_files_rejects_missing_object_without_persisting_key(
+    override_get_session, override_get_current_user, fake_storage, db_session
+) -> None:
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    record_id = record["id"]
+    resp = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": ["raw/REG-20260815-00248/missing.csv"], "storage_bytes": 999},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 40000
+
+    version = db_session.exec(
+        select(DataVersion).where(DataVersion.record_id == record_id, DataVersion.version_no == "v1.0")
+    ).first()
+    assert version is not None
+    assert "raw/REG-20260815-00248/missing.csv" not in (version.object_keys or [])
+
+    refreshed = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    assert refreshed["storage_bytes"] == record["storage_bytes"]
+
+
+def test_attach_raw_files_is_idempotent_for_existing_keys(
+    override_get_session, override_get_current_user, fake_storage
+) -> None:
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    record_id = record["id"]
+    key = "raw/REG-20260815-00248/dup.csv"
+    fake_storage.sizes = {key: 321}
+
+    first = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": [key], "storage_bytes": 999},
+    )
+    assert first.status_code == 200, first.text
+    after_first = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+
+    second = client.post(
+        f"/api/v1/registrations/{record_id}/raw-files",
+        json={"object_keys": [key], "storage_bytes": 999},
+    )
+    assert second.status_code == 200, second.text
+    after_second = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+
+    assert after_first["storage_bytes"] == record["storage_bytes"] + 321
+    assert after_second["storage_bytes"] == after_first["storage_bytes"]
+    assert second.json()["data"]["object_keys"].count(key) == 1
 
 
 # ---------- 核验 ----------

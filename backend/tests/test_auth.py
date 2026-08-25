@@ -99,6 +99,32 @@ def test_login_unknown_user(override_get_session) -> None:
     assert resp.json()["code"] == 40100
 
 
+def test_login_rate_limit_cools_down_and_does_not_break_success(
+    override_get_session, monkeypatch
+) -> None:
+    from app.api.v1 import auth as auth_mod
+
+    now = {"value": 1000.0}
+    monkeypatch.setattr(auth_mod, "_now", lambda: now["value"])
+    auth_mod._LOGIN_FAILURES.clear()
+
+    for _ in range(auth_mod._RATE_LIMIT_MAX_FAILURES):
+        resp = _login(password="wrong-pass")
+        assert resp.status_code == 401
+
+    limited = _login(password="wrong-pass")
+    assert limited.status_code == 429
+    assert limited.json()["code"] == 42900
+
+    success_blocked = _login()
+    assert success_blocked.status_code == 429
+
+    now["value"] += auth_mod._RATE_LIMIT_COOLDOWN_SECONDS + 1
+    success = _login()
+    assert success.status_code == 200
+    assert success.json()["code"] == 0
+
+
 # ---------- GET /auth/me ----------
 
 
