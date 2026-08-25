@@ -18,6 +18,7 @@
 """
 
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,7 +33,7 @@ from app.core.db import get_session
 from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
-from app.models import Dataset, DatasetItem, DatasetVersion, Sample, User
+from app.models import Annotation, Dataset, DatasetItem, DatasetVersion, Sample, User
 
 client = TestClient(app)
 
@@ -226,10 +227,54 @@ def test_get_dataset_detail(override_get_session, override_get_current_user) -> 
     assert data["id"] == ds["id"]
     assert data["name"] == "详情测试集"
     assert data["status"] == "标注中"
+    assert data["label_distribution"] == {}
     assert "updated_at" in data
     # dataset_no 作标识同样可查
     by_no = client.get(f"/api/v1/datasets/{ds['dataset_no']}").json()["data"]
     assert by_no["id"] == ds["id"]
+
+
+def test_dataset_detail_includes_label_distribution(
+    db_engine, override_get_session, override_get_current_user
+) -> None:
+    with Session(db_engine) as session:
+        dataset = Dataset(
+            dataset_no="DS-TEST-LABEL-001",
+            name="标签分布测试集",
+            task="目标检测",
+            sample_count=2,
+            progress=0,
+            status="可训练",
+        )
+        session.add(dataset)
+        session.commit()
+        session.refresh(dataset)
+        version = DatasetVersion(
+            dataset_id=dataset.id,
+            version_no="v1.1",
+            split={"train": 1, "val": 0, "test": 1},
+            item_count=2,
+        )
+        session.add(version)
+        session.commit()
+        session.refresh(version)
+        dataset.current_version_id = version.id
+        sample1 = Sample(object_keys=["processed/a.jpg"], meta={"record_id": 1})
+        sample2 = Sample(object_keys=["processed/b.jpg"], meta={"record_id": 1})
+        session.add(sample1)
+        session.add(sample2)
+        session.commit()
+        session.refresh(sample1)
+        session.refresh(sample2)
+        session.add(DatasetItem(dataset_version_id=version.id, sample_id=sample1.id, split="train"))
+        session.add(DatasetItem(dataset_version_id=version.id, sample_id=sample2.id, split="test"))
+        session.add(Annotation(sample_id=sample1.id, category="气孔", box=[1, 2, 3, 4]))
+        session.add(Annotation(sample_id=sample2.id, category="气孔", box=[1, 2, 3, 4]))
+        session.add(Annotation(sample_id=sample2.id, category="咬边", box=[2, 3, 4, 5]))
+        session.commit()
+
+    data = client.get("/api/v1/datasets/DS-TEST-LABEL-001").json()["data"]
+    assert data["label_distribution"] == {"气孔": 2, "咬边": 1}
 
 
 # ---------- 输入维度 / 适配检查 ----------
@@ -395,6 +440,68 @@ def test_build_from_split_task(
 
 
 # ---------- 血缘 ----------
+
+
+def test_auto_executor_consumes_dataset_build_job(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+    monkeypatch,
+) -> None:
+    ds = _create_dataset(name="自动构建测试集", task="目标检测")
+    version = _create_version(ds["id"])
+    job_id = _create_build_task(ds["id"], version["id"], {"type": "manual", "sample_ids": []})
+    monkeypatch.setattr(executor_mod, "_POLL_INTERVAL", 0.05)
+    executor_mod.stop()
+    executor_mod.start()
+    try:
+        deadline = time.time() + 3
+        data = None
+        while time.time() < deadline:
+            data = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+            if data["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        assert data is not None and data["status"] == "succeeded"
+    finally:
+        executor_mod.stop()
+
+
+def test_fixed_snapshot_old_version_remains_reproducible(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    with Session(db_engine) as session:
+        s1 = Sample(object_keys=["processed/demo/a.csv"], meta={"record_id": 1})
+        s2 = Sample(object_keys=["processed/demo/b.csv"], meta={"record_id": 1})
+        session.add(s1)
+        session.add(s2)
+        session.commit()
+        session.refresh(s1)
+        session.refresh(s2)
+        sid1, sid2 = s1.id, s2.id
+
+    ds = _create_dataset(name="固定快照测试集", task="目标检测")
+    v1 = _create_version(ds["id"])
+    job1 = _create_build_task(ds["id"], v1["id"], {"type": "manual", "sample_ids": [sid1]})
+    run_job(job1)
+    detail_v1 = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
+
+    v2 = _create_version(ds["id"])
+    job2 = _create_build_task(ds["id"], v2["id"], {"type": "manual", "sample_ids": [sid1, sid2]})
+    run_job(job2)
+    detail_v1_again = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
+    detail_v2 = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v2['id']}").json()["data"]
+
+    assert detail_v1_again == detail_v1
+    assert detail_v1_again["item_count"] == 1
+    assert detail_v2["item_count"] == 2
+    assert detail_v1_again["snapshot_id"] != detail_v2["snapshot_id"]
 
 
 def test_lineage_4_nodes(

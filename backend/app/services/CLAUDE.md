@@ -100,9 +100,9 @@
     全库数据集数 + 1，避免与 seed 的全局序号 001/002/003 撞号）；`get_dataset_by_identifier`
     兼容 DB id / dataset_no。
   - `list_datasets`（批量预查当前版本防 N+1）/ `create_dataset`（同名抛 ValueError → 路由 409）/
-    `dataset_payload`；`get_dimensions` = 7 项输入维度 `{name, status(已具备|必需|缺失), required}`
+    `dataset_payload`（详情新增 `label_distribution`）/ `label_distribution_for_version`（当前版本标签分布，供详情页最小可消费字段）；`get_dimensions` = 7 项输入维度 `{name, status(已具备|必需|缺失), required}`
     （照 App.tsx inputDimensions/requiredByTask，可用性由当前版本样本 object_keys 启发式判定）；
-    `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）。
+    `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）；`readiness_for_version` 复用于训练服务端闸门（按指定 dataset_version 而非仅 current_version 判定，且保留 seed 旧版本 `status=可训练` 的兼容放行）。
   - `list_versions` / `create_version`（下一版本号 v1.<n>）/ `version_payload`；
     **`name`/`note` 仅接受不落库**（`dataset_versions` 表 §3.15 无对应列）。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
@@ -140,6 +140,9 @@
     + confusion_matrix `[[612,18],[22,596]]`（照 App.tsx ModelTest）。
   - `run_inference`（推理 handler）：确定性 boxes/categories/confidence/latency_ms
     （seed=`f"infer-{task.id}"`，3 个预测框、类别取自 焊瘤/气孔/未熔合）。
+  - `active_training_job_uid` / `active_inference_job_uid`：活动训练/推理任务幂等查询（training=同 dataset_version 仅 pending/running 去重；inference=同 model_version+input_key+input_type 对 pending/running/succeeded 幂等）。
+  - `model_compatible_with_dataset`：测试任务服务端兼容性闸门；优先按样本维度判定（时序分类需 Current+Voltage、语义分割需熔池视频、多模态回归需 Current+Voltage），无 dataset_items 的 seed 旧版本回退到任务类型启发式兼容。
+  - `validate_inference_input`：真实文件校验（image/video；拒绝损坏/伪装图片与不支持格式，保留 ≤100MB 限制）；视频按 `ftyp` 头校验，图片按魔数 sniff（jpeg/png/webp/bmp，gif 明确拒绝）。
   - `training_logs(task, job)`：确定性训练日志文本（初始化 → 每 epoch loss/val_loss →
     完成/等待）。
   - 内部助手：`next_model_version_no`（取该模型最大 (major,minor) → `v{major}.{minor+1}`；

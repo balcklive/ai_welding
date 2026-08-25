@@ -96,7 +96,10 @@ def get_dataset(dataset_id: str, session: Session = Depends(get_session)) -> dic
         if dataset.current_version_id is not None
         else None
     )
-    return ok(svc.dataset_payload(dataset, current))
+    label_distribution = (
+        svc.label_distribution_for_version(session, current.id) if current is not None else {}
+    )
+    return ok(svc.dataset_payload(dataset, current, label_distribution=label_distribution))
 
 
 # ── 输入维度 / 适配检查 ──────────────────────────────────────────────

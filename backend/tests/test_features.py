@@ -25,7 +25,7 @@ from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
-from app.models import FeatureExtraction, User
+from app.models import DataRecord, DataVersion, FeatureExtraction, User
 from app.services import features
 
 client = TestClient(app)
@@ -289,6 +289,42 @@ def test_extract_features_invalid_params(
         json=_extract_body(WELD_0248, vid, format="bogus"),
     )
     assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+def test_extract_features_marks_fallback_modalities(
+    override_get_session, override_get_current_user, db_session
+) -> None:
+    record = DataRecord(
+        weld_id="WLD-TEST-FEAT-0001",
+        registration_no="REG-TEST-FEAT-0001",
+        source="lab",
+        modalities=["timeseries"],
+        quality="通过",
+    )
+    db_session.add(record)
+    db_session.commit()
+    db_session.refresh(record)
+    version = DataVersion(
+        record_id=record.id,
+        version_no="v1.0",
+        action="原始数据",
+        object_keys=["raw/REG-TEST-FEAT-0001/current.csv"],
+    )
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+
+    resp = client.post(
+        "/api/v1/features/extract",
+        json=_extract_body(record.weld_id, version.id, normalization="无"),
+    )
+    assert resp.status_code == 200, resp.text[:400]
+    data = resp.json()["data"]
+    assert data["modality_status"] == {
+        "timeseries": "available",
+        "vision": "fallback",
+        "audio": "fallback",
+    }
 
 
 def test_get_feature_extraction_unknown_id(

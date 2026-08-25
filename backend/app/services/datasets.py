@@ -178,7 +178,10 @@ def create_dataset(
 
 
 def dataset_payload(
-    dataset: Dataset, current_version: DatasetVersion | None = None
+    dataset: Dataset,
+    current_version: DatasetVersion | None = None,
+    *,
+    label_distribution: dict[str, int] | None = None,
 ) -> dict:
     """数据集 → JSON（列表/详情共用）。"""
     return {
@@ -193,6 +196,7 @@ def dataset_payload(
         "version": current_version.version_no if current_version else None,
         "split": current_version.split if current_version else None,
         "quality": current_version.quality if current_version else None,
+        "label_distribution": label_distribution or {},
         "created_at": _iso_utc(dataset.created_at),
         "updated_at": _iso_utc(dataset.updated_at),
     }
@@ -234,17 +238,35 @@ def get_readiness(session: Session, dataset: Dataset) -> dict:
     return {"readiness": readiness, "checks": checks}
 
 
-def _current_version_samples(session: Session, dataset: Dataset) -> list[Sample]:
-    """当前版本的所有成员样本（dataset_items→samples）。"""
-    if dataset.current_version_id is None:
-        return []
+def samples_for_version(session: Session, version_id: int) -> list[Sample]:
+    """指定数据集版本的所有成员样本（dataset_items→samples）。"""
     return list(
         session.exec(
             select(Sample)
             .join(DatasetItem, DatasetItem.sample_id == Sample.id)
-            .where(DatasetItem.dataset_version_id == dataset.current_version_id)
+            .where(DatasetItem.dataset_version_id == version_id)
         ).all()
     )
+
+
+def label_distribution_for_version(session: Session, version_id: int) -> dict[str, int]:
+    """指定数据集版本的标签分布（按 annotation.category 计数）。"""
+    rows = session.exec(
+        select(Annotation.category, func.count(Annotation.id))
+        .join(Sample, Sample.id == Annotation.sample_id)
+        .join(DatasetItem, DatasetItem.sample_id == Sample.id)
+        .where(DatasetItem.dataset_version_id == version_id)
+        .group_by(Annotation.category)
+        .order_by(Annotation.category)
+    ).all()
+    return {str(category): int(count) for category, count in rows}
+
+
+def _current_version_samples(session: Session, dataset: Dataset) -> list[Sample]:
+    """当前版本的所有成员样本（dataset_items→samples）。"""
+    if dataset.current_version_id is None:
+        return []
+    return samples_for_version(session, dataset.current_version_id)
 
 
 def _dimension_availability(session: Session, dataset: Dataset) -> dict[str, bool]:
@@ -284,31 +306,48 @@ def _dimension_availability_from_samples(samples: list[Sample]) -> dict[str, boo
     return available
 
 
+def readiness_for_version(
+    session: Session,
+    dataset: Dataset,
+    version: DatasetVersion | None,
+) -> dict:
+    """指定版本的训练 readiness：供训练/测试服务端闸门复用。"""
+    sample_rows = samples_for_version(session, version.id) if version is not None else []
+    has_built = bool(sample_rows)
+    if version is not None and not has_built and dataset.status == "可训练":
+        checks = [
+            {"name": name, "passed": True}
+            for name in READINESS_CHECKS.get(dataset.task, READINESS_CHECKS["目标检测"])
+        ]
+        return {"readiness": "可训练", "checks": checks}
+    quality = (version.quality or {}) if version else {}
+    empty_label_rate = quality.get("empty_label_rate")
+    annotation_ok = empty_label_rate is not None and empty_label_rate == 0
+    dims = (
+        _dimension_availability_from_samples(sample_rows)
+        if version is not None
+        else _dimension_availability(session, dataset)
+    )
+    checks = [
+        {"name": name, "passed": _check_passed(name, {"dims": dims, "has_built": has_built, "annotation_ok": annotation_ok})}
+        for name in READINESS_CHECKS.get(dataset.task, READINESS_CHECKS["目标检测"])
+    ]
+    readiness = "可训练" if all(c["passed"] for c in checks) else "暂不可训练"
+    return {"readiness": readiness, "checks": checks}
+
+
 def _readiness_state(session: Session, dataset: Dataset) -> dict:
     version = (
         session.get(DatasetVersion, dataset.current_version_id)
         if dataset.current_version_id is not None
         else None
     )
-    has_built = False
-    if version is not None:
-        has_built = (
-            int(
-                session.exec(
-                    select(func.count(DatasetItem.id)).where(
-                        DatasetItem.dataset_version_id == version.id
-                    )
-                ).one()
-            )
-            > 0
-        )
-    quality = (version.quality or {}) if version else {}
-    empty_label_rate = quality.get("empty_label_rate")
-    annotation_ok = empty_label_rate is not None and empty_label_rate == 0
+    ready = readiness_for_version(session, dataset, version)
+    dims = _dimension_availability(session, dataset)
     return {
-        "dims": _dimension_availability(session, dataset),
-        "has_built": has_built,
-        "annotation_ok": annotation_ok,
+        "dims": dims,
+        "has_built": any(check["name"] == "按焊缝 ID 完成数据划分" and check["passed"] for check in ready["checks"]),
+        "annotation_ok": any(check["name"] in {"异常区段标签已审核", "标注审核通过率 ≥ 90%", "质量标签完整且无空值"} and check["passed"] for check in ready["checks"]),
     }
 
 

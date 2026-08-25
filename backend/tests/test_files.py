@@ -134,6 +134,7 @@ def test_presign_upload_ok(
         "https://minio.local/aiwelding/"
     )
     assert data["upload_url"].endswith(data["object_key"] + "?signature=put")
+    assert data.get("lifecycle") is None
     assert ("put", data["object_key"]) in fake.calls
 
 
@@ -215,6 +216,11 @@ def test_upload_small_file(
     # upload_stream 记录了 key + size（11 字节），并签发 GET url
     assert ("upload", data["object_key"], 11, "video/mp4") in fake.calls
     assert ("get", data["object_key"]) in fake.calls
+    assert data["lifecycle"] == {
+        "policy": "temporary",
+        "retention_days": 30,
+        "prefix": "uploads/",
+    }
 
 
 def test_upload_over_limit(

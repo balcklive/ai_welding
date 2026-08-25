@@ -22,7 +22,7 @@ from app.api.deps import get_current_user
 from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.data import User
-from app.models.datasets import DatasetVersion
+from app.models.datasets import Dataset, DatasetVersion
 from app.models.jobs import Job
 from app.models.models import (
     InferenceTask,
@@ -32,6 +32,7 @@ from app.models.models import (
     TrainingTask,
 )
 from app.schemas.common import err, ok
+from app.services import datasets as dataset_svc
 from app.services import models as svc
 from app.services.jobs import create_job, get_job_by_uid, to_job_payload
 
@@ -179,6 +180,15 @@ def create_training_task(
         return err(40401, "数据集版本不存在", status=404)
     if body.base_model_id is not None and session.get(ModelVersion, body.base_model_id) is None:
         return err(40401, "基础模型版本不存在", status=404)
+    dataset = session.get(Dataset, dataset_version.dataset_id)
+    if dataset is None:
+        return err(40401, "数据集不存在", status=404)
+    readiness = dataset_svc.readiness_for_version(session, dataset, dataset_version)
+    if readiness["readiness"] != "可训练":
+        return err(40000, f"当前数据集版本{readiness['readiness']}，拒绝创建训练任务", status=400)
+    existing_job_id = svc.active_training_job_uid(session, dataset_version.id)
+    if existing_job_id is not None:
+        return ok({"job_id": existing_job_id})
 
     hyperparams = _training_hyperparams(body)
     job = create_job(session, type="training")
@@ -250,10 +260,24 @@ def create_test_task(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """创建测试任务（**异步**）：`{model_version_id, dataset_version_id, tasks[]}` → `{job_id}`。"""
-    if session.get(ModelVersion, body.model_version_id) is None:
+    model_version = session.get(ModelVersion, body.model_version_id)
+    if model_version is None:
         return err(40401, "模型版本不存在", status=404)
-    if session.get(DatasetVersion, body.dataset_version_id) is None:
+    dataset_version = session.get(DatasetVersion, body.dataset_version_id)
+    if dataset_version is None:
         return err(40401, "数据集版本不存在", status=404)
+    dataset = session.get(Dataset, dataset_version.dataset_id)
+    model = session.get(Model, model_version.model_id)
+    if dataset is None or model is None:
+        return err(40401, "模型或数据集不存在", status=404)
+    split = dataset_version.split or {}
+    if int(split.get("test", 0) or 0) <= 0:
+        return err(40000, "当前数据集版本无可用测试集", status=400)
+    dims = dataset_svc._dimension_availability_from_samples(
+        dataset_svc.samples_for_version(session, dataset_version.id)
+    )
+    if not svc.model_compatible_with_dataset(model.type, dims, dataset.task):
+        return err(40000, "模型版本与数据集版本不匹配", status=400)
 
     job = create_job(session, type="test")
     task = TestTask(
@@ -314,6 +338,20 @@ def create_inference_task(
         return err(40000, "推理输入不能为空", status=400)
     if not body.input_type or not body.input_type.strip():
         return err(40000, "输入类型不能为空", status=400)
+    existing_job_id = svc.active_inference_job_uid(
+        session,
+        model_version_id=body.model_version_id,
+        input_key=body.input,
+        input_type=body.input_type,
+    )
+    if existing_job_id is not None:
+        return ok({"job_id": existing_job_id})
+    try:
+        svc.validate_inference_input(body.input, body.input_type)
+    except KeyError:
+        return err(40401, "推理输入文件不存在", status=404)
+    except ValueError as exc:
+        return err(40000, str(exc), status=400)
 
     job = create_job(session, type="inference")
     task = InferenceTask(

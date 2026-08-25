@@ -36,6 +36,7 @@ MAX_PRESIGN_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
 MAX_PRESIGN_GET_EXPIRES = 86400
 #: 流式转发分块大小（1MB，SpooledTemporaryFile 以此阈值落盘）
 _CHUNK = 1024 * 1024
+_UPLOADS_LIFECYCLE = {"policy": "temporary", "retention_days": 30, "prefix": "uploads/"}
 
 
 class PresignUploadRequest(BaseModel):
@@ -96,7 +97,7 @@ def upload_file(file: Annotated[UploadFile, File(...)]) -> object:
         spool.close()
 
     url = storage.presign_get(object_key)
-    return ok({"object_key": object_key, "url": url})
+    return ok({"object_key": object_key, "url": url, "lifecycle": dict(_UPLOADS_LIFECYCLE)})
 
 
 @router.post("/presign-upload")
@@ -116,7 +117,8 @@ def presign_upload(body: PresignUploadRequest) -> object:
         )
     except ValueError as exc:  # prefix 为空等 → normalize_key 抛错
         return err(40000, str(exc), status=400)
-    return ok({"object_key": object_key, "upload_url": upload_url})
+    lifecycle = dict(_UPLOADS_LIFECYCLE) if object_key.startswith("uploads/") else None
+    return ok({"object_key": object_key, "upload_url": upload_url, "lifecycle": lifecycle})
 
 
 @router.get("/{object_key:path}/url")

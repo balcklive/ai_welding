@@ -10,6 +10,7 @@
 """
 
 from pathlib import Path
+import time
 from uuid import uuid4
 
 import pytest
@@ -31,12 +32,17 @@ from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
 from app.models import (
+    Annotation,
     AuditLog,
     DataRecord,
     DataVersion,
+    Dataset,
+    DatasetItem,
+    DatasetVersion,
     Job,
     Model,
     ModelVersion,
+    Sample,
     TrainingTask,
     User,
     ValidationReport,
@@ -162,22 +168,28 @@ def test_alembic_upgrade_online_real_path_executes_0003(monkeypatch) -> None:
         migrated_engine = create_engine(settings.mysql_url)
         with migrated_engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
-            columns = {
-                row[0]: row[1]
-                for row in conn.execute(
-                    text(
-                        """
-                        SELECT column_name, is_nullable
-                        FROM information_schema.columns
-                        WHERE table_schema = DATABASE()
-                          AND table_name = 'alignment_tasks'
-                          AND column_name IN ('request_key', 'active_request_key')
-                        """
+            for table_name, expected_columns in {
+                "data_versions": {"request_key": "YES"},
+                "alignment_tasks": {"request_key": "YES", "active_request_key": "YES"},
+                "split_tasks": {"request_key": "YES", "active_request_key": "YES"},
+            }.items():
+                columns = {
+                    row[0]: row[1]
+                    for row in conn.execute(
+                        text(
+                            f"""
+                            SELECT column_name, is_nullable
+                            FROM information_schema.columns
+                            WHERE table_schema = DATABASE()
+                              AND table_name = '{table_name}'
+                              AND column_name IN ('request_key', 'active_request_key')
+                            """
+                        )
                     )
-                )
-            }
-            assert columns == {"request_key": "YES", "active_request_key": "YES"}
-            constraints = {
+                }
+                assert columns == expected_columns
+
+            alignment_constraints = {
                 row[0]
                 for row in conn.execute(
                     text(
@@ -191,8 +203,25 @@ def test_alembic_upgrade_online_real_path_executes_0003(monkeypatch) -> None:
                     )
                 )
             }
-            assert "uq_alignment_tasks_active_request_key" in constraints
-            assert "uq_alignment_tasks_request_key" not in constraints
+            assert "uq_alignment_tasks_active_request_key" in alignment_constraints
+            assert "uq_alignment_tasks_request_key" not in alignment_constraints
+
+            split_constraints = {
+                row[0]
+                for row in conn.execute(
+                    text(
+                        """
+                        SELECT constraint_name
+                        FROM information_schema.table_constraints
+                        WHERE table_schema = DATABASE()
+                          AND table_name = 'split_tasks'
+                          AND constraint_type = 'UNIQUE'
+                        """
+                    )
+                )
+            }
+            assert "uq_split_tasks_active_request_key" in split_constraints
+            assert "uq_split_tasks_request_key" not in split_constraints
         migrated_engine.dispose()
     finally:
         settings.mysql_database = original_db
@@ -367,15 +396,23 @@ SEED_MODEL_3 = "质量预测模型"      # v0.9 实验版本（model_id=3, versi
 
 
 class FakeStorage:
-    """记录 upload_stream 的假存储（断言权重写，不连 MinIO）。"""
+    """记录上传/读取的假存储（断言权重写与推理输入校验，不连 MinIO）。"""
 
     def __init__(self) -> None:
         self.uploads: list[tuple] = []
+        self.blobs: dict[str, bytes] = {}
 
     def upload_stream(self, object_key, fileobj, size, content_type):
         data = fileobj.read()
         self.uploads.append((object_key, size, content_type, data))
+        self.blobs[object_key] = data
         return object_key
+
+    def get_object(self, object_key):
+        return self.blobs[object_key]
+
+    def stat_object(self, object_key):
+        return len(self.blobs[object_key])
 
 
 @pytest.fixture()
@@ -534,6 +571,76 @@ def test_patch_version_status_flow(
 # ---------- 训练任务（端到端） ----------
 
 
+def _make_dataset_version(
+    db_engine,
+    *,
+    dataset_no: str,
+    task: str = "目标检测",
+    sample_keys: list[str] | None = None,
+    split: dict | None = None,
+    empty_label_rate: float = 0.0,
+) -> int:
+    sample_keys = sample_keys or ["processed/demo/sample.csv"]
+    split = split or {"train": 1, "val": 0, "test": 1}
+    with Session(db_engine) as session:
+        dataset = Dataset(
+            dataset_no=dataset_no,
+            name=dataset_no,
+            task=task,
+            sample_count=len(sample_keys),
+            progress=100,
+            status="可训练",
+        )
+        session.add(dataset)
+        session.commit()
+        session.refresh(dataset)
+        version = DatasetVersion(
+            dataset_id=dataset.id,
+            version_no="v1.1",
+            split=split,
+            item_count=len(sample_keys),
+            quality={
+                "repeat_rate": 0.0,
+                "empty_label_rate": empty_label_rate,
+                "dimension_missing_rate": 0.0,
+            },
+        )
+        session.add(version)
+        session.commit()
+        session.refresh(version)
+        dataset.current_version_id = version.id
+        session.add(dataset)
+        for idx, key in enumerate(sample_keys):
+            sample = Sample(object_keys=[key], meta={"record_id": 1, "idx": idx})
+            session.add(sample)
+            session.commit()
+            session.refresh(sample)
+            session.add(
+                DatasetItem(
+                    dataset_version_id=version.id,
+                    sample_id=sample.id,
+                    split="train" if idx < max(1, len(sample_keys) - 1) else "test",
+                )
+            )
+            if empty_label_rate == 0.0:
+                session.add(Annotation(sample_id=sample.id, category="气孔", box=[1, 2, 3, 4]))
+        session.commit()
+        return version.id
+
+
+def _tiny_png_bytes() -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+        b"\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\x0b\xe7\x02\x9d"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
+def _tiny_mp4_bytes() -> bytes:
+    return b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
+
+
 def test_training_end_to_end(
     db_engine,
     override_get_session,
@@ -611,6 +718,58 @@ def test_training_end_to_end(
     assert by_name[SEED_MODEL_1]["metric"] == metrics
 
 
+def test_training_rejects_unready_dataset(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+) -> None:
+    version_id = _make_dataset_version(
+        db_engine,
+        dataset_no="DS-UNREADY-001",
+        sample_keys=["processed/demo/sample.jpg"],
+        split={"train": 1, "val": 0, "test": 0},
+        empty_label_rate=1.0,
+    )
+    resp = client.post("/api/v1/training-tasks", json={"dataset_version_id": version_id})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 40000
+    assert "暂不可训练" in resp.json()["message"]
+
+
+def test_training_allows_required_dims_without_optional_modalities(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+) -> None:
+    version_id = _make_dataset_version(
+        db_engine,
+        dataset_no="DS-READY-001",
+        sample_keys=["processed/demo/sample.csv", "processed/demo/sample2.csv"],
+        split={"train": 1, "val": 0, "test": 1},
+        empty_label_rate=0.0,
+    )
+    resp = client.post("/api/v1/training-tasks", json={"dataset_version_id": version_id})
+    assert resp.status_code == 200, resp.text
+
+
+def test_training_deduplicates_active_job_by_dataset_version(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+) -> None:
+    version_id = _make_dataset_version(
+        db_engine,
+        dataset_no="DS-DEDUP-001",
+        sample_keys=["processed/demo/sample.csv", "processed/demo/sample2.csv"],
+        split={"train": 1, "val": 0, "test": 1},
+        empty_label_rate=0.0,
+    )
+    first = client.post("/api/v1/training-tasks", json={"dataset_version_id": version_id})
+    second = client.post("/api/v1/training-tasks", json={"dataset_version_id": version_id})
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["data"]["job_id"] == second.json()["data"]["job_id"]
+
+
 def test_training_without_base_model_creates_new_model(
     db_engine,
     override_get_session,
@@ -674,6 +833,47 @@ def test_training_logs(
 # ---------- 测试任务（端到端） ----------
 
 
+def test_test_task_rejects_incompatible_dataset(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+) -> None:
+    version_id = _make_dataset_version(
+        db_engine,
+        dataset_no="DS-SEG-001",
+        task="语义分割",
+        sample_keys=["processed/demo/frame.mp4"],
+        split={"train": 1, "val": 0, "test": 1},
+        empty_label_rate=0.0,
+    )
+    resp = client.post(
+        "/api/v1/test-tasks",
+        json={"model_version_id": 1, "dataset_version_id": version_id},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 40000
+
+
+def test_test_task_rejects_missing_test_split(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+) -> None:
+    version_id = _make_dataset_version(
+        db_engine,
+        dataset_no="DS-NOTEST-001",
+        sample_keys=["processed/demo/sample.csv"],
+        split={"train": 1, "val": 0, "test": 0},
+        empty_label_rate=0.0,
+    )
+    resp = client.post(
+        "/api/v1/test-tasks",
+        json={"model_version_id": 1, "dataset_version_id": version_id},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["code"] == 40000
+
+
 def test_test_task_end_to_end(
     db_engine,
     override_get_session,
@@ -715,6 +915,46 @@ def test_test_task_end_to_end(
 # ---------- 推理任务（端到端） ----------
 
 
+def test_inference_rejects_corrupt_or_unsupported_inputs(
+    override_get_session,
+    override_get_current_user,
+    fake_storage,
+) -> None:
+    fake_storage.blobs["uploads/abc/fake.jpg"] = b"not-really-an-image"
+    fake_storage.blobs["uploads/abc/file.gif"] = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x00\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02L\x01\x00;"
+    bad = client.post(
+        "/api/v1/inference-tasks",
+        json={"model_version_id": 1, "input": "uploads/abc/fake.jpg", "input_type": "image"},
+    )
+    assert bad.status_code == 400
+    assert bad.json()["code"] == 40000
+
+    unsupported = client.post(
+        "/api/v1/inference-tasks",
+        json={"model_version_id": 1, "input": "uploads/abc/file.gif", "input_type": "image"},
+    )
+    assert unsupported.status_code == 400
+    assert unsupported.json()["code"] == 40000
+
+
+def test_inference_deduplicates_same_input_key(
+    override_get_session,
+    override_get_current_user,
+    fake_storage,
+) -> None:
+    fake_storage.blobs["uploads/abc/img.png"] = _tiny_png_bytes()
+    first = client.post(
+        "/api/v1/inference-tasks",
+        json={"model_version_id": 1, "input": "uploads/abc/img.png", "input_type": "image"},
+    )
+    second = client.post(
+        "/api/v1/inference-tasks",
+        json={"model_version_id": 1, "input": "uploads/abc/img.png", "input_type": "image"},
+    )
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["data"]["job_id"] == second.json()["data"]["job_id"]
+
+
 def test_inference_task_end_to_end(
     db_engine,
     override_get_session,
@@ -722,9 +962,10 @@ def test_inference_task_end_to_end(
     executor_sessionlocal,
     fake_storage,
 ) -> None:
+    fake_storage.blobs["uploads/abc/img.png"] = _tiny_png_bytes()
     resp = client.post(
         "/api/v1/inference-tasks",
-        json={"model_version_id": 1, "input": "uploads/abc/img.jpg", "input_type": "image"},
+        json={"model_version_id": 1, "input": "uploads/abc/img.png", "input_type": "image"},
     )
     assert resp.status_code == 200, resp.text[:300]
     job_id = resp.json()["data"]["job_id"]
@@ -752,11 +993,55 @@ def test_inference_task_end_to_end(
             select(InferenceTask).where(InferenceTask.job_id == job_row.id)
         ).first()
         assert task is not None
-        assert task.input_key == "uploads/abc/img.jpg" and task.input_type == "image"
+        assert task.input_key == "uploads/abc/img.png" and task.input_type == "image"
         assert task.result == result
 
 
 # ---------- 404 / 400 ----------
+
+
+def _wait_for_terminal(job_id: str, path: str = "/api/v1/jobs/{job_id}") -> dict:
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        data = client.get(path.format(job_id=job_id)).json()["data"]
+        if data["status"] in {"succeeded", "failed"}:
+            return data
+        time.sleep(0.05)
+    raise AssertionError(f"job {job_id} 未在超时前进入终态")
+
+
+def test_auto_executor_consumes_training_test_and_inference_jobs(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+    monkeypatch,
+) -> None:
+    version_id = _make_dataset_version(
+        db_engine,
+        dataset_no="DS-AUTO-001",
+        sample_keys=["processed/demo/sample.csv", "processed/demo/sample2.csv"],
+        split={"train": 1, "val": 0, "test": 1},
+        empty_label_rate=0.0,
+    )
+    fake_storage.blobs["uploads/abc/auto.png"] = _tiny_png_bytes()
+    monkeypatch.setattr(executor_mod, "_POLL_INTERVAL", 0.05)
+    executor_mod.stop()
+    executor_mod.start()
+    try:
+        train_job = client.post("/api/v1/training-tasks", json={"dataset_version_id": version_id}).json()["data"]["job_id"]
+        test_job = client.post("/api/v1/test-tasks", json={"model_version_id": 1, "dataset_version_id": version_id}).json()["data"]["job_id"]
+        infer_job = client.post(
+            "/api/v1/inference-tasks",
+            json={"model_version_id": 1, "input": "uploads/abc/auto.png", "input_type": "image"},
+        ).json()["data"]["job_id"]
+
+        assert _wait_for_terminal(train_job)["status"] == "succeeded"
+        assert _wait_for_terminal(test_job)["status"] == "succeeded"
+        assert _wait_for_terminal(infer_job)["status"] == "succeeded"
+    finally:
+        executor_mod.stop()
 
 
 def test_models_404(override_get_session, override_get_current_user) -> None:

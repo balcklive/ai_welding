@@ -53,6 +53,14 @@ GPU_USAGE = 42
 #: 权重占位 blob（MinIO `models/{id}/weights.pt`，演示不承载真实模型权重）。
 _WEIGHTS_BLOB = b"mock-yolo-weights-placeholder-blob-v1"
 
+_IMAGE_TYPES = {"jpeg", "png", "webp", "bmp"}
+_VIDEO_EXTS = {".mp4", ".mov", ".m4v"}
+_MODEL_REQUIRED_DIMS = {
+    "时序分类": {"Current", "Voltage"},
+    "语义分割": {"熔池视频"},
+    "多模态回归": {"Current", "Voltage"},
+}
+
 
 # ── 模型 CRUD ────────────────────────────────────────────────────────
 
@@ -232,6 +240,42 @@ def run_training(session: Session, task: TrainingTask, job: Job) -> dict:
     return result
 
 
+def active_training_job_uid(session: Session, dataset_version_id: int) -> str | None:
+    row = session.exec(
+        select(TrainingTask, Job)
+        .join(Job, Job.id == TrainingTask.job_id)
+        .where(TrainingTask.dataset_version_id == dataset_version_id)
+        .order_by(TrainingTask.id.desc())
+    ).first()
+    if row is None:
+        return None
+    task, job = row
+    return job.job_uid if job.status in {"pending", "running"} else None
+
+
+def active_inference_job_uid(
+    session: Session,
+    *,
+    model_version_id: int,
+    input_key: str,
+    input_type: str,
+) -> str | None:
+    rows = session.exec(
+        select(InferenceTask, Job)
+        .join(Job, Job.id == InferenceTask.job_id)
+        .where(
+            InferenceTask.model_version_id == model_version_id,
+            InferenceTask.input_key == input_key,
+            InferenceTask.input_type == input_type,
+        )
+        .order_by(InferenceTask.id.desc())
+    ).all()
+    for _task, job in rows:
+        if job.status in {"pending", "running", "succeeded"}:
+            return job.job_uid
+    return None
+
+
 def training_logs(task: TrainingTask, job: Job) -> str:
     """训练日志文本（`GET /training-tasks/{task_id}/logs`）。确定性，从任务域字段生成。"""
     hyperparams = task.hyperparams or {}
@@ -372,6 +416,67 @@ def _loss_curve(epochs: int, rng: random.Random) -> dict:
         train.append(round(base + rng.uniform(-0.03, 0.03), 4))
         val.append(round(base + 0.15 * (1 - progress) ** 0.8 + rng.uniform(-0.02, 0.02), 4))
     return {"train": train, "val": val}
+
+
+def model_compatible_with_dataset(
+    model_type: str,
+    dims: dict[str, bool],
+    dataset_task: str | None = None,
+) -> bool:
+    required = _MODEL_REQUIRED_DIMS.get(model_type)
+    if required is None:
+        return True
+    if any(dims.values()):
+        return all(dims.get(name, False) for name in required)
+    if model_type == "语义分割":
+        return dataset_task == "语义分割"
+    if model_type == "多模态回归":
+        return dataset_task == "多模态回归"
+    if model_type == "时序分类":
+        return dataset_task != "语义分割"
+    return True
+
+
+def validate_inference_input(input_key: str, input_type: str) -> None:
+    from app.storage import get_storage  # 延迟导入，避免启动时触网
+
+    if input_type not in {"image", "video"}:
+        raise ValueError("input_type 需为 image 或 video")
+    storage = get_storage()
+    size = storage.stat_object(input_key)
+    if size > 100 * 1024 * 1024:
+        raise ValueError("推理输入文件过大：需 ≤ 100MB")
+    data = storage.get_object(input_key)
+    lower = input_key.lower()
+    if input_type == "image":
+        kind = _detect_image_type(data)
+        if kind is None:
+            raise ValueError("推理输入不是有效图片")
+        if kind not in _IMAGE_TYPES:
+            raise ValueError(f"不支持的图片格式: {kind}")
+        if not lower.endswith(tuple(f".{ext}" for ext in (["jpg", "jpeg", "png", "webp", "bmp"]))):
+            raise ValueError("推理输入文件扩展名与图片类型不匹配")
+        if kind == "jpeg" and not lower.endswith((".jpg", ".jpeg")):
+            raise ValueError("推理输入文件扩展名与图片类型不匹配")
+    else:
+        if not lower.endswith(tuple(_VIDEO_EXTS)):
+            raise ValueError("不支持的视频格式")
+        if len(data) < 12 or data[4:8] != b"ftyp":
+            raise ValueError("推理输入不是有效视频")
+
+
+def _detect_image_type(data: bytes) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return "webp"
+    if data.startswith(b"BM"):
+        return "bmp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    return None
 
 
 def _recent_training(session: Session) -> str | None:

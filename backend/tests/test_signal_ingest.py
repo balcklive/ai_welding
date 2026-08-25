@@ -16,6 +16,7 @@
 """
 
 import io
+import time
 
 import numpy as np
 import pandas as pd
@@ -363,6 +364,32 @@ def test_raw_files_csv_auto_trigger_and_ingest(
         assert r["code"] == 0, (mode, r)
         for k in keys:
             assert k in r["data"], (mode, k)
+
+
+def test_auto_executor_consumes_signal_ingest_job(
+    db_engine, override_get_session, override_get_current_user,
+    executor_sessionlocal, fake_storage, monkeypatch,
+) -> None:
+    fake_storage.blobs[CSV_KEY] = _signal_csv_bytes()
+    client.post(
+        f"/api/v1/registrations/{REG_0248}/raw-files",
+        json={"object_keys": [CSV_KEY]},
+    )
+    job_uid = _signal_ingest_job_uid(db_engine)
+    monkeypatch.setattr(executor_mod, "_POLL_INTERVAL", 0.05)
+    executor_mod.stop()
+    executor_mod.start()
+    try:
+        deadline = time.time() + 3
+        data = None
+        while time.time() < deadline:
+            data = client.get(f"/api/v1/jobs/{job_uid}").json()["data"]
+            if data["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        assert data is not None and data["status"] == "succeeded"
+    finally:
+        executor_mod.stop()
 
 
 def test_reattach_same_csv_is_idempotent(

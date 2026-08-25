@@ -75,7 +75,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常）。
   - `POST /features/extract`（**Task 12**）：body `{weld_id, version_id, normalization(默认无), format(默认JSON)}`
     同步真实提取三类特征（`app.services.features`：ts 8×4 + vision 8 + audio 6）→ `unify` 拼
-    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；normalization/
+    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；**返回新增 `modality_status`**（available/fallback，显式标识缺模态回退，避免把缺失模态伪装成“完整真实特征”）；normalization/
     format 白名单校验，非法 → 40000；weld/version 缺失 → 40401/40402。
   - `GET /features/{extraction_id}`（**Task 12**）：特征提取结果（导出用）；不存在 → 40401。
     载荷 `_extraction_payload`（created_at 复用 `jobs._iso_utc`）。
@@ -88,7 +88,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   `app.services.datasets`：
   - `GET /datasets`（列表，含当前版本号/划分/质量）、`POST /datasets`（body `{name, task,
     source?}`，同名 → 40900，空名/空任务 → 40000）、`GET /datasets/{dataset_id}`（详情；
-    `dataset_id` 兼容 DB id / dataset_no，不存在 → 40401）。
+    `dataset_id` 兼容 DB id / dataset_no，不存在 → 40401；**详情新增 `label_distribution`**，返回当前版本标注类别计数）。
   - `GET /datasets/{dataset_id}/dimensions`（7 项 `{name, status, required}`）、
     `GET /datasets/{dataset_id}/readiness`（`{readiness, checks[]}`）。
   - `GET/POST /datasets/{dataset_id}/versions`（新建固定快照占位，下一版本号）、
@@ -110,13 +110,13 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     不属于该模型 40402）。
   - `POST /training-tasks`（**异步**：body `{dataset_version_id, base_model_id?, epochs,
     batch_size, learning_rate, val_ratio, ...高级参数}`，`extra=allow` 收集高级参数进
-    hyperparams；数据集版本/基础模型版本不存在 → 40401；同事务建 pending Job(type=training) +
+    hyperparams；数据集版本/基础模型版本不存在 → 40401；**指定版本 readiness=暂不可训练 → 40000 拒绝**；**同 dataset_version 的 pending/running 训练任务返回既有 `job_id`（防重复活动 job）**；同事务建 pending Job(type=training) +
     `training_tasks` 行 → `{job_id}`）、`GET /training-tasks/{task_id}`（Job 信封，result 内嵌
     metrics/loss_curve/model_version）、`GET /training-tasks/{task_id}/logs`（确定性日志文本）。
-  - `POST /test-tasks`（body `{model_version_id, dataset_version_id, tasks[]}` → `{job_id}`）、
+  - `POST /test-tasks`（body `{model_version_id, dataset_version_id, tasks[]}` → `{job_id}`；**模型/数据集版本不匹配**或**无 test split** → 40000）、
     `GET /test-tasks/{task_id}`（Job 信封，result 内嵌 metrics + confusion_matrix 2×2）。
   - `POST /inference-tasks`（body `{model_version_id, input, input_type}` → `{job_id}`，
-    空 input/input_type → 40000）、`GET /inference-tasks/{task_id}`（Job 信封，result 内嵌
+    空 input/input_type → 40000；**真实文件校验**：拒绝损坏/伪装图片、gif 等不支持格式、>100MB 输入；**同 model_version+input_key+input_type 对 pending/running/succeeded 幂等返回既有 `job_id`**）、`GET /inference-tasks/{task_id}`（Job 信封，result 内嵌
     boxes/categories/confidence/latency_ms）。
   - 坑：各域 `{task_id}` 均为 job_uid（`get_job_by_uid`）；GET 在任务未执行/失败时保持
     result=null，域字段（metrics/loss_curve/confusion_matrix/result）仅在 succeeded 后从
@@ -127,10 +127,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `POST /upload`（multipart `file`，小文件 <100MB 后端代理）：object_key 前缀
     固定 `uploads/{uuid}`，流式读取 + 字节计数封顶（`MAX_PROXY_UPLOAD_SIZE`，
     Content-Length 有则先快速拒绝），`upload_stream` 后 `presign_get` 返回
-    `ok({object_key, url})`。超限 → `err(40000, ..., status=400)`。
+    `ok({object_key, url, lifecycle})`。`lifecycle={policy:temporary,retention_days:30,prefix:'uploads/'}` 对齐 OSS `uploads/` 30 天清理策略（**不承诺立即删除**）；超限 → `err(40000, ..., status=400)`。
   - `POST /presign-upload`（body `{size, content_type, prefix, filename?}`）：
     校验 `0 < size ≤ 2GB`（`MAX_PRESIGN_UPLOAD_SIZE`），调 `presign_put` 返回
-    `ok({object_key, upload_url})`；空 prefix（normalize_key 抛 ValueError）→ 400。
+    `ok({object_key, upload_url, lifecycle?})`；当对象键落在 `uploads/` 前缀时附带同样的 30 天临时保留策略元数据；空 prefix（normalize_key 抛 ValueError）→ 400。
   - `GET /{object_key:path}/url?expires=`：object_key 含 `/`（如 `uploads/<uuid>/x.mp4`），
     用 `:path` 捕获；`expires` 默认 3600、上限 86400（`MAX_PRESIGN_GET_EXPIRES`），
     空/空白 key 与越界 expires → 400。返回 `ok({url})`。

@@ -40,7 +40,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.models.data import DataVersion
+from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 
 from app.api.deps import get_current_user
@@ -328,6 +328,8 @@ def extract_features(
     resolved = _resolve_weld_version(session, body.weld_id, body.version_id)
     if resolved is not None:
         return resolved
+    record = svc.get_record_by_weld_id(session, body.weld_id)
+    version = svc.get_version(session, body.version_id)
 
     bundle = signal_ingest.load_signal_bundle(session, body.weld_id, body.version_id)
     ts: dict[str, dict] = {}
@@ -351,7 +353,7 @@ def extract_features(
     session.add(extraction)
     session.commit()
     session.refresh(extraction)
-    return ok(_extraction_payload(extraction))
+    return ok(_extraction_payload(extraction, record=record, version=version, bundle_source=bundle.source))
 
 
 @router.get("/features/{extraction_id}")
@@ -363,7 +365,9 @@ def get_feature_extraction(
     extraction = session.get(FeatureExtraction, extraction_id)
     if extraction is None:
         return err(40401, "特征提取记录不存在", status=404)
-    return ok(_extraction_payload(extraction))
+    version = session.get(DataVersion, extraction.version_id)
+    record = session.get(DataRecord, version.record_id) if version is not None else None
+    return ok(_extraction_payload(extraction, record=record, version=version))
 
 
 # ── 对齐任务（Task 13：异步 Job，执行器在后台跑 handler） ───────────────
@@ -775,9 +779,15 @@ def _resolve_weld_version(session: Session, weld_id: str, version_id: int) -> di
     return None
 
 
-def _extraction_payload(e: FeatureExtraction) -> dict:
+def _extraction_payload(
+    e: FeatureExtraction,
+    *,
+    record=None,
+    version: DataVersion | None = None,
+    bundle_source: str | None = None,
+) -> dict:
     """FeatureExtraction → JSON 载荷（created_at 复用 jobs._iso_utc 序列化）。"""
-    return {
+    payload = {
         "id": e.id,
         "version_id": e.version_id,
         "ts_features": e.ts_features,
@@ -788,6 +798,13 @@ def _extraction_payload(e: FeatureExtraction) -> dict:
         "format": e.format,
         "created_at": _iso_utc(e.created_at),
     }
+    if record is not None or version is not None or bundle_source is not None:
+        payload["modality_status"] = _feature_modality_status(
+            record=record,
+            version=version,
+            bundle_source=bundle_source,
+        )
+    return payload
 
 
 def _requested_channels(request: Request) -> list[str]:
@@ -828,6 +845,17 @@ def _split_input_error(record, version: DataVersion) -> str | None:
 
 def _derive_modalities_from_keys(object_keys: list[str]) -> list[str]:
     return svc._derive_modalities(object_keys)
+
+
+def _feature_modality_status(*, record, version: DataVersion | None, bundle_source: str | None) -> dict:
+    available = set(record.modalities or []) if record is not None else set()
+    if version is not None:
+        available |= set(_derive_modalities_from_keys(version.object_keys or []))
+    return {
+        "timeseries": "available" if "timeseries" in available else "fallback",
+        "vision": "available" if "video" in available or "infrared" in available else "fallback",
+        "audio": "available" if "audio" in available else "fallback",
+    }
 
 
 def _existing_alignment_job_uid(session: Session, version_id: int) -> str | None:
