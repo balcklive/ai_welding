@@ -155,6 +155,53 @@ def test_admin_access_not_regressed(
     assert report.status_code == 200, report.text
 
 
+def test_same_display_name_collision_does_not_grant_access(
+    db_engine, override_get_session, override_get_current_user
+):
+    record = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    registration_id = record["id"]
+
+    override_get_current_user.value = _user(
+        user_id=2,
+        username="different-user",
+        display_name="林工",
+        role="user",
+    )
+
+    resp = client.get(f"/api/v1/registrations/{registration_id}")
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["code"] == 40300
+
+
+def test_owner_keeps_access_after_rename(
+    db_engine, override_get_session, override_get_current_user
+):
+    override_get_current_user.value = _user(user_id=2, username="worker", display_name="旧名字", role="user")
+    created = client.post(
+        "/api/v1/registrations",
+        json={
+            "source": "lab",
+            "weld_name": "rename-safe-record",
+            "machine": "demo",
+            "weld_method": "MAG焊",
+            "material": "Q235B",
+        },
+    )
+    assert created.status_code == 200, created.text
+    registration_id = created.json()["data"]["id"]
+
+    override_get_current_user.value = _user(user_id=2, username="worker-renamed", display_name="新名字", role="user")
+
+    get_resp = client.get(f"/api/v1/registrations/{registration_id}")
+    assert get_resp.status_code == 200, get_resp.text
+    patch_resp = client.patch(
+        f"/api/v1/registrations/{registration_id}",
+        json={"product": "renamed-owner-still-works"},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["data"]["product"] == "renamed-owner-still-works"
+
+
 def test_non_admin_cannot_read_analysis_or_feature_resources_of_admin_record(
     db_engine, override_get_session, override_get_current_user
 ):

@@ -79,22 +79,26 @@ def override_get_session(db_engine):
     app.dependency_overrides.pop(get_session, None)
 
 
+class _CurrentUser:
+    def __init__(self) -> None:
+        self.value = User(
+            id=1,
+            username="lin_eng",
+            password_hash="not-a-real-hash",
+            display_name="林工",
+            role="admin",
+        )
+
+    def __call__(self) -> User:
+        return self.value
+
+
 @pytest.fixture()
 def override_get_current_user():
     """假登录：get_current_user 直接返回一个 User，免 seed / 免签 token。"""
-    dummy = User(
-        id=1,
-        username="lin_eng",
-        password_hash="not-a-real-hash",
-        display_name="林工",
-        role="admin",
-    )
-
-    def _override() -> User:
-        return dummy
-
-    app.dependency_overrides[get_current_user] = _override
-    yield
+    state = _CurrentUser()
+    app.dependency_overrides[get_current_user] = state
+    yield state
     app.dependency_overrides.pop(get_current_user, None)
 
 
@@ -384,6 +388,68 @@ def test_unauthorized_returns_401(db_engine):
     )
     assert resp.status_code == 401
     assert resp.json()["code"] == 40100
+
+
+@pytest.mark.parametrize("fmt", ["json", "pdf"])
+def test_non_admin_data_list_export_only_includes_owned_records_when_ref_ids_empty(
+    db_engine, override_get_session, override_get_current_user, fake_storage, fmt
+):
+    override_get_current_user.value = User(
+        id=2,
+        username="worker",
+        password_hash="not-a-real-hash",
+        display_name="二号用户",
+        role="user",
+    )
+    created = client.post(
+        "/api/v1/registrations",
+        json={
+            "source": "lab",
+            "weld_name": "worker-owned-record",
+            "machine": "demo",
+            "weld_method": "MAG焊",
+            "material": "Q235B",
+        },
+    )
+    assert created.status_code == 200, created.text
+    weld_id = created.json()["data"]["weld_id"]
+
+    resp = client.post(
+        "/api/v1/reports/export",
+        json={"type": "data-list", "ref_ids": [], "format": fmt},
+    )
+    assert resp.status_code == 200, resp.text
+
+    suffix = "reports/data-list/all.json" if fmt == "json" else "reports/data-list/all.pdf"
+    key, data = _uploaded(fake_storage, suffix)
+    assert key == suffix
+    if fmt == "json":
+        parsed = json.loads(data)
+        assert parsed["total"] == 1
+        assert [item["weld_id"] for item in parsed["items"]] == [weld_id]
+    else:
+        assert data[:5] == b"%PDF-"
+
+
+@pytest.mark.parametrize("fmt", ["json", "pdf"])
+def test_non_admin_data_list_export_cannot_read_other_users_requested_weld(
+    db_engine, override_get_session, override_get_current_user, fake_storage, fmt
+):
+    override_get_current_user.value = User(
+        id=2,
+        username="worker",
+        password_hash="not-a-real-hash",
+        display_name="二号用户",
+        role="user",
+    )
+
+    resp = client.post(
+        "/api/v1/reports/export",
+        json={"type": "data-list", "ref_ids": ["WLD-20260815-0248"], "format": fmt},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["code"] == 40300
+    assert fake_storage.uploads == []
 
 
 def test_jinja_autoescape_escapes_user_fields(

@@ -149,15 +149,15 @@
     空 → v1.1）、`_recent_training`（最近一次已完成训练 finished_at ISO 串）、`_write_weights`
     （延迟 `from app.storage import get_storage`，测试 monkeypatch 该引用，同 dataset 快照）。
 - `reports.py`：**Task 17**。通用报告导出（契约 §3.7 / OSS §2，PDF=Jinja2+xhtml2pdf 复用项）。
-  `export_reports(session, type, ref_ids, fmt)` → 每个 ref_id 装配内容 dict → json 直接落
+  `export_reports(session, type, ref_ids, fmt, visible_weld_ids=None)` → 每个 ref_id 装配内容 dict → json 直接落
   `reports/{type}/{ref_id}.json` / pdf 渲染 `app/templates/reports/` 模板后写 `.pdf` →
   `upload_stream` + `presign_get` → 返回 `[{ref_id, url}]`。类型 builder：
-  `validation`（validation_reports + rule_results 完整模板）、`data-list`（**`ref_ids=[]` → 全量
+  `validation`（validation_reports + rule_results 完整模板）、`data-list`（**`ref_ids=[]` → 全量/可见子集
   单份 ref_id=`all`；非空 → 逐标识 DB id/weld_id/registration_no 解析过滤**）、`features`
   （feature_extractions 统一向量 + 三类特征）、`test`（test_tasks.metrics + 混淆矩阵）、
   `annotation`（annotation_tasks + 样本 COUNT）、`analysis`（数据版本 + 分析结果——经
   `signal_ingest.load_signal_bundle` 优先读真实信号，source 标注进 summary；无导入回退生成），
-  analysis/annotation/features/test 复用 `generic.html.j2`（summary + sections，无数据占位）。
+  analysis/annotation/features/test 复用 `generic.html.j2`（summary + sections，无数据占位）。`report_record(...)` 把 validation/analysis/features/annotation/data-list 归属回具体 `DataRecord`，供路由按 stable owner(user_id) 做 ACL。
   错误语义：未知类型/格式抛 `ValueError` → 路由 400；`EntityNotFoundError` → 404；写 MinIO
   失败直接抛（导出必须拿到 URL，与 dataset/weights 的"尽力而为跳过"不同）。存储延迟导入
   （`from app.storage import get_storage`，测试 monkeypatch）；时间序列化复用 `jobs._iso_utc`。

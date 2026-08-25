@@ -43,12 +43,7 @@ from sqlmodel import Session, select
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 
-from app.api.deps import (
-    forbid_unless_operator_owned,
-    get_current_user,
-    is_admin,
-    operator_aliases,
-)
+from app.api.deps import forbid_unless_record_owned, get_current_user, owned_weld_ids
 from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import (
@@ -147,10 +142,7 @@ def list_candidates(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """选择数据页：已登记且核验通过（quality=通过）的可分析数据列表（最小载荷）。"""
-    records = svc.list_through_welds(
-        session,
-        None if is_admin(current_user) else sorted(operator_aliases(current_user)),
-    )
+    records = svc.list_through_welds(session, owned_weld_ids(session, current_user))
     return ok(
         [
             {
@@ -394,7 +386,7 @@ def get_feature_extraction(
     record = session.get(DataRecord, version.record_id) if version is not None else None
     if record is not None:
         try:
-            forbid_unless_operator_owned(current_user, record.operator)
+            forbid_unless_record_owned(session, current_user, record)
         except Exception:
             return err(40300, "无权限", status=403)
     return ok(_extraction_payload(extraction, record=record, version=version))
@@ -420,7 +412,7 @@ def create_alignment_task(
     if record is None:
         return err(40401, "焊缝不存在", status=404)
     try:
-        forbid_unless_operator_owned(current_user, record.operator)
+        forbid_unless_record_owned(session, current_user, record)
     except Exception:
         return err(40300, "无权限", status=403)
     version = svc.get_version(session, version_id)
@@ -824,7 +816,7 @@ def _resolve_weld_version(
         return err(40401, "焊缝不存在", status=404)
     if current_user is not None:
         try:
-            forbid_unless_operator_owned(current_user, record.operator)
+            forbid_unless_record_owned(session, current_user, record)
         except Exception:
             return err(40300, "无权限", status=403)
     version = svc.get_version(session, version_id)

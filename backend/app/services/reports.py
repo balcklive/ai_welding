@@ -79,7 +79,12 @@ class EntityNotFoundError(Exception):
 
 
 def export_reports(
-    session: Session, report_type: str, ref_ids: list, fmt: str
+    session: Session,
+    report_type: str,
+    ref_ids: list,
+    fmt: str,
+    *,
+    visible_weld_ids: list[str] | None = None,
 ) -> list[dict]:
     """为每个 ref_id 导出一份报告，返回 `[{ref_id, url}]`。
 
@@ -92,7 +97,16 @@ def export_reports(
         raise ValueError(f"未知导出格式: {fmt}")
 
     if report_type == "data-list":
-        return [_export_one(session, report_type, None, fmt, list(ref_ids))]
+        return [
+            _export_one(
+                session,
+                report_type,
+                None,
+                fmt,
+                list(ref_ids),
+                visible_weld_ids=visible_weld_ids,
+            )
+        ]
     return [_export_one(session, report_type, ref_id, fmt) for ref_id in ref_ids]
 
 
@@ -105,10 +119,16 @@ def _export_one(
     ref_id: Any,
     fmt: str,
     data_list_ref_ids: list | None = None,
+    *,
+    visible_weld_ids: list[str] | None = None,
 ) -> dict:
     """装配单份报告 → 渲染 → 写 MinIO → 预签名 URL。"""
     if report_type == "data-list":
-        data, key_ref = _build_data_list(session, data_list_ref_ids or [])
+        data, key_ref = _build_data_list(
+            session,
+            data_list_ref_ids or [],
+            visible_weld_ids=visible_weld_ids,
+        )
     else:
         data = _BUILDERS[report_type](session, ref_id)
         key_ref = str(ref_id)
@@ -191,8 +211,13 @@ def _build_validation(session: Session, ref_id: Any) -> dict:
     }
 
 
-def _build_data_list(session: Session, ref_ids: list) -> tuple[dict, str]:
-    """数据列表：`ref_ids=[]` → 全量（ref_id=`all`）；非空 → 逐标识解析过滤。"""
+def _build_data_list(
+    session: Session,
+    ref_ids: list,
+    *,
+    visible_weld_ids: list[str] | None = None,
+) -> tuple[dict, str]:
+    """数据列表：`ref_ids=[]` → 全量/可见子集（ref_id=`all`）；非空 → 逐标识解析过滤。"""
     if ref_ids:
         records: list[DataRecord] = []
         key_parts: list[str] = []
@@ -207,7 +232,13 @@ def _build_data_list(session: Session, ref_ids: list) -> tuple[dict, str]:
         ref_id = "-".join(key_parts) or "all"
         items = [_record_item(r) for r in records]
     else:
-        records = session.exec(select(DataRecord).order_by(DataRecord.id)).all()
+        stmt = select(DataRecord).order_by(DataRecord.id)
+        if visible_weld_ids is not None:
+            if visible_weld_ids:
+                stmt = stmt.where(DataRecord.weld_id.in_(visible_weld_ids))
+            else:
+                stmt = stmt.where(DataRecord.id == -1)
+        records = session.exec(stmt).all()
         ref_id = "all"
         items = [_record_item(r) for r in records]
     return {
@@ -282,10 +313,10 @@ def _build_annotation(session: Session, ref_id: Any) -> dict:
     }
 
 
-def report_operator(session: Session, report_type: str, ref_id: Any) -> str | None:
-    """返回报告引用实体对应的 operator；无法归属到焊缝时返回 None。"""
+def report_record(session: Session, report_type: str, ref_id: Any) -> DataRecord | None:
+    """返回报告引用实体对应的数据记录；无法归属到焊缝时返回 None。"""
     if report_type == "data-list":
-        return None
+        return _resolve_record(session, ref_id)
     if report_type == "validation":
         report = _get_by_int(session, ValidationReport, ref_id, "核验报告")
         version = session.get(DataVersion, report.version_id) if report.version_id else None
@@ -302,12 +333,9 @@ def report_operator(session: Session, report_type: str, ref_id: Any) -> str | No
 
             split = session.get(SplitTask, task.split_task_id)
             version = session.get(DataVersion, split.version_id) if split else None
-    elif report_type == "test":
-        return None
     else:
         return None
-    record = session.get(DataRecord, version.record_id) if version else None
-    return record.operator if record else None
+    return session.get(DataRecord, version.record_id) if version else None
 
 
 def _build_analysis(session: Session, ref_id: Any) -> dict:

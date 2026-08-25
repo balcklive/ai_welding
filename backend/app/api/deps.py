@@ -6,11 +6,11 @@
 """
 
 from fastapi import Depends, Header, HTTPException
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.db import get_session
 from app.core.security import decode_token
-from app.models.data import User
+from app.models.data import AuditLog, DataRecord, User
 
 def _unauthorized() -> HTTPException:
     return HTTPException(status_code=401, detail="未登录或令牌失效")
@@ -48,17 +48,44 @@ def is_admin(user: User) -> bool:
     return (user.role or "").lower() == "admin"
 
 
-def operator_aliases(user: User) -> set[str]:
-    return {value for value in {user.username, user.display_name} if value}
+def owned_weld_ids(session: Session, user: User) -> list[str] | None:
+    if is_admin(user):
+        return None
+    return list(
+        session.exec(
+            select(AuditLog.resource_id)
+            .where(
+                AuditLog.user_id == user.id,
+                AuditLog.action == "create",
+                AuditLog.resource_type == "weld",
+                AuditLog.resource_id.is_not(None),
+            )
+            .order_by(AuditLog.id)
+        ).all()
+    )
 
 
-def can_access_operator_owned_resource(user: User, operator: str | None) -> bool:
+def owner_user_id_for_record(session: Session, record: DataRecord) -> int | None:
+    return session.exec(
+        select(AuditLog.user_id)
+        .where(
+            AuditLog.action == "create",
+            AuditLog.resource_type == "weld",
+            AuditLog.resource_id == record.weld_id,
+            AuditLog.user_id.is_not(None),
+        )
+        .order_by(AuditLog.id)
+    ).first()
+
+
+def can_access_record(session: Session, user: User, record: DataRecord) -> bool:
     if is_admin(user):
         return True
-    return bool(operator and operator in operator_aliases(user))
+    owner_user_id = owner_user_id_for_record(session, record)
+    return owner_user_id == user.id
 
 
-def forbid_unless_operator_owned(user: User, operator: str | None) -> None:
-    if can_access_operator_owned_resource(user, operator):
+def forbid_unless_record_owned(session: Session, user: User, record: DataRecord) -> None:
+    if can_access_record(session, user, record):
         return
     raise HTTPException(status_code=403, detail="无权限")

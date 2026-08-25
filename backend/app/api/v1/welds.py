@@ -15,12 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from app.api.deps import (
-    forbid_unless_operator_owned,
-    get_current_user,
-    is_admin,
-    operator_aliases,
-)
+from app.api.deps import forbid_unless_record_owned, get_current_user, owned_weld_ids
 from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import SignalIngest
@@ -142,7 +137,7 @@ def list_welds(
         tab=tab,
         page=page,
         page_size=page_size,
-        operators=None if is_admin(current_user) else sorted(operator_aliases(current_user)),
+        weld_ids=owned_weld_ids(session, current_user),
     )
     return ok(paginate(svc.records_payload(session, items), total, page, page_size))
 
@@ -157,7 +152,7 @@ def get_weld(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     return ok(svc.record_payload(session, record))
 
 
@@ -199,7 +194,7 @@ def get_registration(
     record = svc.get_record_by_identifier(session, registration_id)
     if record is None:
         return err(40401, "登记信息不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     return ok(svc.record_payload(session, record))
 
 
@@ -214,7 +209,7 @@ def update_registration(
     record = svc.get_record_by_identifier(session, registration_id)
     if record is None:
         return err(40401, "登记信息不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     svc.update_registration(session, record, body.model_dump(exclude_unset=True))
     write_audit(
         session,
@@ -239,7 +234,7 @@ def attach_raw_files(
     record = svc.get_record_by_identifier(session, registration_id)
     if record is None:
         return err(40401, "登记信息不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     if not body.object_keys:
         return err(40000, "object_keys 不能为空", status=400)
     version = svc.get_v10_version(session, record.id)
@@ -312,7 +307,7 @@ def list_versions(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     versions = svc.list_versions(session, record.id)
     return ok([svc.version_payload(v) for v in versions])
 
@@ -328,7 +323,7 @@ def get_version(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
@@ -346,7 +341,7 @@ def create_version(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     if body.action not in VALID_ACTIONS:
         return err(40000, "action 需为去噪处理或人工修正", status=400)
     duplicate = svc.find_duplicate_version(
@@ -398,7 +393,7 @@ def run_validation(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
@@ -426,7 +421,7 @@ def get_validation(
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
-    forbid_unless_operator_owned(current_user, record.operator)
+    forbid_unless_record_owned(session, current_user, record)
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)

@@ -25,13 +25,13 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
-  - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。**Task 4 修复**：除管理员外，列表/详情/登记编辑/版本/核验均按 `record.operator` 做 ownership ACL。
+  - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。**Task 4 修复**：除管理员外，列表/详情/登记编辑/版本/核验均按 `audit_logs(create,weld).user_id` 的稳定 owner ACL；`record.operator` 仅作展示。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
 - `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
-    **Task 4 修复：写 `create/alignment_task` 审计，且非管理员按焊缝 operator 做 ownership ACL**；
+    **Task 4 修复：写 `create/alignment_task` 审计，且非管理员按焊缝 stable owner(user_id) 做 ownership ACL**；
     `ok({job_id})`；weld/version 缺失 → 40401/40402；**缺少所需视频/时序输入 → 40000**；
     **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**；failed
     旧任务会释放 `active_request_key`，下一次提交创建新的可执行 job；并发双击仍由
@@ -70,15 +70,15 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /analysis/candidates`：quality=通过 的可分析焊缝最小载荷（`svc.list_through_welds`）；
   - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
     写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
-    **Task 4 修复：非管理员按焊缝 operator 做 ownership ACL**，
+    **Task 4 修复：非管理员按焊缝 stable owner(user_id) 做 ownership ACL**，
     写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
     返回 `{duration, sample_rate, channels:[{id,name,unit,values[],lo,hi,mean}], events, anomalies}`；
   - `GET …/analysis/{mode}`：mode ∈ psd|stft|dwt|wavelet|phase|pdd，query `channel`（默认 cur）+
     滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；
-  - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常，**Task 4 修复：非管理员按焊缝 operator 做 ownership ACL**）。
+  - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常，**Task 4 修复：非管理员按焊缝 stable owner(user_id) 做 ownership ACL**）。
   - `POST /features/extract`（**Task 12**）：body `{weld_id, version_id, normalization(默认无), format(默认JSON)}`
     同步真实提取三类特征（`app.services.features`：ts 8×4 + vision 8 + audio 6）→ `unify` 拼
-    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；**返回新增 `modality_status`**（available/fallback，显式标识缺模态回退，避免把缺失模态伪装成“完整真实特征”）；**Task 4 修复：写 `extract/feature_extraction` 审计，且 POST/GET 均按焊缝 operator 做 ownership ACL**；normalization/
+    42 维归一化向量 → 写 `feature_extractions` 行（created_at）→ `ok(extraction)`；**返回新增 `modality_status`**（available/fallback，显式标识缺模态回退，避免把缺失模态伪装成“完整真实特征”）；**Task 4 修复：写 `extract/feature_extraction` 审计，且 POST/GET 均按焊缝 stable owner(user_id) 做 ownership ACL**；normalization/
     format 白名单校验，非法 → 40000；weld/version 缺失 → 40401/40402。
   - `GET /features/{extraction_id}`（**Task 12**）：特征提取结果（导出用）；不存在 → 40401。
     载荷 `_extraction_payload`（created_at 复用 `jobs._iso_utc`）。
@@ -151,7 +151,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   `app.services.reports`：
   - `POST /reports/export` body `{type(validation|analysis|annotation|features|test|data-list),
     ref_ids[], format(pdf|json)}` → 每 ref_id 生成报告写 MinIO
-    `reports/{type}/{ref_id}.pdf|.json` → `ok({urls:[{ref_id, url}]})`（url 预签名下载）。**Task 4 修复**：导出成功后写 `export/report` 审计；非管理员对可归属焊缝的报告类型（analysis/features/validation/部分 annotation）按 operator 做 ownership ACL。
+    `reports/{type}/{ref_id}.pdf|.json` → `ok({urls:[{ref_id, url}]})`（url 预签名下载）。**Task 4 修复**：导出成功后写 `export/report` 审计；非管理员对可归属焊缝的报告类型按 stable owner(user_id) 做 ownership ACL；`data-list` 空 `ref_ids` 仅导出本人可见记录，指定 weld/registration 需逐条过权。
   - 未知 type / format → 400（40000）；引用实体不存在 → 404（40401）；未登录 401（40100）。
   - `data-list`：`ref_ids=[]` → 全量单份（ref_id=`all`）；非空 → 逐标识（DB id/weld_id/
     registration_no）解析过滤，缺失 404。
