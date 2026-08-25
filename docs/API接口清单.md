@@ -102,6 +102,7 @@
 | `Annotation` | 标注结果 | sample_id, labels[{category, box, confidence}], annotator, updated_at |
 | `LabelCategory` | 缺陷标签类别 | name（焊瘤/气孔/未熔合/咬边/正常） |
 | `FeatureExtraction` | 特征提取结果 | id, version_id, ts_features, vision_features, audio_features, unified_vector{dims, groups}, normalization, format |
+| `SignalIngest` | 真实信号导入（Job：CSV 挂载后自动触发，校验+启发式+写 Parquet） | id, job_id, version_id, source_object_key, status(pending/succeeded/failed), sample_rate, duration, row_count, parquet_key, events, anomalies, validation, error |
 | `Dataset` | 数据集 | id, name, task, sample_count, progress, current_version, status(标注中/可训练) |
 | `DatasetVersion` | 数据集版本（固定快照） | id, dataset_id, version_no, split{train/val/test}, item_count, snapshot_id, quality{repeat_rate, empty_label_rate, ...} |
 | `Project` | 数据项目卡片（总览，由数据集派生） | name, status(标注中/可训练), sample_count, progress, updated_at（**无 `id` 字段**，后端 `get_projects` 不输出） |
@@ -149,7 +150,7 @@
 | POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填） |
 | GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
 | PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息 | body 同 POST（部分字段可选） |
-| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0) |
+| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量）。**含 `.csv` 对象键时自动创建 `signal_ingest` 任务**（解析+校验+写 MinIO Parquet，幂等：同文件不重复建任务） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0) |
 | GET | `/api/v1/welds/{weld_id}/versions` | 版本链（v1.0~v1.3 + 操作人/时间/动作） | — 需登录 |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}` | 单个版本详情 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions` | 新建数据版本（去噪处理/人工修正等加工动作落库为独立版本，不覆盖旧版） | body: `action`(去噪处理/人工修正), `note?`, `object_keys[]?` |
@@ -163,7 +164,7 @@
 | GET | `/api/v1/analysis/candidates` | 选择数据页：已登记且核验通过的可分析数据列表 | 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/alignment-tasks` | 提交多模态对齐任务（**异步**；成功后自动生成新版本 `action=时间对齐` 并更新 `latest_version_id`） | body: `modalities[]` |
 | GET | `/api/v1/alignment-tasks/{task_id}` | 对齐任务状态/结果：时间轴、起弧/有效段/收弧事件、各模态轨道、`assets[]`（对齐后视频/轨道/JSON 的对象键，前端经 `files.getFileUrl` 播放） | 轮询（Job 结构） |
-| GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形（电流/电压/气体/送丝） | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2` |
+| GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形（电流/电压/气体/送丝）。响应含 `source`(`real`=读导入的真实信号 / `generated`=确定性生成) | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2` |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/{mode}` | 单视图分析数据：`mode` ∈ `psd\|stft\|dwt\|wavelet\|phase\|pdd` | query: `channel`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`（可选，滤波后计算，与信号页滤波联动） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/result` | AI 异常检测结果：焊接稳定度、正常/电弧不稳/飞溅比例、异常区段列表 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交数据切分任务（**异步**） | body: `fixed_rate`(帧/样本), `keep_event_buffer`(±s), `task_format`(目标检测/图像分类/语义分割/时序分类) |

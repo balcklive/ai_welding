@@ -179,6 +179,24 @@ class StorageClient:
             self.bucket, object_key, expires=timedelta(seconds=expires)
         )
 
+    def get_object(self, object_key: str) -> bytes:
+        """后端代理读取对象全部字节（signal_ingest handler 读 CSV / loader 读 Parquet）。
+
+        对象不存在抛 `minio.error.S3Error`（NoSuchKey），调用方需自捕获。
+        """
+        self._ensure_bucket()
+        resp = self._client.get_object(self.bucket, object_key)
+        try:
+            return resp.read()
+        finally:
+            resp.close()
+            resp.release_conn()
+
+    def stat_object(self, object_key: str) -> int:
+        """返回对象大小（字节）；不存在抛 `S3Error`。用于大文件阈值预检。"""
+        self._ensure_bucket()
+        return self._client.stat_object(self.bucket, object_key).size
+
 
 # ---------------------------------------------------------------------------
 # 懒加载单例

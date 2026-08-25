@@ -283,14 +283,24 @@ def _build_annotation(session: Session, ref_id: Any) -> dict:
 
 
 def _build_analysis(session: Session, ref_id: Any) -> dict:
-    """分析报告：数据版本 + 确定性分析结果（generic 模板）。"""
+    """分析报告：数据版本 + 分析结果（generic 模板）。
+
+    优先读真实信号（`signal_ingest.load_signal_bundle`，source="real"），
+    无导入则回退确定性生成（source="generated"）；summary 标注信号来源。
+    """
     version = _get_by_int(session, DataVersion, ref_id, "数据版本")
     record = session.get(DataRecord, version.record_id) if version.record_id else None
     weld_id = record.weld_id if record else None
-    # 懒加载 signals（导入较重）；确定性结果源自信号生成器，无需重算完整通道。
-    from app.services.signals import analysis_result, generate_signals
+    # 懒加载 signals（导入较重）；经 loader 统一入口（真实/生成）。
+    from app.services import signal_ingest
+    from app.services.signals import analysis_result
 
-    result = analysis_result(generate_signals(weld_id)) if weld_id else {}
+    if weld_id:
+        bundle = signal_ingest.load_signal_bundle(session, weld_id, version.id)
+        result = analysis_result(bundle)
+        source = bundle.source
+    else:
+        result, source = {}, "generated"
     anomalies = result.get("anomalies") or []
     return {
         "title": "分析报告",
@@ -300,6 +310,7 @@ def _build_analysis(session: Session, ref_id: Any) -> dict:
             {"label": "登记号", "value": record.registration_no if record else "—"},
             {"label": "版本", "value": version.version_no},
             {"label": "操作", "value": version.action},
+            {"label": "信号来源", "value": "真实导入" if source == "real" else "模拟生成"},
         ],
         "sections": [
             _kv_section("分析结论", _pick(result, "stability", "segments")),

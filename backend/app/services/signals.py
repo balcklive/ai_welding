@@ -24,11 +24,14 @@ from dataclasses import dataclass, field
 import numpy as np
 
 #: 4 通道规格（id/name/unit/量程，对齐 App.tsx channels 常量）。
+#: 量程按真实焊接范围放宽（Task 18 数据导入实测：MAG 短路过渡电流峰值 ~530A、
+#: 电压峰值 ~70V，超出原演示档 300A/40V）。R5 量程校验与启发式阈值均以此 span 推导，
+#: 前端 y 轴经 channel.lo/hi 读取——改这里会同时影响导入校验、事件检测与图表量程。
 CHANNEL_SPECS: list[dict] = [
-    {"id": "cur", "name": "电流", "unit": "A", "lo": 0.0, "hi": 300.0},
-    {"id": "vol", "name": "电压", "unit": "V", "lo": 0.0, "hi": 40.0},
-    {"id": "gas", "name": "气体流量", "unit": "L/min", "lo": 0.0, "hi": 30.0},
-    {"id": "wir", "name": "送丝速度", "unit": "m/min", "lo": 0.0, "hi": 12.0},
+    {"id": "cur", "name": "电流", "unit": "A", "lo": 0.0, "hi": 600.0},
+    {"id": "vol", "name": "电压", "unit": "V", "lo": 0.0, "hi": 80.0},
+    {"id": "gas", "name": "气体流量", "unit": "L/min", "lo": 0.0, "hi": 60.0},
+    {"id": "wir", "name": "送丝速度", "unit": "m/min", "lo": 0.0, "hi": 20.0},
 ]
 
 #: 焊接事件时间点（s），对齐 App.tsx。
@@ -63,7 +66,10 @@ class Channel:
 
 @dataclass
 class SignalBundle:
-    """一次生成的完整信号集（4 通道 + 事件 + 异常区段）。"""
+    """一次生成的完整信号集（4 通道 + 事件 + 异常区段）。
+
+    `source`：`generated`（确定性合成）或 `real`（从导入的真实信号 Parquet 还原）。
+    """
 
     weld_id: str
     duration: float
@@ -71,6 +77,7 @@ class SignalBundle:
     channels: list[Channel]
     events: dict = field(default_factory=lambda: dict(EVENTS))
     anomalies: list[dict] = field(default_factory=lambda: list(ANOMALIES))
+    source: str = "generated"  # generated | real
 
     def channel(self, channel_id: str) -> Channel | None:
         return next((c for c in self.channels if c.id == channel_id), None)

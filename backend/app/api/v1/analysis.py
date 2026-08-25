@@ -51,7 +51,7 @@ from app.models.analysis import (
 )
 from app.models.data import User
 from app.schemas.common import err, ok, paginate
-from app.services import annotation, dsp, features, signals
+from app.services import annotation, dsp, features, signal_ingest, signals
 from app.services import welds as svc
 from app.services.jobs import (
     _iso_utc,
@@ -180,7 +180,7 @@ def get_signals(
     if msg := _filter_error(filter_type, cutoff, cutoff2):
         return err(40000, msg, status=400)
 
-    bundle = signals.generate_signals(weld_id, sample_rate=_DEFAULT_SAMPLE_RATE)
+    bundle = signal_ingest.load_signal_bundle(session, weld_id, version_id)
     channel_ids = _requested_channels(request)
     for cid in channel_ids:
         if bundle.channel(cid) is None:
@@ -213,6 +213,7 @@ def get_signals(
             "channels": payload_channels,
             "events": bundle.events,
             "anomalies": bundle.anomalies,
+            "source": bundle.source,
         }
     )
 
@@ -233,8 +234,8 @@ def get_analysis_result(
     resolved = _resolve_weld_version(session, weld_id, version_id)
     if resolved is not None:
         return resolved
-    bundle = signals.generate_signals(weld_id, sample_rate=_DEFAULT_SAMPLE_RATE)
-    return ok(signals.analysis_result(bundle))
+    bundle = signal_ingest.load_signal_bundle(session, weld_id, version_id)
+    return ok({**signals.analysis_result(bundle), "source": bundle.source})
 
 
 # ── 单视图分析（mode 分发） ────────────────────────────────────────────
@@ -264,7 +265,7 @@ def get_analysis_mode(
     if msg := _filter_error(filter_type, cutoff, cutoff2):
         return err(40000, msg, status=400)
 
-    bundle = signals.generate_signals(weld_id, sample_rate=_DEFAULT_SAMPLE_RATE)
+    bundle = signal_ingest.load_signal_bundle(session, weld_id, version_id)
     fs = bundle.sample_rate
 
     if mode == "phase":
@@ -324,7 +325,7 @@ def extract_features(
     if resolved is not None:
         return resolved
 
-    bundle = signals.generate_signals(body.weld_id, sample_rate=_DEFAULT_SAMPLE_RATE)
+    bundle = signal_ingest.load_signal_bundle(session, body.weld_id, body.version_id)
     ts: dict[str, dict] = {}
     for chan in bundle.channels:
         ts[chan.id] = features.ts_features(chan.values, fs=bundle.sample_rate)

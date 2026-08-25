@@ -221,7 +221,7 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   let content: React.ReactNode = null;
   if (route === 'data-center/list') content = <ManagementFiltered navigate={navigate} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />;
   else if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} />;
-  else if (route === 'data-center/registration') content = selectedDataId ? <Registration /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
+  else if (route === 'data-center/registration') content = <Registration />;
   else if (route === 'data-center/validation') content = selectedDataId ? <Validation embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'analysis/select') content = <AnalysisSelect onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
@@ -235,7 +235,7 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTest /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showContext && <SelectionContext dataId={selectedDataId!} />}{content}</div>;
+  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showContext && <SelectionContext dataId={selectedDataId!} />}{content}</div>;
 }
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-intro"><div><div className="eyebrow"><span />{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>; }

@@ -94,21 +94,22 @@ def test_all_23_tables_created(engine: Engine) -> None:
 
 
 def test_migration_indexes_match_model_metadata() -> None:
-    """手写迁移 `0001_initial.py` 的 create_index 必须与模型元数据索引**完全对齐**。
+    """全部手写迁移的 create_index 必须与模型元数据索引**完全对齐**。
 
-    迁移是手写的（远程 MySQL 不可达），此处直接解析迁移文件，防止
-    模型新增 index=True/Index() 而迁移遗漏（或反之）的索引漂移在 CI 中漏网。
+    迁移是手写的（远程 MySQL 不可达），此处直接解析 `versions/*.py` 全部迁移，
+    防止模型新增 index=True/Index() 而迁移遗漏（或反之）的索引漂移在 CI 中漏网。
     """
     import re
     from pathlib import Path
 
-    mig_path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic"
-        / "versions"
-        / "0001_initial.py"
+    versions_dir = (
+        Path(__file__).resolve().parents[1] / "alembic" / "versions"
     )
-    text = mig_path.read_text(encoding="utf-8")
+    text = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in sorted(versions_dir.glob("*.py"))
+        if p.name != "__init__.py"
+    )
 
     mig_indexes: dict[str, set[str]] = {}
     for m in re.finditer(

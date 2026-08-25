@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/alembic/
 
-Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）。
+Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）+ **Task 18（`0002_signal_ingests`，新增 `signal_ingests` 表）**。
 
 ## 文件
 
@@ -8,6 +8,7 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - `env.py`：`from app.models import *`（导入全部 23 个表类）→ `target_metadata = SQLModel.metadata`；`config.set_main_option("sqlalchemy.url", settings.mysql_url)`；`compare_type=False`（原因见下）。
 - `script.py.mako`：迁移模板（alembic init 生成）。
 - `versions/0001_initial.py`：初始迁移（手写，见"手写迁移的原因"）。
+- `versions/0002_signal_ingests.py`：**Task 18**。新增 `signal_ingests` 表（手写；`job_id` UK 1:1→jobs、`(version_id, source_object_key)` UK 幂等、idx `version_id`）。
 
 ## 常用命令（在 `backend/` 下执行）
 

@@ -6,7 +6,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Column, DateTime, Numeric
+from sqlalchemy import JSON, Column, DateTime, Numeric, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -116,5 +116,44 @@ class FeatureExtraction(SQLModel, table=True):
     normalization: str = Field(max_length=16)
     format: str = Field(max_length=8)
     created_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
+class SignalIngest(SQLModel, table=True):
+    """§3.24 signal_ingests 真实信号导入（1:1 关联 jobs）
+
+    CSV 原始文件挂载后自动解析 + 校验 + 写 Parquet 的元数据行；`status` 三态
+    pending/succeeded/failed。`(version_id, source_object_key)` 复合唯一保证
+    同一文件不重复导入（幂等）；`job_id` 1:1 关联 `jobs` 供 GET 轮询。
+    """
+
+    __tablename__ = "signal_ingests"
+    __table_args__ = (
+        UniqueConstraint(
+            "version_id",
+            "source_object_key",
+            name="uq_signal_ingests_version_key",
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="jobs.id", unique=True)
+    version_id: int = Field(foreign_key="data_versions.id", index=True)
+    source_object_key: str = Field(max_length=255)
+    status: str = Field(max_length=16, default="pending")
+    sample_rate: int | None = Field(default=None)
+    duration: float | None = Field(default=None)
+    row_count: int | None = Field(default=None)
+    column_map: dict | None = Field(default=None, sa_column=Column(JSON))
+    validation: dict | None = Field(default=None, sa_column=Column(JSON))
+    parquet_key: str | None = Field(default=None, max_length=255)
+    events: dict | None = Field(default=None, sa_column=Column(JSON))
+    anomalies: list | None = Field(default=None, sa_column=Column(JSON))
+    error: dict | None = Field(default=None, sa_column=Column(JSON))
+    created_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    finished_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )

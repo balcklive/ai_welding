@@ -3,14 +3,35 @@ name = "ai-welding-backend"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.115", "uvicorn[standard]>=0.30", "sqlmodel>=0.0.22",
-  "pydantic-settings>=2.4", "alembic>=1.13", "sqlalchemy>=2.0",
-  "pymysql>=1.1", "cryptography>=42.0", "PyJWT>=2.8", "pwdlib[argon2]>=0.2",
-  "minio>=7.2", "numpy>=2.0", "scipy>=1.13", "PyWavelets>=1.6",
-  "scikit-image>=0.23", "librosa>=0.10", "Jinja2>=3.1", "xhtml2pdf>=0.2.15",
-  "loguru>=0.7", "python-multipart>=0.0.9",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlmodel>=0.0.22",
+  "pydantic-settings>=2.4",
+  "alembic>=1.13",
+  "sqlalchemy>=2.0",
+  "pymysql>=1.1",
+  "cryptography>=42.0",
+  "PyJWT>=2.8",
+  "pwdlib[argon2]>=0.2",
+  "minio>=7.2",
+  "numpy>=2.0",
+  "scipy>=1.13",
+  "PyWavelets>=1.6",
+  "scikit-image>=0.23",
+  "librosa>=0.10",
+  "Jinja2>=3.1",
+  "xhtml2pdf>=0.2.15",
+  "loguru>=0.7",
+  "python-multipart>=0.0.9",
+  "pyarrow>=25.0.1",
+  "pandas>=3.0.5",
+  "imageio-ffmpeg>=0.6.0",
 ]
 [dependency-groups]
 dev = ["pytest>=8.2", "httpx>=0.27"]
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

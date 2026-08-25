@@ -13,6 +13,7 @@ from app.jobs.dataset_build import handle as _dataset_build_handler  # noqa: F40
 from app.jobs.training import handle as _training_handler  # noqa: F401  # 注册 training handler（Task 16）
 from app.jobs.testing import handle as _test_handler  # noqa: F401  # 注册 test handler（Task 16）
 from app.jobs.inference import handle as _inference_handler  # noqa: F401  # 注册 inference handler（Task 16）
+from app.jobs.signal_ingest import handle as _signal_ingest_handler  # noqa: F401  # 注册 signal_ingest handler（Task 18）
 
 __all__ = [
     "executor",

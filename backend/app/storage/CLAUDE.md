@@ -22,6 +22,10 @@ MinIO 对象存储客户端（Task 4）。桶与连接信息来自 `app.core.con
       `put_object(bucket, key, fileobj, size, content_type=...)`。
     - `presign_get(object_key, expires=3600) -> str`：预签名 GET/播放 URL，`expires` 秒
       （长视频可 86400）。
+    - `get_object(object_key) -> bytes`：**Task 18**。后端代理读取对象全部字节
+      （signal_ingest handler 读 CSV、loader 读 Parquet）。对象不存在抛 `minio.error.S3Error`
+      （NoSuchKey），调用方自捕获。`stat_object(object_key) -> int`：返回对象大小字节，
+      供大文件阈值预检。
     - `_ensure_bucket()`：各操作首次使用时 `bucket_exists` 否则 `make_bucket`，之后
       记忆（`_bucket_ready`），避免每次操作都多一次往返。
   - `get_storage()`：懒加载单例（模块级 `_storage`），首次调用才构建 `Minio`（构造

@@ -1,11 +1,12 @@
 # CLAUDE.md — backend/app/jobs/
 
-Job 执行器与各域 handler（Task 13 ~ Task 16）。导入本包即完成 handler 注册
+Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18**）。导入本包即完成 handler 注册
 （`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py` /
 `app/jobs/dataset_build.py` / `app/jobs/training.py` / `app/jobs/testing.py` /
-`app/jobs/inference.py`，各模块级 `@register_handler(...)` 填充 `executor.HANDLERS`）。
-新增域任务（split/annotation/dataset_build/training...）在本包加一个 `xxx.py` 注册即可，
-executor 无需改动。
+`app/jobs/inference.py` / `app/jobs/signal_ingest.py`，各模块级 `@register_handler(...)`
+填充 `executor.HANDLERS`）。
+新增域任务（split/annotation/dataset_build/training/signal_ingest...）在本包加一个 `xxx.py`
+注册即可，executor 无需改动。
 
 ## 脚本
 
@@ -59,6 +60,11 @@ executor 无需改动。
 - `inference.py`：**Task 16**。`handle(job_id, session)`（`@register_handler("inference")`）→
   `app.services.models.run_inference`（进度逐步 → 确定性 boxes/categories/confidence/latency_ms
   （seed=task.id）→ 回填 inference_tasks.result → job.result 同款）。
+- `signal_ingest.py`：**Task 18**。`handle(job_id, session)`（`@register_handler("signal_ingest")`）
+  → 按 `signal_ingests.job_id` 取任务 → `app.services.signal_ingest.run_ingest`（下载 CSV → 10 条
+  校验 → 启发式 events/anomalies → 写 MinIO Parquet → 回填行 + job.result）。**关键差异**：
+  `run_ingest` 内部自捕获异常并写 failed 行状态后正常返回——executor 的 failed 兜底会先
+  `rollback` 丢弃 handler 写过的行状态，故不能像 alignment/split 把业务异常重抛给执行器。
 
 ## 坑/限制
 

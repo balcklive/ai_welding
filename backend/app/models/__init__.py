@@ -10,6 +10,7 @@ from .analysis import (
     FeatureExtraction,
     LabelCategory,
     Sample,
+    SignalIngest,
     SplitTask,
 )
 from .data import (
@@ -42,6 +43,7 @@ __all__ = [
     "Annotation",
     "LabelCategory",
     "FeatureExtraction",
+    "SignalIngest",
     # datasets.py
     "Dataset",
     "DatasetVersion",

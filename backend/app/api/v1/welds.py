@@ -8,18 +8,20 @@
 40403=该版本尚未核验、40000=参数错误。
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
 from app.core.audit import write_audit
 from app.core.db import get_session
+from app.models.analysis import SignalIngest
 from app.models.data import User
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
+from app.services.jobs import create_job
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -204,6 +206,35 @@ def attach_raw_files(
         record.weld_id,
         {"action": "关联原始文件", "count": len(body.object_keys)},
     )
+    # 自动触发信号导入（Task 18）：本次挂载含 .csv 键时，为每个**新** CSV 建
+    # signal_ingest Job + SignalIngest(pending)（同一事务）。`signal_ingests`
+    # 表对 (version_id, source_object_key) 唯一约束兜底并发重复挂载。
+    csv_keys = [k for k in body.object_keys if k.lower().endswith(".csv")]
+    if csv_keys:
+        existing = set(
+            session.exec(
+                select(SignalIngest.source_object_key).where(
+                    SignalIngest.version_id == version.id
+                )
+            ).all()
+        )
+        for key in csv_keys:
+            if key in existing:
+                continue
+            job = create_job(
+                session,
+                "signal_ingest",
+                result={"version_id": version.id, "source_object_key": key},
+            )
+            session.add(
+                SignalIngest(
+                    job_id=job.id,
+                    version_id=version.id,
+                    source_object_key=key,
+                    status="pending",
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
     session.commit()
     return ok(svc.version_payload(version))
 

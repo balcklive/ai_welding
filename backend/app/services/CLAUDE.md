@@ -51,7 +51,8 @@
   全部 numpy→list 走 `.tolist()`。坑：`sosfiltfilt` 要求输入 ≥31 点；wavedec 返回
   `[cA_n, cD_n, …, cD_1]`，即 `coeffs[0]` 是最末层近似、`coeffs[level]` 是 D1。
 - `signals.py`：**Task 11**。`generate_signals(weld_id, sample_rate=1000) -> SignalBundle`——
-  确定性生成 4 通道（cur/vol/gas/wir，量程与 App.tsx 一致）焊接信号，形态复刻 App.tsx
+  确定性生成 4 通道（cur/vol/gas/wir，量程已按真实焊接范围放宽为 cur 0-600A / vol 0-80V /
+  gas 0-60 L/min / wir 0-20 m/min）焊接信号，形态复刻 App.tsx
   currentAmp/voltVal/gasVal/wireVal（起弧 ramp → 稳态 → 收弧 ramp + 两个异常区段低频
   正弦噪声），duration 5.42s、events `{arc:0.42, weld_segment:[0.78,4.28], tail:4.86}`、
   anomalies `[1.92,2.34 电弧不稳, 3.58,3.86 飞溅倾向]`。`analysis_result(bundle)` 返回确定性
@@ -149,13 +150,40 @@
   `validation`（validation_reports + rule_results 完整模板）、`data-list`（**`ref_ids=[]` → 全量
   单份 ref_id=`all`；非空 → 逐标识 DB id/weld_id/registration_no 解析过滤**）、`features`
   （feature_extractions 统一向量 + 三类特征）、`test`（test_tasks.metrics + 混淆矩阵）、
-  `annotation`（annotation_tasks + 样本 COUNT）、`analysis`（数据版本 + signals 确定性分析结果），
+  `annotation`（annotation_tasks + 样本 COUNT）、`analysis`（数据版本 + 分析结果——经
+  `signal_ingest.load_signal_bundle` 优先读真实信号，source 标注进 summary；无导入回退生成），
   analysis/annotation/features/test 复用 `generic.html.j2`（summary + sections，无数据占位）。
   错误语义：未知类型/格式抛 `ValueError` → 路由 400；`EntityNotFoundError` → 404；写 MinIO
   失败直接抛（导出必须拿到 URL，与 dataset/weights 的"尽力而为跳过"不同）。存储延迟导入
   （`from app.storage import get_storage`，测试 monkeypatch）；时间序列化复用 `jobs._iso_utc`。
   **坑**：Jinja `Environment` 用显式 `autoescape=True`（`.j2` 后缀让 `select_autoescape(["html","xml"])`
   匹配不到→逃逸失效），详见 `templates/CLAUDE.md`。
+- `signal_ingest.py`：**Task 18**。真实信号导入（供 `app/api/v1/welds.py` raw-files 自动触发 + `jobs/signal_ingest.py` handler 调用）：
+  - `map_columns(columns) -> (column_map, unknown)`：表头映射（中/英文别名，`_norm_header` 归一化），
+    `column_map` 形如 `{time/cur/vol/gas/wir: CSV列名}`。
+  - `validate_signal(df, record) -> {overall, rules, fs, duration, row_count, column_map, unknown}`：
+    **10 条 pass/warn/fail 规则**（文件读取/表头识别/通道覆盖/数值类型/量程/采样一致性/空值/重复
+    时间戳/最小数据量），overall=fail>0?fail:warn>0?warn:pass；`fs` 优先从时间列推导，无时间列用
+    `record.sample_rate` 兜底（`_parse_fs` 支持 "10 kHz"）。**不并入 welds 的 15 条 VALIDATION_RULES**
+    （seed/测试/前端逐字一致勿动）。
+  - `detect_events(df, column_map, fs) -> (events, anomalies)`：**启发式**（on/off 阈值按信号自身
+    幅度 p95-p10 推导，**不依赖 CHANNEL_SPECS 量程 span**——量程按真实物理范围放宽后 span 不再与
+    信号幅度成正比，量程派生会让低幅信号误判焊接段失活；主用电流缺则电压；5ms 滚动均值 + active
+    runs → arc/weld_segment/tail；焊接段**内部**（剔除边界过渡区）100ms 滚动 std 超 1.8×中位数 →
+    异常段，spike 率高→飞溅倾向否则电弧不稳，合并近邻取前 5）。确定性：同文件结果可复现。
+  - `to_parquet_bytes(...)` / `bundle_from_parquet(data, ingest, weld_id)`：列 schema
+    `t,cur,vol,gas,wir` + 文件级元数据（weld_id/sample_rate/duration/channel_ids/...）；
+    还原时 `np.array(copy=True)` 保证数组**可写**（pandas/parquet 读回是只读视图，pywt.dwt 会炸）。
+    events/anomalies 只存 `signal_ingests` 行 JSON，不在 Parquet 重复。
+  - `load_signal_bundle(session, weld_id, version_id) -> SignalBundle`：**DSP/特征/报告统一入口**——
+    命中 succeeded Parquet → 读回还原（source="real"）；无/读失败 → 回退 `signals.generate_signals`
+    （source="generated"）。analysis.py 四处（signals/result/mode/features）+ reports.py `_build_analysis`
+    均改经它，返回形状不变 → 前端零改动（仅新增 `source` 字段）。
+  - `run_ingest(session, ingest, job)`：handler 领域逻辑——大文件预检（>200MB 拒）→ 下载 CSV →
+    校验 → pass/warn 才启发式 + 写 Parquet + 回填行；fail/异常 → 行 failed。**自捕获异常**（先
+    `session.rollback()` 再重取 ingest/job 写 failed，勿重抛，见 jobs/CLAUDE.md）。
+  - **坑**：pandas ≥3.0 已移除 `fillna(method="ffill")`，须用 `.ffill()`；存储延迟导入
+    （`from app.storage import get_storage`），测试 monkeypatch。
 
 ## 坑/限制
 
