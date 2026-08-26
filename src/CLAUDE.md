@@ -10,6 +10,7 @@
 - `hooks/`：前端 React 钩子层（Task 20 起）。`useJob.ts` 通用异步任务轮询（消费 `api/jobs.getJob`）。详见 `hooks/CLAUDE.md`。
 - `pages/`：前端页面层（Task 20 起）。`Login.tsx` 最小登录页（登录成功写 token+user 到 localStorage 并通知外层）。详见 `pages/CLAUDE.md`。
 - `App.buffer-regression.test.mjs`：Node 内置测试；静态断言 `Alignment` 切分页暴露 `bufferSeconds` 可编辑输入，且 `createSplitTask` 不再把 `keep_event_buffer` 硬编码为 `0.2`。
+- `vite-base-regression.test.mjs`：Node 内置测试；静态断言生产构建使用根路径 `/`，避免部署在 FastAPI 根挂载点时生成错误的 `/ai_welding/assets/` 资源路径。
 
 坑/限制：
 - `App.tsx` 是单文件大组件，改动时不要破坏现有信息架构（四个模块 + 先选数据模式）。接线时只换数据源，不改 JSX/className。
