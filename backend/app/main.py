@@ -16,8 +16,10 @@
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from loguru import logger
 from sqlmodel import Session
@@ -74,6 +76,12 @@ def health() -> dict:
 
 
 app.include_router(api_router, prefix="/api/v1")
+
+# In the production image, FastAPI serves the Vite build alongside the API.
+# Keep this conditional so local backend-only tests and development remain valid.
+frontend_dir = Path(__file__).resolve().parents[1] / "dist"
+if frontend_dir.is_dir():
+    app.mount("/", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 
 def register_exception_handlers(app: FastAPI) -> None:

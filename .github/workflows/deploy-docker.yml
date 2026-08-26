@@ -1,0 +1,109 @@
+name: CI and Docker Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  validate:
+    name: Validate frontend and backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.14"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --locked
+
+      - name: Test backend
+        working-directory: backend
+        run: uv run pytest
+
+  deploy:
+    name: Deploy Docker container
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/home/wwwroot/code/ai_welding' }}
+          APP_CONTAINER_NAME: ${{ vars.APP_CONTAINER_NAME || 'ai-welding' }}
+          HOST_PORT: ${{ vars.HOST_PORT || '8223' }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: DEPLOY_PATH,APP_CONTAINER_NAME,HOST_PORT
+          script_stop: true
+          script: |
+            set -Eeuo pipefail
+            cd "$DEPLOY_PATH"
+            test -f .env
+
+            git pull --ff-only origin main
+
+            IMAGE_NAME="${APP_CONTAINER_NAME}:$(date -u +%Y%m%d%H%M%S)"
+            docker build --pull -t "$IMAGE_NAME" .
+
+            docker stop "$APP_CONTAINER_NAME" 2>/dev/null || true
+            docker rm "$APP_CONTAINER_NAME" 2>/dev/null || true
+            docker run -d \
+              --name "$APP_CONTAINER_NAME" \
+              --env-file .env \
+              --restart unless-stopped \
+              -p "$HOST_PORT:8000" \
+              "$IMAGE_NAME"
+
+            if ! curl --fail --silent --show-error \
+              --retry 12 --retry-delay 5 --retry-connrefused \
+              http://127.0.0.1:8000/api/v1/health; then
+              docker logs --tail 200 "$APP_CONTAINER_NAME" || true
+              exit 1
+            fi
+            printf '\nDocker deployment healthy: %s\n' "$APP_CONTAINER_NAME"
