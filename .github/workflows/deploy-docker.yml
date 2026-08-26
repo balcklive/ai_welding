@@ -131,10 +131,17 @@ jobs:
               exit 1
             fi
 
-            if ! curl --fail --silent --show-error \
-              --retry 12 --retry-delay 5 --retry-connrefused \
-              "http://127.0.0.1:${HOST_PORT}/api/v1/health"; then
-              docker logs --tail 200 "$APP_CONTAINER_NAME" || true
-              exit 1
-            fi
-            printf '\nDocker deployment healthy: %s\n' "$APP_CONTAINER_NAME"
+            HEALTH_URL="http://127.0.0.1:${HOST_PORT}/api/v1/health"
+            for attempt in $(seq 1 30); do
+              if curl --fail --silent --show-error \
+                --connect-timeout 2 --max-time 5 \
+                "$HEALTH_URL"; then
+                printf '\nDocker deployment healthy: %s\n' "$APP_CONTAINER_NAME"
+                exit 0
+              fi
+              echo "Health check failed (${attempt}/30), waiting for application startup..."
+              sleep 2
+            done
+
+            docker logs --tail 200 "$APP_CONTAINER_NAME" || true
+            exit 1
