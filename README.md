@@ -59,11 +59,12 @@
 
 ### 数据登记规则
 
-数据登记不是独立的新建页面，而是当前选中数据的登记信息查看和编辑页面，包含：
+数据登记围绕当前选中的焊缝数据：未登记时提供**新建登记**表单（生成唯一登记编号，同时生成 v1.0「原始数据」版本），已登记时支持**查看与编辑**登记信息（后端 `PATCH /registrations/{id}`）。登记信息包含：
 
 - 登记编号
 - 数据来源
 - 采集时间
+- 焊缝/批次名称
 - 焊机品牌与型号
 - 焊接方法
 - 板材材质与厚度
@@ -179,16 +180,32 @@ Sound_feature
 
 ## 本地运行
 
+后端先起（连接真实 MySQL/MinIO，启动时自动 seed 管理员与演示数据）：
+
+```bash
+cd backend && uv sync && uv run uvicorn app.main:app --reload
+```
+
+前端随后（`npm run dev` 走 `/api` proxy 转发到 `http://localhost:8000`）：
+
 ```bash
 npm install
 npm run dev
 ```
 
-构建检查：
+登录账号见根 `.env` 的 `ADMIN_USERNAME`/`ADMIN_PASSWORD`（本地演示默认 `admin`/`admin123`，生产必须改）。
+
+构建检查（前端）：
 
 ```bash
 npm run typecheck
 npm run build
+```
+
+后端测试（SQLite 内存，不连远程库）：
+
+```bash
+cd backend && uv run pytest
 ```
 
 ## GitHub Pages 部署

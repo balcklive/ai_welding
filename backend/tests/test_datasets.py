@@ -1,0 +1,630 @@
+"""Task 15：数据集 + 构建任务 + dimensions/readiness/lineage。
+
+内存 SQLite + StaticPool + 真实 app TestClient（同 test_split_annotation.py）。
+`seed_all` 造演示数据（3 数据集 / 4 焊缝）后 override `get_session` / `get_current_user`；
+把 `app.jobs.executor.SessionLocal` 指到同一测试引擎（`run_job` 用独立 session，**不启动**
+后台轮询线程）；`app.storage.get_storage` → 假存储（记录快照写，不连真实 MinIO）。
+
+覆盖：
+- 列表 3 条 seed；新建（dataset_no `DS-xxx-序号`、状态 标注中、sample_count 0、同名 409）；
+- 输入维度 7 项 + 各任务必需维度 + 状态枚举；readiness 形状（4 项 checks）；
+- 版本新建 → 版本号递增（v1.1 → v1.2）；
+- 构建任务（**空来源 → 兜底合成样本**）：run_job → succeeded、dataset_items 落库、
+  split 覆盖 train/val/test、**同焊缝样本不跨 split（防泄漏）**、quality 含重复率、
+  snapshot_id 落库 + MinIO 快照写入、dataset.current_version_id/sample_count/status 更新；
+- 构建任务（**真实切分样本**）：单焊缝 → 全部进 train（不泄漏）；
+- lineage 4 层节点（records/annotation_tasks/dataset_versions/training_tasks）；
+- 404（数据集/版本/非法来源 400）、401（10 端点全验证）、构建失败 → job failed。
+"""
+
+import json
+import time
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, select
+
+import app.jobs.executor as executor_mod
+from app.api.deps import get_current_user
+from app.core.db import get_session
+from app.core.seed import seed_all
+from app.jobs.executor import run_job
+from app.main import app
+from app.models import Annotation, Dataset, DatasetItem, DatasetVersion, Sample, User
+
+client = TestClient(app)
+
+WELD_0248 = "WLD-20260815-0248"
+FIXED_RATE = 25
+SPLIT_SAMPLE_COUNT = 5420 // FIXED_RATE  # 5.42s × 1000Hz = 5420 帧
+
+INPUT_DIMENSIONS = [
+    "Voltage",
+    "GasSpeed",
+    "Current",
+    "Molten_feature",
+    "Sound_feature",
+    "焊缝照片",
+    "熔池视频",
+]
+
+
+class FakeStorage:
+    """记录 upload_stream 的假存储（断言快照写入，不连 MinIO）。"""
+
+    def __init__(self) -> None:
+        self.uploads: list[tuple] = []
+
+    def upload_stream(self, object_key, fileobj, size, content_type):
+        data = fileobj.read()
+        self.uploads.append((object_key, size, content_type, data))
+        return object_key
+
+
+@pytest.fixture()
+def db_engine():
+    """内存 SQLite + StaticPool：seed 演示数据，每用例全新引擎（环形 FK 不便 drop_all）。"""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        seed_all(session)
+    yield engine
+    engine.dispose()
+
+
+@pytest.fixture()
+def override_get_session(db_engine):
+    """每请求开一个独立 Session（与真实 get_session 语义一致），退出即 close。"""
+
+    def _override():
+        with Session(db_engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override
+    yield
+    app.dependency_overrides.pop(get_session, None)
+
+
+@pytest.fixture()
+def override_get_current_user():
+    """假登录：get_current_user 直接返回一个 User，免 seed / 免签 token。"""
+    dummy = User(
+        id=1,
+        username="lin_eng",
+        password_hash="not-a-real-hash",
+        display_name="林工",
+        role="admin",
+    )
+
+    def _override() -> User:
+        return dummy
+
+    app.dependency_overrides[get_current_user] = _override
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture()
+def executor_sessionlocal(db_engine, monkeypatch):
+    """把 executor 的 SessionLocal 指到同一测试引擎（run_job 用独立 session，不启动线程）。"""
+    monkeypatch.setattr(
+        executor_mod,
+        "SessionLocal",
+        sessionmaker(bind=db_engine, class_=Session, expire_on_commit=False),
+    )
+
+
+@pytest.fixture()
+def fake_storage(monkeypatch):
+    """假存储：monkeypatch `app.storage.get_storage`（快照写走这里，不连 MinIO）。"""
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    return storage
+
+
+# ── 小助手 ────────────────────────────────────────────────────────────
+
+
+def _version_id_by_no(weld_id, version_no="v1.0"):
+    versions = client.get(f"/api/v1/welds/{weld_id}/versions").json()["data"]
+    for v in versions:
+        if v["version_no"] == version_no:
+            return v["id"]
+    raise AssertionError(f"{version_no} not found for {weld_id}")
+
+
+def _create_split_task(weld_id, version_id, fixed_rate=FIXED_RATE, task_format="目标检测"):
+    resp = client.post(
+        f"/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks",
+        json={"fixed_rate": fixed_rate, "keep_event_buffer": 0.2, "task_format": task_format},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+    assert job_id.startswith("job_")
+    return job_id
+
+
+def _split_row(db_engine, split_job_id):
+    from app.models.analysis import SplitTask
+    from app.models.jobs import Job
+
+    with Session(db_engine) as session:
+        job = session.exec(select(Job).where(Job.job_uid == split_job_id)).first()
+        assert job is not None
+        return session.exec(select(SplitTask).where(SplitTask.job_id == job.id)).first()
+
+
+def _create_dataset(name="测试数据集", task="目标检测"):
+    resp = client.post("/api/v1/datasets", json={"name": name, "task": task})
+    assert resp.status_code == 200, resp.text[:300]
+    return resp.json()["data"]
+
+
+def _create_version(dataset_id, name="快照"):
+    resp = client.post(
+        f"/api/v1/datasets/{dataset_id}/versions", json={"name": name, "note": "note"}
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    return resp.json()["data"]
+
+
+def _create_build_task(dataset_id, version_id, source):
+    resp = client.post(
+        f"/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks",
+        json={"source": source},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+    assert job_id.startswith("job_")
+    return job_id
+
+
+# ---------- 列表 / 新建 ----------
+
+
+def test_list_datasets_seeded(override_get_session, override_get_current_user) -> None:
+    data = client.get("/api/v1/datasets").json()["data"]
+    assert len(data) == 3
+    names = {d["name"] for d in data}
+    assert names == {"焊接缺陷检测集", "熔池分割数据集", "工艺质量预测集"}
+    for d in data:
+        assert d["task"] in ("目标检测", "语义分割", "多模态回归")
+        assert d["sample_count"] > 0
+        assert d["status"] in ("标注中", "可训练")
+        assert d["version"]  # 当前版本号
+        assert d["current_version_id"] is not None
+
+
+def test_create_dataset_and_duplicate_name(
+    override_get_session, override_get_current_user
+) -> None:
+    data = _create_dataset(name="新建缺陷数据集", task="目标检测")
+    assert data["dataset_no"].startswith("DS-DEFECT-")
+    assert data["status"] == "标注中"
+    assert data["sample_count"] == 0
+    assert data["task"] == "目标检测"
+    assert data["current_version_id"] is None
+
+    # 同名 → 409 冲突（契约 §1.3）
+    resp = client.post("/api/v1/datasets", json={"name": "新建缺陷数据集", "task": "目标检测"})
+    assert resp.status_code == 409 and resp.json()["code"] == 40900
+
+    # 空名称 → 400
+    resp = client.post("/api/v1/datasets", json={"name": "", "task": "目标检测"})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+def test_get_dataset_detail(override_get_session, override_get_current_user) -> None:
+    ds = _create_dataset(name="详情测试集", task="多模态回归")
+    data = client.get(f"/api/v1/datasets/{ds['id']}").json()["data"]
+    assert data["id"] == ds["id"]
+    assert data["name"] == "详情测试集"
+    assert data["status"] == "标注中"
+    assert data["label_distribution"] == {}
+    assert "updated_at" in data
+    # dataset_no 作标识同样可查
+    by_no = client.get(f"/api/v1/datasets/{ds['dataset_no']}").json()["data"]
+    assert by_no["id"] == ds["id"]
+
+
+def test_dataset_detail_includes_label_distribution(
+    db_engine, override_get_session, override_get_current_user
+) -> None:
+    with Session(db_engine) as session:
+        dataset = Dataset(
+            dataset_no="DS-TEST-LABEL-001",
+            name="标签分布测试集",
+            task="目标检测",
+            sample_count=2,
+            progress=0,
+            status="可训练",
+        )
+        session.add(dataset)
+        session.commit()
+        session.refresh(dataset)
+        version = DatasetVersion(
+            dataset_id=dataset.id,
+            version_no="v1.1",
+            split={"train": 1, "val": 0, "test": 1},
+            item_count=2,
+        )
+        session.add(version)
+        session.commit()
+        session.refresh(version)
+        dataset.current_version_id = version.id
+        sample1 = Sample(object_keys=["processed/a.jpg"], meta={"record_id": 1})
+        sample2 = Sample(object_keys=["processed/b.jpg"], meta={"record_id": 1})
+        session.add(sample1)
+        session.add(sample2)
+        session.commit()
+        session.refresh(sample1)
+        session.refresh(sample2)
+        session.add(DatasetItem(dataset_version_id=version.id, sample_id=sample1.id, split="train"))
+        session.add(DatasetItem(dataset_version_id=version.id, sample_id=sample2.id, split="test"))
+        session.add(Annotation(sample_id=sample1.id, category="气孔", box=[1, 2, 3, 4]))
+        session.add(Annotation(sample_id=sample2.id, category="气孔", box=[1, 2, 3, 4]))
+        session.add(Annotation(sample_id=sample2.id, category="咬边", box=[2, 3, 4, 5]))
+        session.commit()
+
+    data = client.get("/api/v1/datasets/DS-TEST-LABEL-001").json()["data"]
+    assert data["label_distribution"] == {"气孔": 2, "咬边": 1}
+
+
+# ---------- 输入维度 / 适配检查 ----------
+
+
+def test_dimensions_7_required_per_task(
+    override_get_session, override_get_current_user
+) -> None:
+    data = client.get("/api/v1/datasets/1/dimensions").json()["data"]
+    assert len(data) == 7
+    assert [d["name"] for d in data] == INPUT_DIMENSIONS
+    required = {d["name"] for d in data if d["required"]}
+    assert required == {"Current", "Voltage", "GasSpeed"}  # 目标检测
+    assert all(d["status"] in ("已具备", "缺失", "必需") for d in data)
+    assert all(isinstance(d["required"], bool) for d in data)
+
+
+def test_readiness_shape(override_get_session, override_get_current_user) -> None:
+    data = client.get("/api/v1/datasets/1/readiness").json()["data"]
+    assert data["readiness"] in ("可训练", "暂不可训练")
+    assert len(data["checks"]) == 4
+    assert all("name" in c and isinstance(c["passed"], bool) for c in data["checks"])
+
+
+# ---------- 版本 ----------
+
+
+def test_create_version_increments(
+    override_get_session, override_get_current_user
+) -> None:
+    ds = _create_dataset(name="版本测试集", task="语义分割")
+    v1 = _create_version(ds["id"])
+    assert v1["version_no"] == "v1.1"
+    assert v1["split"] == {} and v1["item_count"] == 0
+    v2 = _create_version(ds["id"])
+    assert v2["version_no"] == "v1.2"
+
+    versions = client.get(f"/api/v1/datasets/{ds['id']}/versions").json()["data"]
+    assert [v["version_no"] for v in versions] == ["v1.1", "v1.2"]
+
+    # 版本详情
+    detail = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
+    assert detail["version_no"] == "v1.1"
+    assert "snapshot_id" in detail and "quality" in detail
+
+
+# ---------- 构建任务（空来源 → 兜底合成样本，覆盖多焊缝 8:1:1） ----------
+
+
+def test_build_task_end_to_end(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    ds = _create_dataset(name="构建测试集", task="目标检测")
+    version = _create_version(ds["id"])
+    job_id = _create_build_task(
+        ds["id"], version["id"], {"type": "manual", "sample_ids": []}
+    )
+
+    pending = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+    assert pending["type"] == "dataset_build"
+    assert pending["status"] == "pending"
+
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    assert done["progress"] == 100
+    result = done["result"]
+    assert result["item_count"] > 0
+    # split 覆盖 train/val/test
+    assert set(result["split"]) == {"train", "val", "test"}
+    assert all(result["split"][k] > 0 for k in ("train", "val", "test"))
+    assert "repeat_rate" in result["quality"]
+    assert "empty_label_rate" in result["quality"]
+    assert "dimension_missing_rate" in result["quality"]
+    # 兜底合成样本含时序（.csv）→ 目标检测必需维度 Current/Voltage/GasSpeed 全具备 → 缺失率 0
+    # （回归：quality 必须用本次构建的 in-flight 样本判维度，而非 current_version_id）。
+    assert result["quality"]["dimension_missing_rate"] == 0.0
+    assert result["snapshot_id"] == f"datasets/{version['id']}/snapshot.json"
+
+    # dataset_items 落库：split 全三类、同焊缝样本绝不跨 split（防泄漏）
+    with Session(db_engine) as session:
+        items = session.exec(
+            select(DatasetItem).where(DatasetItem.dataset_version_id == version["id"])
+        ).all()
+        assert len(items) == result["item_count"]
+        assert {i.split for i in items} == {"train", "val", "test"}
+        per_record: dict[int, set] = {}
+        for it in items:
+            sample = session.get(Sample, it.sample_id)
+            assert sample is not None
+            rid = sample.meta["record_id"]
+            per_record.setdefault(rid, set()).add(it.split)
+        for rid, splits in per_record.items():
+            assert len(splits) == 1, f"record {rid} 跨 split: {splits}"
+
+        # 数据集状态更新
+        ds_row = session.get(Dataset, ds["id"])
+        assert ds_row.current_version_id == version["id"]
+        assert ds_row.sample_count == result["item_count"]
+        assert ds_row.status == "可训练"
+        version_row = session.get(DatasetVersion, version["id"])
+        assert version_row.snapshot_id == result["snapshot_id"]
+        assert version_row.split == result["split"]
+        assert version_row.item_count == result["item_count"]
+        assert version_row.quality == result["quality"]
+
+    # 快照 JSON 已写 MinIO（假存储记录），且 quality 与 DB 一致（含修正后的维度缺失率）
+    assert len(fake_storage.uploads) == 1
+    key, size, ctype, data = fake_storage.uploads[0]
+    assert key == f"datasets/{version['id']}/snapshot.json"
+    assert ctype == "application/json"
+    assert size == len(data) > 0
+    snapshot = json.loads(data.decode("utf-8"))
+    assert snapshot["quality"] == result["quality"]
+    assert snapshot["quality"]["dimension_missing_rate"] == 0.0
+
+
+# ---------- 构建任务（真实切分样本：单焊缝全进 train，不泄漏） ----------
+
+
+def test_build_from_split_task(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    split_job_id = _create_split_task(WELD_0248, vid)
+    run_job(split_job_id)
+    split = _split_row(db_engine, split_job_id)
+
+    ds = _create_dataset(name="切分构建集", task="目标检测")
+    version = _create_version(ds["id"])
+    job_id = _create_build_task(
+        ds["id"], version["id"], {"type": "split_task", "split_task_id": split_job_id}
+    )
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    assert done["result"]["item_count"] == SPLIT_SAMPLE_COUNT
+    # 单焊缝（0248）→ 全部进 train，不泄漏
+    assert done["result"]["split"]["train"] == SPLIT_SAMPLE_COUNT
+    assert done["result"]["split"]["val"] == 0
+    assert done["result"]["split"]["test"] == 0
+
+    with Session(db_engine) as session:
+        items = session.exec(
+            select(DatasetItem).where(DatasetItem.dataset_version_id == version["id"])
+        ).all()
+        assert len(items) == SPLIT_SAMPLE_COUNT
+        assert all(i.split == "train" for i in items)
+        # 全部样本来自该切分任务
+        sample_ids = [i.sample_id for i in items]
+        samples = session.exec(select(Sample).where(Sample.id.in_(sample_ids))).all()
+        assert all(s.split_task_id == split.id for s in samples)
+
+
+# ---------- 血缘 ----------
+
+
+def test_auto_executor_consumes_dataset_build_job(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+    monkeypatch,
+) -> None:
+    ds = _create_dataset(name="自动构建测试集", task="目标检测")
+    version = _create_version(ds["id"])
+    job_id = _create_build_task(ds["id"], version["id"], {"type": "manual", "sample_ids": []})
+    monkeypatch.setattr(executor_mod, "_POLL_INTERVAL", 0.05)
+    executor_mod.stop()
+    executor_mod.start()
+    try:
+        deadline = time.time() + 3
+        data = None
+        while time.time() < deadline:
+            data = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+            if data["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.05)
+        assert data is not None and data["status"] == "succeeded"
+    finally:
+        executor_mod.stop()
+
+
+def test_fixed_snapshot_old_version_remains_reproducible(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    with Session(db_engine) as session:
+        s1 = Sample(object_keys=["processed/demo/a.csv"], meta={"record_id": 1})
+        s2 = Sample(object_keys=["processed/demo/b.csv"], meta={"record_id": 1})
+        session.add(s1)
+        session.add(s2)
+        session.commit()
+        session.refresh(s1)
+        session.refresh(s2)
+        sid1, sid2 = s1.id, s2.id
+
+    ds = _create_dataset(name="固定快照测试集", task="目标检测")
+    v1 = _create_version(ds["id"])
+    job1 = _create_build_task(ds["id"], v1["id"], {"type": "manual", "sample_ids": [sid1]})
+    run_job(job1)
+    detail_v1 = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
+
+    v2 = _create_version(ds["id"])
+    job2 = _create_build_task(ds["id"], v2["id"], {"type": "manual", "sample_ids": [sid1, sid2]})
+    run_job(job2)
+    detail_v1_again = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
+    detail_v2 = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v2['id']}").json()["data"]
+
+    assert detail_v1_again == detail_v1
+    assert detail_v1_again["item_count"] == 1
+    assert detail_v2["item_count"] == 2
+    assert detail_v1_again["snapshot_id"] != detail_v2["snapshot_id"]
+
+
+def test_lineage_4_nodes(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    fake_storage,
+) -> None:
+    ds = _create_dataset(name="血缘测试集", task="目标检测")
+    version = _create_version(ds["id"])
+    job_id = _create_build_task(
+        ds["id"], version["id"], {"type": "manual", "sample_ids": []}
+    )
+    run_job(job_id)
+
+    lineage = client.get(f"/api/v1/datasets/{ds['id']}/lineage").json()["data"]
+    assert len(lineage) == 4
+    assert [n["type"] for n in lineage] == [
+        "records",
+        "annotation_tasks",
+        "dataset_versions",
+        "training_tasks",
+    ]
+    # 构建后：原始焊缝 > 0、数据集版本 == 1；标注/训练无
+    assert lineage[0]["count"] > 0
+    assert lineage[1]["count"] == 0
+    assert lineage[2]["count"] == 1
+    assert lineage[3]["count"] == 0
+
+
+def test_lineage_unbuilt_still_4(override_get_session, override_get_current_user) -> None:
+    ds = _create_dataset(name="未构建血缘", task="多模态回归")
+    lineage = client.get(f"/api/v1/datasets/{ds['id']}/lineage").json()["data"]
+    assert len(lineage) == 4
+    assert lineage[0]["count"] == 0
+    assert lineage[2]["count"] == 0
+
+
+# ---------- 404 / 400 ----------
+
+
+def test_datasets_404(override_get_session, override_get_current_user) -> None:
+    for path in [
+        "/api/v1/datasets/999999",
+        "/api/v1/datasets/999999/dimensions",
+        "/api/v1/datasets/999999/readiness",
+        "/api/v1/datasets/999999/versions",
+        "/api/v1/datasets/999999/versions/1",
+        "/api/v1/datasets/999999/lineage",
+    ]:
+        resp = client.get(path)
+        assert resp.status_code == 404 and resp.json()["code"] == 40401, path
+
+    # 版本不属于数据集 → 40402
+    resp = client.get("/api/v1/datasets/1/versions/999999")
+    assert resp.status_code == 404 and resp.json()["code"] == 40402
+
+    # 构建任务：数据集/版本不存在
+    resp = client.post(
+        "/api/v1/datasets/999999/versions/1/build-tasks",
+        json={"source": {"type": "manual"}},
+    )
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.post(
+        "/api/v1/datasets/1/versions/999999/build-tasks",
+        json={"source": {"type": "manual"}},
+    )
+    assert resp.status_code == 404 and resp.json()["code"] == 40402
+
+    # 非法来源类型 → 400
+    resp = client.post(
+        "/api/v1/datasets/1/versions/1/build-tasks",
+        json={"source": {"type": "bad_source"}},
+    )
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+# ---------- 失败：handler 抛异常 → job failed ----------
+
+
+def test_build_job_failure_records_error(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    def _boom(_job_id, _session):
+        raise RuntimeError("模拟构建崩溃")
+
+    monkeypatch.setitem(executor_mod.HANDLERS, "dataset_build", _boom)
+    ds = _create_dataset(name="失败构建", task="目标检测")
+    version = _create_version(ds["id"])
+    job_id = _create_build_task(ds["id"], version["id"], {"type": "manual"})
+    run_job(job_id)
+    data = client.get(f"/api/v1/jobs/{job_id}").json()["data"]
+    assert data["status"] == "failed"
+    assert data["error"] == {"message": "模拟构建崩溃"}
+
+
+# ---------- 未登录 ----------
+
+
+def test_datasets_endpoints_require_login(db_engine, override_get_session) -> None:
+    # 不 override get_current_user：无 Authorization 头 → 401（认证在业务逻辑前抛）。
+    cases = [
+        ("get", "/api/v1/datasets", None),
+        ("post", "/api/v1/datasets", {"name": "x", "task": "目标检测"}),
+        ("get", "/api/v1/datasets/1", None),
+        ("get", "/api/v1/datasets/1/dimensions", None),
+        ("get", "/api/v1/datasets/1/readiness", None),
+        ("get", "/api/v1/datasets/1/versions", None),
+        ("post", "/api/v1/datasets/1/versions", {"name": "v"}),
+        ("get", "/api/v1/datasets/1/versions/1", None),
+        (
+            "post",
+            "/api/v1/datasets/1/versions/1/build-tasks",
+            {"source": {"type": "manual"}},
+        ),
+        ("get", "/api/v1/datasets/1/lineage", None),
+    ]
+    for method, path, body in cases:
+        resp = client.request(method, path, json=body)
+        assert resp.status_code == 401, f"{method} {path}: {resp.text[:200]}"
+        assert resp.json()["code"] == 40100

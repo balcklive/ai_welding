@@ -21,3 +21,21 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# --- 后端（backend/）---
+backend/.venv/
+backend/logs/
+backend/.pytest_cache/
+backend/*.log
+logs/
+data/
+
+# --- Python 通用 ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 破坏性测试生成的数据包（大文件，勿提交；运行 gen_destructive_data.py 重新生成）
+backend/tests/fixtures/destructive/

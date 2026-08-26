@@ -1,0 +1,25 @@
+{% extends "base.html.j2" %}
+{% block body %}
+<h1>{{ title }}</h1>
+<div class="meta">核验报告 #{{ report_id }} · 焊缝 {{ weld_id or "—" }} · 版本 {{ version_no or "—" }} · 登记号 {{ registration_no or "—" }}</div>
+
+<table class="kv">
+  <tr><td>综合评分</td><td class="score">{{ score }}</td></tr>
+  <tr><td>通过 / 警告 / 失败</td><td>{{ passed }} / {{ warning }} / {{ failed }}</td></tr>
+  <tr><td>核验耗时</td><td>{{ duration if duration is not none else "—" }} s</td></tr>
+  <tr><td>核验时间</td><td>{{ created_at or "—" }}</td></tr>
+</table>
+
+<h2>规则明细（{{ rules|length }} 项）</h2>
+<table>
+  <tr><th>#</th><th>规则</th><th>状态</th><th>说明</th></tr>
+  {% for r in rules %}
+  <tr>
+    <td>{{ loop.index }}</td>
+    <td>{{ r.rule_name }}</td>
+    <td class="status-{{ r.status }}">{{ r.status }}</td>
+    <td>{{ r.message }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

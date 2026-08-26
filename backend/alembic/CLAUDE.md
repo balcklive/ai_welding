@@ -1,0 +1,33 @@
+# CLAUDE.md — backend/alembic/
+
+Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表）+ **Task 18（`0002_signal_ingests`，新增 `signal_ingests` 表）** + **Task 2 修复（`0003_idempotency_request_keys`，版本/对齐/切分并发幂等键）** + **Task 2 修复轮次 2（`0004_retry_failed_request_keys`，failed 对齐/切分释放活动幂等占位）** + **Task 5 P2 修复（`0005_audit_resource_id_255`，审计资源标识扩到 255 兼容长 object key）**。
+
+## 文件
+
+- `alembic.ini`：`script_location = %(here)s/alembic`；**`sqlalchemy.url` 留空**，由 env.py 从 `settings.mysql_url` 注入，避免明文密码进仓库。
+- `env.py`：`from app.models import *`（导入全部 23 个表类）→ `target_metadata = SQLModel.metadata`；`config.set_main_option("sqlalchemy.url", settings.mysql_url)`；`compare_type=False`（原因见下）。
+- `script.py.mako`：迁移模板（alembic init 生成）。
+- `versions/0001_initial.py`：初始迁移（手写，见"手写迁移的原因"）。
+- `versions/0002_signal_ingests.py`：**Task 18**。新增 `signal_ingests` 表（手写；`job_id` UK 1:1→jobs、`(version_id, source_object_key)` UK 幂等、idx `version_id`）。
+- `versions/0003_idempotency_request_keys.py`：为 `data_versions` / `alignment_tasks` / `split_tasks` 新增 `request_key` 列与唯一约束；列保持 nullable 以兼容历史行，新代码对新写入行始终填充。
+- `versions/0004_retry_failed_request_keys.py`：为 `alignment_tasks` / `split_tasks` 新增 `active_request_key`；在线升级时把 pending/running/succeeded 的活动占位从 `request_key` 迁到 `active_request_key`，并改唯一约束到该列，允许 failed 任务保留 `request_key` 历史后重试。
+- `versions/0005_audit_resource_id_255.py`：把 `audit_logs.resource_id` 从 64 扩到 255，兼容长文件名/长 object key 的审计写入；**在线验证必须走真实 MySQL `0002 -> 0003 -> head` 路径**，不能只靠 SQLite `create_all`。
+
+## 常用命令（在 `backend/` 下执行）
+
+- 生成迁移：`uv run alembic revision --autogenerate -m "..."`（需要连上远程 MySQL）
+- 应用：`uv run alembic upgrade head`
+- 在线验证：测试 `tests/test_models.py::test_alembic_upgrade_online_real_path_executes_0003` 会在真实 MySQL 临时库按 `0002 -> 0003 -> head` 路径执行，验证 0003/0004/**0005** 可升级；不要只看 `create_all` 或 `--sql`。
+- 回滚：`uv run alembic downgrade -1`
+- 离线渲染 SQL（不连库）：`uv run alembic upgrade head --sql`
+
+## 坑/限制
+
+- **手写迁移的原因**：远程 MySQL（`settings.mysql_host`）在本机不可达，`--autogenerate` 无法对比，故 `0001_initial.py` 按 `docs/数据库设计.md` §3 手写。
+- **DATETIME(6) 调整**：模型注解是 `DateTime(timezone=True)`（SQLAlchemy 对 MySQL 渲染 fsp=0），契约要求 `DATETIME(6)`，迁移里**统一手写 `mysql.DATETIME(fsp=6)`**。因此 `env.py` 关闭 `compare_type`，避免后续 autogenerate 对每个 datetime 列报"类型变化"噪音（代价：真实类型变更需人工留意）。
+- **JSON 列**：统一 `mysql.JSON()`。
+- **环形外键**：`data_records↔data_versions`、`datasets↔dataset_versions` 两处互指 FK，升级里"先建父表 → 建子表 → `op.create_foreign_key` 补指针外键"；降级里**先 `drop_constraint` 拆环形外键**再逆序删表。改迁移时保持该顺序。
+- **唯一约束名**：`uq_<table>_<cols>`；索引名 `ix_<table>_<col>`（`ix_audit_logs_resource_type_resource_id` 为复合索引）。新建迁移尽量沿用命名风格。
+- **MySQL 限制**：表/索引名 ≤64 字符；JSON 列（8.0.13 前）不能有默认值，NOT NULL JSON 由服务层保证。
+- 初始迁移的 `revision = "0001"`（非随机 hex），后续迁移用 `alembic revision` 自动续。
+- **URL 含 `%` 的插值坑**：`env.py` 注入 `sqlalchemy.url` 走 configparser，密码 URL-encode 后含 `%`（如 `%40`）会被当作插值语法报 `invalid interpolation syntax`。必须在 `set_main_option` 前 `settings.mysql_url.replace("%", "%%")`（Task 25 已修）。另见 `app/core/config.py` 的 mysql_url URL-encode 修复（密码含 `@` 时原拼法会把 host 解析错）。
