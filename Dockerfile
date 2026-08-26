@@ -15,15 +15,17 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.14 /uv /uvx /bin/
 WORKDIR /opt/backend
 
 COPY backend/pyproject.toml backend/uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev \
+    && test -x /opt/backend/.venv/bin/uvicorn
 
 FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/backend/.venv/bin:$PATH"
 WORKDIR /app
 
-COPY --from=backend-dependencies /opt/backend/.venv /opt/venv
+# Keep the original virtualenv path because console-script shebangs point to it.
+COPY --from=backend-dependencies /opt/backend/.venv /opt/backend/.venv
 COPY backend/app ./app
 COPY --from=frontend-builder /build/dist ./dist
 
