@@ -16,7 +16,7 @@
 - 前端在仓库根目录（`src/`），保持现有结构不动。
 - 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），**全栈已打通**：后端 Task 1–17 全部实现（含真实 DSP、Job 执行器、MinIO 存储、报告导出），前端各页已接线到 `/api/v1`（登录闸门 + 各域 api 模块）。实现细节见 `backend/CLAUDE.md`；计划与验收见 `docs/superpowers/plans/`。
 - 设计文档见 `docs/`：接口契约 `API接口清单.md` · 表结构 `数据库设计.md` · 对象存储 `OSS存储设计.md` · 目录组织 `文件与目录设计.md` · 开发规范 `开发规范.md`。
-- 部署目标：私有化服务器，单容器 Docker（多阶段构建，FastAPI 同时服务 `/api` 与前端静态文件）。`Dockerfile` 负责构建镜像，`.github/workflows/deploy-docker.yml` 在 `main` 校验通过后通过 SSH 在服务器执行 `docker build` + `docker run`；服务器需配置项目 `.env`。
+- 部署目标：私有化服务器，单容器 Docker（多阶段构建，FastAPI 同时服务 `/api` 与前端静态文件）。`Dockerfile` 负责构建镜像，`.github/workflows/deploy-docker.yml` 在 `main` 校验通过后由 GitHub Actions 构建并推送阿里云 ACR，再通过 SSH 在服务器执行 `docker pull` + `docker run`；服务器需配置项目 `.env`。
 
 ## 后端（backend/）
 
