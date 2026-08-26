@@ -21,6 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+.superpowers/
 
 # --- 后端（backend/）---
 backend/.venv/
