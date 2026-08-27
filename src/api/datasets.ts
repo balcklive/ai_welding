@@ -7,10 +7,12 @@
 import { request } from './client';
 import type {
   Dataset,
+  DatasetItemRow,
   DatasetSource,
   DatasetVersion,
   DimensionStatus,
   LineageNode,
+  Page,
   ReadinessCheck,
 } from './types';
 
@@ -67,6 +69,26 @@ export async function getDatasetVersion(
   versionId: string,
 ): Promise<DatasetVersion> {
   return request<DatasetVersion>(`/datasets/${id}/versions/${versionId}`);
+}
+
+export interface DatasetItemQuery {
+  q?: string;
+  quality?: string;
+  split?: 'train' | 'val' | 'test';
+  page?: number;
+  page_size?: number;
+}
+
+/** 固定数据集版本成员：服务端筛选、分页，按样本粒度返回。 */
+export async function listDatasetVersionItems(
+  datasetId: string,
+  versionId: number,
+  params: DatasetItemQuery = {},
+): Promise<Page<DatasetItemRow>> {
+  return request<Page<DatasetItemRow>>(
+    `/datasets/${datasetId}/versions/${versionId}/items`,
+    { query: params },
+  );
 }
 
 /** 数据血缘：原始焊缝 → 标注任务 → 数据集版本 → 模型训练。 */
