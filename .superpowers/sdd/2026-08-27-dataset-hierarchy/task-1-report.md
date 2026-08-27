@@ -140,3 +140,34 @@ Implemented dataset version member listing:
 ### Concerns
 - `q` / `quality` filters intentionally do not match legacy manual/imported samples that only contain `samples.meta` record hints; those rows still render via bounded page-local batch fallback when not excluded by q/quality filters.
 - `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.
+
+---
+
+## Fix Report — 2026-08-27 meta-only filter compatibility follow-up (round 4)
+
+### Files
+- `backend/app/services/datasets.py`
+- `backend/app/services/CLAUDE.md`
+- `backend/tests/test_datasets.py`
+- `backend/tests/CLAUDE.md`
+
+### What changed
+- Added a third, compatibility-only SQL join from `samples.meta` to `data_records` for manual/imported samples that have no split or annotation relationship.
+- The join uses portable `CAST(... AS text)` plus `REPLACE` and complete JSON value-token `LIKE` patterns; it does not use JSON extraction functions. Numeric `record_id` patterns require a comma or object-close boundary, and string `record_id`/`weld_id` patterns require a closing quote, so `12` cannot match `123`.
+- Kept split/annotation relational joins as the primary path. The compatibility relation participates in the existing SQL q/quality filters, count, stable order, offset, and limit; page-local batch fallback remains bounded and preserves payload defaults.
+- Added endpoint regression coverage for a meta-only manual sample matching combined q/quality filters and rejecting a neighboring multi-digit record ID.
+
+### Tests / output
+- `cd backend && uv run pytest tests/test_datasets.py -k "filters_meta_only_manual" -v`
+  - `1 passed, 22 deselected, 1 warning`
+- `cd backend && uv run pytest tests/test_datasets.py -v`
+  - `23 passed, 1 warning`
+- `cd backend && uv run pytest -q`
+  - `285 passed, 2 warnings`
+
+### Commit
+- See final response for commit hash.
+
+### Concerns
+- The compatibility path assumes JSON documents are stored with ordinary spaces only; it removes spaces but not arbitrary pretty-print whitespace. SQLAlchemy/MySQL/SQLite JSON serialization uses the supported forms.
+- `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.

@@ -110,10 +110,10 @@
   - `list_version_items`：`dataset_items → samples → split_tasks/annotation_tasks → data_versions → data_records` 固定快照成员列表；支持 `q`
     (weld_id / weld_name / registration_no 包含匹配)、`quality` 精确、`split`
     (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。
-    **re-review 修复**：过滤/总数/offset/limit 继续留在 SQL 侧，常规构建样本只走关系外键和
-    `DataRecord` 标量列，不在 SQL WHERE/COUNT 中使用 `samples.meta` JSON path；页内字段仍选原始
-    `samples.meta`，历史手工/导入样本仅在当前页 Python 解 JSON 后批量补查 `DataRecord` 回填 payload，
-    避免 MySQL/SQLite JSON 表达式差异和列表循环 `session.get(...)`。
+    **re-review 修复**：过滤/总数/offset/limit 继续留在 SQL 侧，常规构建样本优先走关系外键和
+    `DataRecord` 标量列；历史手工/导入的 meta-only 样本额外以 `cast(samples.meta as text)` 的 JSON
+    完整 token（`record_id` 的 `,`/`}` 值边界、或完整引号 weld_id）关联 `DataRecord`，不使用 JSON
+    path/dialect 函数且避免 `12` 误配 `123`。页内仍批量补查未关联的 meta，避免列表循环 `session.get(...)`。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
     空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
     稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落

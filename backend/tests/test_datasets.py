@@ -457,6 +457,65 @@ def test_dataset_version_items_are_scoped_and_filterable(
     assert payload2["items"][0]["frame_no"] == 12
 
 
+def test_dataset_version_items_filters_meta_only_manual_samples_without_neighbor_id_match(
+    db_engine, override_get_session, override_get_current_user
+) -> None:
+    dataset = _create_dataset(name="元数据成员筛选集", task="目标检测")
+    version = _create_version(dataset["id"])
+    with Session(db_engine) as session:
+        target = DataRecord(
+            id=12,
+            weld_id="META-RECORD-12",
+            weld_name="目标元数据焊缝",
+            registration_no="META-REG-12",
+            source="手工导入",
+            machine="设备-12",
+            modalities=["video"],
+            quality="通过",
+        )
+        neighbor = DataRecord(
+            id=123,
+            weld_id="META-RECORD-123",
+            weld_name="邻居元数据焊缝",
+            registration_no="META-REG-123",
+            source="手工导入",
+            machine="设备-123",
+            modalities=["timeseries"],
+            quality="异常",
+        )
+        session.add_all([target, neighbor])
+        session.flush()
+        sample = Sample(
+            object_keys=["processed/manual/meta-only.jpg"],
+            meta={"record_id": 12, "weld_id": target.weld_id},
+        )
+        session.add(sample)
+        session.flush()
+        session.add(
+            DatasetItem(
+                dataset_version_id=version["id"], sample_id=sample.id, split="train"
+            )
+        )
+        session.commit()
+
+    matched = client.get(
+        f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
+        params={"q": "目标元数据", "quality": "通过"},
+    )
+    assert matched.status_code == 200
+    matched_payload = matched.json()["data"]
+    assert matched_payload["total"] == 1
+    assert [item["weld_id"] for item in matched_payload["items"]] == ["META-RECORD-12"]
+    assert [item["quality"] for item in matched_payload["items"]] == ["通过"]
+
+    neighbor_match = client.get(
+        f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
+        params={"q": "邻居元数据", "quality": "异常"},
+    )
+    assert neighbor_match.status_code == 200
+    assert neighbor_match.json()["data"]["total"] == 0
+
+
 def test_dataset_version_items_rejects_cross_dataset_version(
     override_get_session, override_get_current_user
 ) -> None:

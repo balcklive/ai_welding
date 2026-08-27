@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import func, or_
+from sqlalchemy import String, cast, func, literal, or_
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -447,19 +447,20 @@ def list_version_items(
     page: int,
     page_size: int,
 ) -> tuple[list[dict], int]:
-    """数据集版本成员列表：常规样本走关系外键 SQL 过滤/计数/分页。
+    """数据集版本成员列表：SQL 侧关联、过滤、计数和分页。
 
-    常规构建样本通过 dataset_items→samples→split_tasks→data_versions→data_records，
-    或 dataset_items→samples→annotation_tasks→split_tasks→data_versions→data_records
-    解析焊缝；SQL 筛选只引用这些关系列，避免在 MySQL/SQLite 间不一致的 JSON path
-    表达式。历史手工/导入样本若只有 ``samples.meta`` 记录线索，则仅在页内批量回填 payload，
-    在 q/quality 过滤时不会用 JSON 关联参与匹配。
+    常规构建样本优先通过 split/annotation 关系解析焊缝。历史手工/导入样本没有
+    关系外键时，额外以 ``cast(samples.meta as text)`` 的完整 JSON token 与
+    ``DataRecord`` 关联；不依赖方言 JSON 提取，且 ``record_id`` 的值后必须紧跟
+    ``,`` 或 ``}``，避免 ``12`` 误配 ``123``。三条关联路径均在 SQL 中参与
+    q/quality 筛选、count、排序、offset 和 limit。
     """
     split_version = aliased(DataVersion)
     split_record = aliased(DataRecord)
     annotation_split = aliased(SplitTask)
     annotation_version = aliased(DataVersion)
     annotation_record = aliased(DataRecord)
+    meta_record = aliased(DataRecord)
 
     query = (
         select(
@@ -484,6 +485,14 @@ def list_version_items(
             annotation_record.modalities.label("annotation_modalities"),
             annotation_record.quality.label("annotation_quality"),
             annotation_record.created_at.label("annotation_created_at"),
+            meta_record.weld_id.label("meta_weld_id"),
+            meta_record.weld_name.label("meta_weld_name"),
+            meta_record.registration_no.label("meta_registration_no"),
+            meta_record.source.label("meta_source"),
+            meta_record.machine.label("meta_machine"),
+            meta_record.modalities.label("meta_modalities"),
+            meta_record.quality.label("meta_quality"),
+            meta_record.created_at.label("meta_created_at"),
         )
         .select_from(DatasetItem)
         .join(Sample, Sample.id == DatasetItem.sample_id)
@@ -494,6 +503,7 @@ def list_version_items(
         .outerjoin(annotation_split, annotation_split.id == AnnotationTask.split_task_id)
         .outerjoin(annotation_version, annotation_version.id == annotation_split.version_id)
         .outerjoin(annotation_record, annotation_record.id == annotation_version.record_id)
+        .outerjoin(meta_record, _version_item_meta_record_join(Sample, meta_record))
     )
 
     filters = [DatasetItem.dataset_version_id == version.id]
@@ -505,6 +515,7 @@ def list_version_items(
                 Sample,
                 split_record,
                 annotation_record,
+                meta_record,
                 lambda record: record.quality == quality,
             )
         )
@@ -514,6 +525,7 @@ def list_version_items(
                 Sample,
                 split_record,
                 annotation_record,
+                meta_record,
                 lambda record: or_(
                     record.weld_id.contains(q),
                     record.weld_name.contains(q),
@@ -548,9 +560,31 @@ def list_version_items(
     ], total
 
 
-def _version_item_record_filter(_sample_model, split_record, annotation_record, predicate):
-    """成员列表筛选：只走关系外键解析出的 DataRecord 标量列，不使用 JSON path。"""
-    return or_(predicate(split_record), predicate(annotation_record))
+def _version_item_record_filter(
+    _sample_model, split_record, annotation_record, meta_record, predicate
+):
+    """成员列表筛选：关系路径为主，meta 文本关联为历史样本的兼容路径。"""
+    return or_(
+        predicate(split_record), predicate(annotation_record), predicate(meta_record)
+    )
+
+
+def _version_item_meta_record_join(sample_model, meta_record):
+    """以可移植文本 token 将 meta-only 样本关联到记录，避免 JSON 方言函数。
+
+    JSON 列经 SQLAlchemy/数据库规范化后可能含或不含空格，故只移除普通空格；记录 id
+    和 weld id 均以 JSON 值边界结束，防止相邻多位 ID 或前缀 weld_id 发生误配。
+    """
+    meta_text = func.replace(cast(sample_model.meta, String), " ", "")
+    record_id_prefix = literal('%"record_id":') + cast(meta_record.id, String)
+    weld_id_prefix = literal('%"weld_id":"') + meta_record.weld_id
+    quoted_record_id_prefix = literal('%"record_id":"') + cast(meta_record.id, String)
+    return or_(
+        meta_text.like(record_id_prefix + literal(',%')),
+        meta_text.like(record_id_prefix + literal('}%')),
+        meta_text.like(quoted_record_id_prefix + literal('"%')),
+        meta_text.like(weld_id_prefix + literal('"%')),
+    )
 
 
 def _version_item_meta_records(
@@ -607,25 +641,26 @@ def _version_item_payload(
     meta_weld_id = _json_text(meta.get("weld_id"))
     if meta_record is None and meta_weld_id:
         meta_record = meta_record_by_weld_id.get(meta_weld_id)
+    prefetched_meta_record = _version_item_prefetched_record(row, "meta")
     split_record = _version_item_prefetched_record(row, "split")
     annotation_record = _version_item_prefetched_record(row, "annotation")
 
     return {
         "id": row["id"],
         "sample_id": row["sample_id"],
-        "weld_id": _first_present(meta_record, split_record, annotation_record, field="weld_id") or meta_weld_id,
-        "weld_name": _first_present(meta_record, split_record, annotation_record, field="weld_name"),
-        "registration_no": _first_present(meta_record, split_record, annotation_record, field="registration_no"),
-        "source": _first_present(meta_record, split_record, annotation_record, field="source"),
-        "machine": _first_present(meta_record, split_record, annotation_record, field="machine"),
+        "weld_id": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="weld_id") or meta_weld_id,
+        "weld_name": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="weld_name"),
+        "registration_no": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="registration_no"),
+        "source": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="source"),
+        "machine": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="machine"),
         "modalities": _json_list(
-            _first_present(meta_record, split_record, annotation_record, field="modalities")
+            _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="modalities")
         ),
-        "quality": _first_present(meta_record, split_record, annotation_record, field="quality"),
+        "quality": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="quality"),
         "split": row["split"],
         "frame_no": row["frame_no"],
         "created_at": _iso_utc(
-            _first_present(meta_record, split_record, annotation_record, field="created_at")
+            _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="created_at")
         ),
     }
 
