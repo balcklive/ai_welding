@@ -928,6 +928,8 @@ function Registration() {
   const [registered, setRegistered] = useState(false);
   const [regNo, setRegNo] = useState('REG-20260815-00249');
   const [regId, setRegId] = useState<number | null>(null);
+  const [regError, setRegError] = useState<string | null>(null);
+  const [uploadState, setUploadState] = useState<{ status: 'uploading' | 'done' | 'error'; fileName: string; pendingKey?: string } | null>(null);
   const [recentRows, setRecentRows] = useState<WeldRow[]>(mockWeldRows.slice(0, 3));
   const [form, setForm] = useState<RegistrationForm>({ source: '', collected_at: '2026-08-15 09:42', weld_name: '', product: '', machine: 'Fronius CMT', weld_method: 'MAG焊', material: '', thickness: '', current_voltage: '', sample_rate: '' });
   const fileRef = useRef<HTMLInputElement>(null);
@@ -941,11 +943,22 @@ function Registration() {
     return () => { cancelled = true; };
   }, []);
   const handleSubmit = () => {
-    createRegistration(form).then((reg) => { setRegId(reg.id); setRegNo(reg.registration_no); setRegistered(true); }).catch((err) => { console.warn('[registration] createRegistration failed', err); setRegistered(true); });
+    setRegError(null);
+    createRegistration(form).then((reg) => {
+      setRegId(reg.id); setRegNo(reg.registration_no); setRegistered(true);
+      // 先选文件、后生成登记编号的场景：补挂上传时暂存的 object_key
+      const pending = uploadState?.pendingKey;
+      if (pending) {
+        attachRawFiles(String(reg.id), [pending])
+          .then(() => setUploadState((s) => (s ? { ...s, pendingKey: undefined } : s)))
+          .catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联登记失败，请重新选择文件'); });
+      }
+    }).catch((err) => { console.warn('[registration] createRegistration failed', err); setRegError('登记创建失败，请检查必填项后重试'); });
   };
   const handleFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    setUploadState({ status: 'uploading', fileName: file.name });
     const upload = file.size < 100 * 1024 * 1024
       ? uploadFile(file).then((r) => r.object_key)
       : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' }).then(async (r) => {
@@ -954,13 +967,14 @@ function Registration() {
           return r.object_key;
         });
     upload
-      .then((objectKey) => {
-        if (regId == null) { console.warn('[registration] no registration id yet, skip attachRawFiles'); return; }
-        return attachRawFiles(String(regId), [objectKey]);
+      .then(async (objectKey) => {
+        if (regId == null) { setUploadState({ status: 'done', fileName: file.name, pendingKey: objectKey }); return; }
+        await attachRawFiles(String(regId), [objectKey]);
+        setUploadState({ status: 'done', fileName: file.name });
       })
-      .catch((err) => console.warn('[registration] upload failed', err));
+      .catch((err) => { console.warn('[registration] upload failed', err); setUploadState({ status: 'error', fileName: file.name }); });
   };
-  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据登记" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />登记即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>新建数据登记</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">登记草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label>数据来源 *<input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label>采集时间 *<input value={form.collected_at ?? ''} onChange={setField('collected_at')} readOnly /></label><label>焊缝 / 批次名称 *<input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="upload-zone"><Upload size={20} /><strong>拖入或选择原始数据文件</strong><span>支持视频、CSV、WAV、JSON、图片 · 单文件不超过 2 GB</span><button className="outline-button" onClick={() => fileRef.current?.click()}>选择文件</button><input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} /></div><button className="full-button" onClick={handleSubmit}>{registered ? <><CheckCircle2 size={16} />登记已生成：{regNo}</> : <><FileCheck2 size={16} />生成登记编号</>}</button></section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>登记规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一登记编号', '原始文件与后续版本自动关联', '登记后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近登记</h2><p>最近 24 小时新增数据</p></div></div>{recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已登记</StatusPill></div>)}</section></aside></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据登记" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />登记即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>新建数据登记</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">登记草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label>数据来源 *<input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label>采集时间 *<input value={form.collected_at ?? ''} onChange={setField('collected_at')} readOnly /></label><label>焊缝 / 批次名称 *<input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="upload-zone"><Upload size={20} /><strong>拖入或选择原始数据文件</strong><span>支持视频、CSV、WAV、JSON、图片 · 单文件不超过 2 GB</span>{uploadState && <span className={uploadState.status === 'error' ? 'toolbar-error' : 'accent-text'} role={uploadState.status === 'error' ? 'alert' : undefined}>{uploadState.status === 'uploading' ? `上传中：${uploadState.fileName}…` : uploadState.status === 'error' ? `${uploadState.fileName} 上传失败，请重试` : uploadState.pendingKey ? `${uploadState.fileName} 已上传，生成登记编号后自动关联` : `${uploadState.fileName} 上传成功，已关联登记`}</span>}<button className="outline-button" onClick={() => fileRef.current?.click()}>选择文件</button><input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} onClick={(e) => { e.currentTarget.value = ''; }} /></div><button className="full-button" onClick={handleSubmit}>{registered ? <><CheckCircle2 size={16} />登记已生成：{regNo}</> : <><FileCheck2 size={16} />生成登记编号</>}</button>{regError && <span className="toolbar-error" role="alert">{regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>登记规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一登记编号', '原始文件与后续版本自动关联', '登记后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近登记</h2><p>最近 24 小时新增数据</p></div></div>{recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已登记</StatusPill></div>)}</section></aside></div></div>;
 }
 
 const CH = 720; const CW = 220; const AXIS_L = 44; const AXIS_B = 22; const PLOT_W = CH - AXIS_L; const PLOT_H = CW - AXIS_B;
