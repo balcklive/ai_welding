@@ -49,8 +49,9 @@ class RegistrationCreate(BaseModel):
 
 
 class RegistrationUpdate(BaseModel):
-    """编辑登记请求体（§3.3 PATCH /registrations/{id}，字段均可选）。"""
+    """编辑登记信息；dataset_id 用于将数据移动到另一数据集。"""
 
+    dataset_id: int | None = None
     source: str | None = None
     collected_at: datetime | None = None
     weld_name: str | None = None
