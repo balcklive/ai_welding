@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/services/
 
-业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐模拟）+ Task 14（标注服务）+ Task 15（数据集服务）+ Task 16（模型中心服务）+ **Task 17（通用报告导出）**。
+业务服务层：跨域复用的领域逻辑。当前进度：Task 7（通用 Job 服务）+ Task 8（Dashboard 总览聚合查询）+ Task 10（Welds 核心 CRUD）+ Task 11（真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（多模态对齐，**已真实化**）+ Task 14（标注服务）+ Task 15（数据集服务）+ Task 16（模型中心服务）+ Task 17（通用报告导出）+ Task 18（真实信号导入）+ **对齐真实化（ffmpeg 媒体探测 + 真实产物）**。
 
 ## 脚本
 
@@ -72,16 +72,41 @@
   特征（对齐 App.tsx 8+8+6+6+4+4+6=42）；FFT 主频依赖 fs（默认 1000）；Sobel 用 float 图
   （uint8 会被 skimage 缩到 0~1）；skimage 0.26 用 `axis_major_length`/`intensity_mean` 新 API；
   未知归一化抛 ValueError（路由先白名单校验）；librosa 懒加载（包导入慢）。
-- `alignment.py`：**Task 13**。`simulate_alignment(session, task, job)` 多模态对齐模拟
-  （编排真、内核演示，实施边界 §3.1）：进度逐步 0→100（逐次 `session.commit()` + 小睡，
-  轮询可见）→ 由任务 modalities（缺省取所属焊缝登记 modalities）推导 `tracks`/`assets`
-  （`processed/{weld_id}/align/...`）→ **逐个 `upload_stream` 把占位产物真实写入 MinIO，任一写失败则删除已写对象后抛错，
-  不持久化虚假 assets/version** → 同事务新建「时间对齐」`DataVersion`（v1.<n+1>、
-  operator=算法任务，经 `welds.create_version` 并更新 `latest_version_id`）→ 回填
-  `alignment_tasks.events/tracks/assets` → `mark_succeeded(job, result)`。`events` 常量
-  `ALIGN_EVENTS={arc:0.42, weld_segment:[0.78,4.28], tail:4.86}` 与 `signals.py` 生成器一致。
+- `alignment.py`：**Task 13，对齐真实化后为真实内核**。`run_alignment(session, task, job)`
+  多模态对齐（原 `simulate_alignment` 已删除）：
+  - 进度语义：20=输入清单+信号/事件 → 40=视频探测+关键帧 → 60=轨道/产物构建 →
+    80=上传 → 100=mark_succeeded（逐次 `session.commit()` + 小睡，轮询可见）。
+  - 输入清单 `_collect_sources`：raw 文件取 **v1.0**（`welds.get_v10_version`）+ 当前版本
+    object_keys 合并去重，按 `welds._VIDEO_EXTS/_TS_EXTS/_AUDIO_EXTS/_IMAGE_EXTS` 分桶
+    （图像归 infrared 桶——无连续时间轴仅登记）。
+  - 信号/事件：`_signal_version_id` **版本回退解析**（task.version_id 有 succeeded
+    SignalIngest 用之，否则回退 v1.0——SignalIngest 挂 v1.0 而对齐常在 latest 发起）→
+    `signal_ingest.load_signal_bundle`（real/generated 如实标注 `event_source`）。
+  - 视频：`media_probe.analyze_video`（ffmpeg 探测元数据 + 按事件时刻抽关键帧 JPG）；
+    **部分成功语义**——视频不可读/超 200MB/探测失败/未上传 → 该轨道 `unavailable` + reason，
+    不阻塞任务（读取逐模态 try/except，含 FakeStorage 无 `get_object` 的 AttributeError）。
+  - tracks 每条：`{channel, modality, availability(available|generated|unavailable),
+    source, aligned, asset, object_key, metadata, reason}`；timeseries 恒对齐成功
+    （generated 如实标注）；audio/infrared 仅登记元数据（aligned=false）。
+  - 产物（全真实数据，不再产出 video.mp4/audio.wav 占位字节）：
+    `timeseries.csv`（全时长 4 通道，>10 万行按步长抽稀）+ `timeseries_weld.csv`
+    （weld_segment 窗口切片）+ `keyframes/{event}.jpg` + `tracks.json`（恒末尾，
+    含 schema_version/events/event_source/tracks）。
+  - 上传失败逆序 `delete_object` 清理后重抛；同事务新建「时间对齐」`DataVersion`
+    （v1.<n+1>、operator=算法任务）→ 回填 task.events/tracks/assets →
+    `mark_succeeded(job, {events, event_source, tracks, assets, version})`。
   **坑**：本服务里 `session.commit()` 是执行器专用 session 场景（非请求 session 的
-  "只 flush 不 commit" 约定）；缺已知模态兜底 `video` 轨道。
+  "只 flush 不 commit" 约定）；关键帧对超出视频时长/负时刻的事件直接跳过（EOF 附近
+  `-ss` 抽不到帧，钳制会静默产出错误时刻的帧）。
+- `media_probe.py`：**对齐真实化新增**。ffmpeg 媒体探测（imageio-ffmpeg 自带二进制，
+  无 ffprobe——元数据从 `ffmpeg -i` stderr 解析）：`get_ffmpeg_exe()`（懒加载，失败
+  RuntimeError）、`parse_ffmpeg_info(stderr)`（纯函数，Duration/fps/WxH，缺省 None）、
+  `analyze_video(data, event_points)`（临时文件只写一次：探测 + 逐事件
+  `ffmpeg -ss {t} -i in -frames:v 1 -q:v 2 out.jpg` 抽关键帧，返回
+  `(metadata, keyframes=[{event,t,bytes(JPEG SOI)}])`）。失败以异常表达
+  （ValueError=不可解析/RuntimeError=ffmpeg 不可用），由调用方逐模态转 unavailable；
+  单帧失败告警跳过不中断；`MAX_VIDEO_PROBE_BYTES=200MB`；subprocess 带 `timeout=30`
+  （对齐 handler 跑在 executor daemon 线程内不能挂死）。
 - `annotation.py`：**Task 14**。标注服务（编排真、内核演示，实施边界 §3.1）：
   `simulate_annotation(session, task, job)`（handler 领域逻辑：进度逐步 → source=split_task
   时把该切分任务样本 `annotation_task_id` 指向本任务 → `mark_succeeded(job,

@@ -38,8 +38,11 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     **同 version 的 pending/running/succeeded 重复提交返回既有 `job_id`（幂等）**；failed
     旧任务会释放 `active_request_key`，下一次提交创建新的可执行 job；并发双击仍由
     `alignment_tasks.active_request_key` 唯一约束兜底。
-  - `GET /alignment-tasks/{task_id}`（**Task 13**）：Job 信封（`task_id`=job_uid），成功时
-    `result` 内嵌 `events/tracks/assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）；
+  - `GET /alignment-tasks/{task_id}`（**Task 13，对齐真实化后 tracks 为扩展结构**）：Job 信封
+    （`task_id`=job_uid），成功时 `result` 内嵌 `events/event_source/tracks/assets`——tracks
+    每条含 `channel/modality/availability(available|generated|unavailable)/source/aligned/
+    asset/object_key/metadata/reason`（部分成功语义）；assets 为真实产物（时序 CSV/
+    关键帧 JPG/tracks.json）经 `files.getFileUrl` 下载，视频播放 raw 原始对象（`track.object_key`）；
     未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
   - `POST /welds/{weld_id}/versions/{version_id}/split-tasks` + `GET /split-tasks/{task_id}`
     （**Task 14 切分**）：异步 Job（type=split）+ `split_tasks` 行 → `{job_id}`；body

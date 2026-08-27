@@ -1,4 +1,4 @@
-"""Task 13：Job 执行器 + 对齐任务（模拟）。
+"""Task 13：Job 执行器 + 对齐任务（真实化内核）。
 
 内存 SQLite + StaticPool + 真实 app TestClient（同 test_analysis / test_welds）。
 `seed_all` 造演示数据（4 焊缝，0248 版本链 v1.0~v1.3、latest=v1.3）后 override
@@ -7,16 +7,29 @@
 
 覆盖：
 - `POST …/alignment-tasks` → `{job_id}` + job 处于 pending；`run_job` 后 status=succeeded、
-  result 内嵌 events/tracks/assets/version、`alignment_tasks.assets` 非空；
+  result 内嵌 events/event_source/tracks/assets/version、`alignment_tasks.assets` 非空；
   自动多出 **v1.4 时间对齐** 版本且 `data_records.latest_version_id` 指向它；
+- **generated 回退路径**（seed 无真实信号/无真实视频文件）：event_source=generated、
+  video 轨道 unavailable + reason、产物为真实时序 CSV/tracks.json（无占位字节）；
+- **真实信号路径**（手工造 succeeded SignalIngest + Parquet）：event_source=real、
+  events == ingest.events、weld 窗口切片 CSV 行全部落在焊接段内；
+- **真实视频路径**（imageio-ffmpeg 生成 2s mp4）：video 轨道 available、fps/宽高/时长
+  真实探测、关键帧按事件时刻钳制抽取并真实上传 JPEG；
 - handler 抛异常 → job 结束 failed 且 error 记录（monkeypatch HANDLERS["alignment"]）；
+- 存储写失败 → 清理已写对象、不落库虚假 assets/版本；
 - weld/version 不存在 → 40401/40402；未知 task_id → 40401；未登录 → 40100。
 """
 
+import io
+import json
+import subprocess
 import threading
 import time
 from pathlib import Path
 
+import imageio_ffmpeg
+import numpy as np
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -31,8 +44,10 @@ from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
 from app.models import DataRecord, DataVersion, User
-from app.models.analysis import AlignmentTask
+from app.models.analysis import AlignmentTask, SignalIngest
 from app.models.jobs import Job
+from app.services import signal_ingest
+from app.services.jobs import create_job
 
 client = TestClient(app)
 
@@ -55,6 +70,33 @@ class FakeStorage:
 
     def delete_object(self, object_key):
         self.deletes.append(object_key)
+
+
+class FakeStorageWithRead(FakeStorage):
+    """带读缓存的假存储：`get_object`/`stat_object` 返回已上传（或预置）字节。
+
+    用于真实信号/真实视频用例——对齐内核经 `storage.get_object` 读 raw 视频与
+    信号 Parquet。
+    """
+
+    def __init__(self, fail_after: int | None = None) -> None:
+        super().__init__(fail_after)
+        self.objects: dict[str, bytes] = {}
+
+    def upload_stream(self, object_key, fileobj, size, content_type):
+        super().upload_stream(object_key, fileobj, size, content_type)
+        self.objects[object_key] = self.uploads[-1][1]
+        return object_key
+
+    def get_object(self, object_key):
+        if object_key not in self.objects:
+            raise KeyError(object_key)
+        return self.objects[object_key]
+
+    def stat_object(self, object_key):
+        if object_key not in self.objects:
+            raise KeyError(object_key)
+        return len(self.objects[object_key])
 
 
 @pytest.fixture()
@@ -165,12 +207,38 @@ def test_alignment_task_end_to_end(
     assert done["finished_at"].endswith("Z")
     result = done["result"]
     assert result["events"] == {"arc": 0.42, "weld_segment": [0.78, 4.28], "tail": 4.86}
+    # seed 焊缝无 succeeded 信号导入 → 生成回退如实标注
+    assert result["event_source"] == "generated"
     assert result["tracks"]
     assert result["assets"]
     assert result["version"]["action"] == "时间对齐"
-    # 对齐产物对象键前缀（OSS 设计：processed/{weld_id}/align/...）
+    # 对齐产物对象键前缀（OSS 设计：processed/{weld_id}/align/...）；
+    # 真实化内核不再产出 video.mp4/audio.wav/infrared.avi 占位字节
     assert all(a.startswith(f"processed/{WELD_0248}/align/") for a in result["assets"])
+    assert not any(a.endswith((".mp4", ".wav", ".avi")) for a in result["assets"])
     assert [key for key, _data, _content_type in storage.uploads] == result["assets"]
+
+    # tracks 结构：video 不可用（seed raw 对象不存在/存储不可读）+ reason 非空；
+    # timeseries 为 generated 来源且对齐成功
+    video = next(t for t in result["tracks"] if t["modality"] == "video")
+    assert video["availability"] == "unavailable"
+    assert video["reason"]
+    ts = [t for t in result["tracks"] if t["modality"] == "timeseries"]
+    assert len(ts) == 2  # current + voltage
+    assert all(t["source"] == "generated" and t["availability"] == "generated" and t["aligned"] for t in ts)
+    assert all(t["asset"].endswith("timeseries.csv") for t in ts)
+
+    # tracks.json 真实产物：结构完整且与 result 一致
+    tracks_json = dict(
+        (k, d) for k, d, _ct in storage.uploads if k.endswith("tracks.json")
+    )
+    assert len(tracks_json) == 1
+    doc = json.loads(next(iter(tracks_json.values())).decode("utf-8"))
+    assert doc["schema_version"] == "1"
+    assert doc["weld_id"] == WELD_0248
+    assert doc["event_source"] == "generated"
+    assert doc["events"] == result["events"]
+    assert doc["tracks"] == result["tracks"]
 
     # alignment_tasks.assets / events 落库（直查）
     with Session(db_engine) as session:
@@ -188,6 +256,160 @@ def test_alignment_task_end_to_end(
     assert aligned["operator"] == "算法任务"
     detail = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
     assert detail["latest_version_id"] == aligned["id"]
+
+
+# ---------- 真实信号：succeeded SignalIngest → event_source=real ----------
+
+
+def _synth_weld_df(duration: float = 2.0, fs: int = 1000):
+    """小段合法焊接信号（0.5~1.5s 有效段，确定性 rng），表头走中文名（同导入映射）。"""
+    rng = np.random.default_rng(7)
+    n = int(duration * fs)
+    t = np.arange(n) / fs
+    active = (t >= 0.5) & (t <= 1.5)
+    cur = np.where(active, 160.0 + rng.normal(0, 2, n), 12.0)
+    vol = np.where(active, 22.0, 5.0) + rng.normal(0, 0.5, n)
+    gas = np.where(active, 15.0, 10.0)
+    wir = np.where(active, 5.0, 3.0)
+    return pd.DataFrame(
+        {"时间": t, "电流(A)": cur, "电压(V)": vol, "气体流量(L/min)": gas, "送丝速度(m/min)": wir}
+    )
+
+
+def test_alignment_with_real_signal_ingest(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    storage = FakeStorageWithRead()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    df = _synth_weld_df()
+    column_map = {
+        "time": "时间", "cur": "电流(A)", "vol": "电压(V)",
+        "gas": "气体流量(L/min)", "wir": "送丝速度(m/min)",
+    }
+    fs = 1000
+    events, anomalies = signal_ingest.detect_events(df, column_map, fs)
+    # 合成信号的有效段（滚动均值窗口带来 ±0.01s 边缘误差，防用例本身失真）
+    assert events["weld_segment"][0] == pytest.approx(0.5, abs=0.02)
+    assert events["weld_segment"][1] == pytest.approx(1.5, abs=0.02)
+
+    with Session(db_engine) as session:
+        record = session.exec(
+            select(DataRecord).where(DataRecord.weld_id == WELD_0248)
+        ).first()
+        v10 = session.exec(
+            select(DataVersion).where(
+                DataVersion.record_id == record.id, DataVersion.version_no == "v1.0"
+            )
+        ).first()
+        # 真实链路里 ingest 挂 v1.0（attach_raw_files）；对齐任务跑在 latest（v1.3）
+        job = create_job(session, type="signal_ingest")
+        ingest = SignalIngest(
+            job_id=job.id,
+            version_id=v10.id,
+            source_object_key="raw/REG-20260815-0001/timeseries.csv",
+            status="succeeded",
+            sample_rate=fs,
+            duration=2.0,
+            events=events,
+            anomalies=anomalies,
+        )
+        session.add(ingest)
+        session.flush()
+        parquet = signal_ingest.to_parquet_bytes(
+            df, column_map, fs, record, v10, ingest.id, ingest.source_object_key
+        )
+        parquet_key = f"processed/{WELD_0248}/signals/{ingest.id}.parquet"
+        storage.upload_stream(
+            parquet_key, io.BytesIO(parquet), len(parquet), "application/octet-stream"
+        )
+        ingest.parquet_key = parquet_key
+        session.add(ingest)
+        session.commit()
+
+    vid = _version_id_by_no(WELD_0248, "v1.3")
+    job_id = _post_alignment_task(WELD_0248, vid, ["timeseries"])
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/alignment-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    result = done["result"]
+    # 信号版本回退解析：v1.3 无 ingest → 回退 v1.0 命中真实 Parquet
+    assert result["event_source"] == "real"
+    assert result["events"] == events
+
+    # weld 窗口切片 CSV：所有数据行都落在焊接段内
+    weld_csv = dict(
+        (k, d) for k, d, _ct in storage.uploads if k.endswith("timeseries_weld.csv")
+    )
+    assert len(weld_csv) == 1
+    rows = next(iter(weld_csv.values())).decode("utf-8").strip().splitlines()[1:]
+    assert rows
+    ts_list = [float(r.split(",")[0]) for r in rows]
+    assert all(events["weld_segment"][0] - 1e-3 <= t <= events["weld_segment"][1] + 1e-3 for t in ts_list)
+
+
+# ---------- 真实视频：ffmpeg 探测 + 关键帧真实抽取 ----------
+
+
+def test_alignment_with_real_video_metadata_and_keyframes(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    storage = FakeStorageWithRead()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    # 生成 2s / 10fps / 320x240 测试视频（复刻 tests/fixtures/gen_destructive_data.gen_mp4），
+    # 上传到 seed v1.0 的真实对象键（_collect_sources 从版本 object_keys 取源）
+    mp4 = tmp_path / "weld.mp4"
+    subprocess.run(
+        [
+            imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc=size=320x240:rate=10:duration=2",
+            "-pix_fmt", "yuv420p", "-c:v", "libx264", str(mp4),
+        ],
+        check=True, capture_output=True,
+    )
+    raw_key = "raw/REG-20260815-00248/0001.mp4"
+    storage.upload_stream(raw_key, io.BytesIO(mp4.read_bytes()), mp4.stat().st_size, "video/mp4")
+
+    vid = _version_id_by_no(WELD_0248)
+    job_id = _post_alignment_task(WELD_0248, vid, ["video", "timeseries"])
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/alignment-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    video = next(t for t in done["result"]["tracks"] if t["modality"] == "video")
+    assert video["availability"] == "available"
+    assert video["source"] == "real"
+    assert video["aligned"] is True
+    assert video["object_key"] == raw_key
+    meta = video["metadata"]
+    assert meta["fps"] == pytest.approx(10.0, abs=0.5)
+    assert meta["width"] == 320 and meta["height"] == 240
+    assert meta["duration"] == pytest.approx(2.0, abs=0.2)
+    # 生成回退事件 arc=0.42 / weld_start=0.78 在视频内 → 抽取；weld_end=4.28 /
+    # tail=4.86 超出 2s 视频 → 跳过（EOF 附近 -ss 抽不到帧）
+    assert [kf["event"] for kf in meta["keyframes"]] == ["arc", "weld_start"]
+    assert all(kf["t"] <= meta["duration"] for kf in meta["keyframes"])
+
+    # 关键帧真实上传为 JPEG（SOI 开头），与 metadata.keyframes.asset 一一对应
+    kf_uploads = {k: d for k, d, _ct in storage.uploads if "/keyframes/" in k}
+    assert set(kf_uploads) == {
+        f"processed/{WELD_0248}/align/keyframes/{e}.jpg"
+        for e in ("arc", "weld_start")
+    }
+    assert all(d.startswith(b"\xff\xd8") for d in kf_uploads.values())
+    assert all(
+        kf["asset"] == f"processed/{WELD_0248}/align/keyframes/{kf['event']}.jpg"
+        for kf in meta["keyframes"]
+    )
 
 
 # ---------- 失败：handler 抛异常 → job failed + error ----------
@@ -245,10 +467,10 @@ def test_alignment_storage_failure_cleans_uploaded_objects_and_keeps_db_consiste
     assert data["status"] == "failed"
     assert data["error"] == {"message": "模拟 MinIO 写入失败"}
     assert data["result"] is None
-    assert [key for key, _data, _content_type in storage.uploads] == [
-        f"processed/{WELD_0248}/align/video.mp4"
-    ]
-    assert storage.deletes == [f"processed/{WELD_0248}/align/video.mp4"]
+    # 顺序无关：任一上传失败 → 已上传的全部被逆序清理（真实化内核首个产物是时序 CSV）
+    uploaded_keys = [key for key, _data, _content_type in storage.uploads]
+    assert uploaded_keys == [f"processed/{WELD_0248}/align/timeseries.csv"]
+    assert storage.deletes == uploaded_keys
 
     with Session(db_engine) as session:
         record = session.exec(select(DataRecord).where(DataRecord.weld_id == WELD_0248)).first()

@@ -163,7 +163,7 @@
 |---|---|---|---|
 | GET | `/api/v1/analysis/candidates` | 选择数据页：已登记且核验通过的可分析数据列表 | 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/alignment-tasks` | 提交多模态对齐任务（**异步**；成功后自动生成新版本 `action=时间对齐` 并更新 `latest_version_id`） | body: `modalities[]` |
-| GET | `/api/v1/alignment-tasks/{task_id}` | 对齐任务状态/结果：时间轴、起弧/有效段/收弧事件、各模态轨道、`assets[]`（对齐后视频/轨道/JSON 的对象键，前端经 `files.getFileUrl` 播放） | 轮询（Job 结构） |
+| GET | `/api/v1/alignment-tasks/{task_id}` | 对齐任务状态/结果（**已真实化**）：`result` 内嵌 `events`（真实信号 `detect_events`，无导入回退生成并以 `event_source=real\|generated` 如实标注）、`tracks[]`（每条 `{channel, modality, availability(available\|generated\|unavailable), source, aligned, asset, object_key, metadata, reason}`，**部分成功语义**——缺失模态不阻塞任务）、`assets[]`（真实产物：`timeseries.csv`/`timeseries_weld.csv`/`keyframes/{event}.jpg`/`tracks.json`，经 `files.getFileUrl` 下载；视频不重编码，前端播放 `track.object_key` 指向的 raw 原始对象） | 轮询（Job 结构） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形（电流/电压/气体/送丝）。响应含 `source`(`real`=读导入的真实信号 / `generated`=确定性生成) | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2` |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/{mode}` | 单视图分析数据：`mode` ∈ `psd\|stft\|dwt\|wavelet\|phase\|pdd` | query: `channel`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`（可选，滤波后计算，与信号页滤波联动） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/result` | AI 异常检测结果：焊接稳定度、正常/电弧不稳/飞溅比例、异常区段列表 | — 需登录 |

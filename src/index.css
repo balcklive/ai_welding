@@ -281,3 +281,15 @@ button { border: 0; cursor: pointer; }
 .version-drawer-state.error { color:#bd6b5b; }
 @keyframes version-drawer-in { from { transform:translateX(20px); opacity:.7; } to { transform:translateX(0); opacity:1; } }
 @media (max-width:600px) { .version-drawer { padding:20px; } }
+
+/* ── 对齐页真实数据渲染（对齐真实化） ───────────────────────────────────── */
+.alignment-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#0d2226; }
+.timeline-playhead { position:absolute; top:0; bottom:0; width:1px; background:#16343d; opacity:.85; }
+.track-wave { position:absolute; inset:1px 0; width:100%; height:16px; opacity:.9; }
+.track-availability { display:inline-flex; margin-left:6px; padding:1px 5px; border-radius:4px; font-size:8px; vertical-align:1px; }
+.track-availability.ok { color:#1e7f6e; background:#e2f5ee; }
+.track-availability.warn { color:#c08a4e; background:#fff4e7; }
+.track-availability.bad { color:#bd6b5b; background:#fbeeea; }
+.alignment-banner { display:flex; align-items:center; gap:8px; margin-bottom:14px; padding:10px 14px; border-radius:8px; font-size:11px; }
+.alignment-banner.ok { color:#1e7f6e; background:#e2f5ee; }
+.alignment-banner.bad { color:#bd6b5b; background:#fbeeea; }

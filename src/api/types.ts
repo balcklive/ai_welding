@@ -376,9 +376,33 @@ export interface AnalysisResult {
   anomalies: WeldAnomaly[];
 }
 
+/** 单条对齐轨道（对齐真实化后扩展）：availability 部分成功语义。 */
+export interface AlignmentTrack {
+  channel: string;
+  modality: string;
+  availability: 'available' | 'generated' | 'unavailable';
+  source: 'real' | 'generated' | null;
+  aligned: boolean;
+  asset: string | null;
+  object_key: string | null;
+  metadata: {
+    sample_rate?: number;
+    duration?: number;
+    channels?: string[];
+    fps?: number | null;
+    width?: number | null;
+    height?: number | null;
+    keyframes?: { event: string; t: number; asset?: string }[];
+    object_key?: string;
+  } | null;
+  reason: string | null;
+}
+
 export interface AlignmentResult {
   events: WeldEvent;
-  tracks: { channel: string }[];
+  /** 事件来源：real=真实信号 detect_events；generated=无导入回退确定性生成。 */
+  event_source?: 'real' | 'generated';
+  tracks: AlignmentTrack[];
   assets: string[];
   version: DataVersion;
 }

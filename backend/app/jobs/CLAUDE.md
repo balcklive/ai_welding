@@ -28,9 +28,10 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18**）。导入本�
     对 `alignment`/`split` 还会同步清空任务行的 `active_request_key`，让 failed 请求可直接重试；
     未注册 type → `ValueError` 同样走 failed。
   - `_dispatch` / `_mark_failed_in`：handler 执行 + 失败回写（事务脏先 `rollback` 再写）。
-- `alignment.py`：**Task 13**。`handle(job_id, session)`（`@register_handler("alignment")`）——
-  按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.simulate_alignment`
-  （模拟进度 + 自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
+- `alignment.py`：**Task 13（对齐真实化后为真实内核）**。`handle(job_id, session)`（`@register_handler("alignment")`）——
+  按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.run_alignment`
+  （真实信号事件 + ffmpeg 视频探测/关键帧 + 真实产物 CSV/JPG/tracks.json，部分成功语义；
+  自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
 - `split.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("split")`）→
   `simulate_split(session, task, job)`（**领域逻辑直接在本模块**，任务清单未规划 split service）：
   解析规则 `fixed_rate`（帧/样本，>=1）→ `sample_count = max(1, int(DURATION*1000)//fixed_rate)`

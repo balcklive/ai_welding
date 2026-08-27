@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/
 
-应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）+ Task 11（analysis 域：真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（Job 执行器 DB 轮询 + 对齐任务模拟）+ Task 14（切分 + 标注，模拟）+ Task 15（数据集 + 构建任务）+ **Task 16（模型中心：模型 CRUD + 状态流转 + 训练/测试/推理任务模拟）** + **Task 17（通用报告导出：Jinja2+xhtml2pdf PDF / JSON，写 MinIO）** + **Task 18（真实信号导入：CSV 自动解析校验 → 启发式事件 → MinIO Parquet；DSP 优先读真实信号，无则回退生成）**。
+应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）+ Task 11（analysis 域：真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（Job 执行器 DB 轮询 + 对齐任务，**已真实化**）+ Task 14（切分 + 标注，模拟）+ Task 15（数据集 + 构建任务）+ Task 16（模型中心：模型 CRUD + 状态流转 + 训练/测试/推理任务模拟）+ Task 17（通用报告导出：Jinja2+xhtml2pdf PDF / JSON，写 MinIO）+ Task 18（真实信号导入：CSV 自动解析校验 → 启发式事件 → MinIO Parquet；DSP 优先读真实信号，无则回退生成）+ **对齐真实化（ffmpeg 媒体探测 + 真实产物，`services/media_probe.py`）**。
 
 ## 脚本
 
@@ -21,7 +21,8 @@
   `list_through_welds` 供 analysis candidates），
   `dsp.py` + `signals.py` = **Task 11**（真实 DSP 纯函数 + 确定性信号生成），
   `features.py` = **Task 12**（多模态特征提取 + 42 维统一向量），
-  `alignment.py` = **Task 13**（多模态对齐模拟：进度 + 自动生成「时间对齐」版本 + 产物回填），
+  `alignment.py` = **Task 13，对齐真实化后为真实内核**（真实信号事件 + ffmpeg 视频探测/关键帧
+  + 真实产物 CSV/JPG/tracks.json，部分成功语义，详见 `services/CLAUDE.md`），
   `annotation.py` = **Task 14**（标注：任务创建 handler 逻辑 / 样本导入 / AI 预标注确定性模拟 /
   覆盖写保存 / confidence 语义 / job_uid 双解析），
   `datasets.py` = **Task 15**（数据集 CRUD / 输入维度 / 适配检查 / 版本 / 血缘 / 构建任务领域逻辑：
@@ -38,7 +39,7 @@
 - `templates/reports/`：**Task 17** Jinja2 报告模板（base/validation/data_list/generic），
   见 `templates/CLAUDE.md`。
 - `jobs/`：**Task 13 ~ Task 16** Job 执行器 + 各域 handler（`executor.py` DB 轮询 / `run_job`
-  同步入口 / handler 注册表；`alignment.py` = 对齐 handler、`split.py` = 切分 handler、
+  同步入口 / handler 注册表；`alignment.py` = 对齐 handler（真实内核）、`split.py` = 切分 handler、
   `annotation.py` = 标注 handler、`dataset_build.py` = 数据集构建 handler、
   `training.py`/`testing.py`/`inference.py` = **Task 16** 训练/测试/推理 handler；导入本包即完成注册），
   详见 `jobs/CLAUDE.md`。

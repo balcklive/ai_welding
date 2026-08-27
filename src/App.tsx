@@ -61,6 +61,7 @@ import { exportReport } from './api/reports';
 import { useJob } from './hooks/useJob';
 import type {
   AlignmentResult,
+  AlignmentTrack,
   AnalysisResult,
   Annotation as AnnotationLabel,
   DataRecord,
@@ -91,6 +92,7 @@ import type {
   TrainingResult,
   ValidationReport,
   ValidationRuleResult,
+  WeldEvent,
   WaveletBand,
   WaveletData,
 } from './api/types';
@@ -1048,14 +1050,19 @@ function fmt(s: number) {
   return `${String(m).padStart(2, '0')}:${r}`;
 }
 
-function toPath(values: number[], lo: number, hi: number): string {
+/** 通用波形 path 构建（对齐页轨道/原始波形共用）；toPath 为分析页固定视口的委托。 */
+function buildPath(values: number[], lo: number, hi: number, plotW: number, plotH: number, axisL = 0): string {
   const range = hi - lo || 1;
   const n = Math.max(values.length - 1, 1);
   return values.map((v, i) => {
-    const px = AXIS_L + (i / n) * PLOT_W;
-    const py = (PLOT_H * (1 - (v - lo) / range));
+    const px = axisL + (i / n) * plotW;
+    const py = (plotH * (1 - (v - lo) / range));
     return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`;
   }).join(' ');
+}
+
+function toPath(values: number[], lo: number, hi: number): string {
+  return buildPath(values, lo, hi, PLOT_W, PLOT_H, AXIS_L);
 }
 
 
@@ -1520,36 +1527,113 @@ function Validation({ dataId }: { embedded?: boolean; dataId?: string }) {
   return <div className="page-wrap"><PageIntro eyebrow="数据质量中心" title="数据核验" description="通过标准化规则检查数据完整性、连续性与多模态一致性。" action={<Toolbar action="执行核验" secondary="下载核验报告" onAction={runNow} exportType="validation" exportRefIds={report ? [report.id] : undefined} />} /><div className="validation-summary"><div className="validation-score"><div className="score-ring small"><div><strong>{report ? report.score : 93.3}</strong><span>质量评分</span></div></div><div><h2>{dataId ?? 'REG-20260815-00248'}</h2><p>{lastRun}</p><StatusPill tone={statusTone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div></div><div className="validation-count"><div><strong>{passed}</strong><span>通过规则</span></div><div><strong className="warning-text">{warning}</strong><span>警告</span></div><div><strong className="danger-text">{failed}</strong><span>失败</span></div></div></div><section className="panel validation-panel"><div className="panel-heading"><div><h2>核验规则明细 <span className="inline-count">{rules.length} 项</span></h2><p>已覆盖图像、时序、视频、元数据与跨模态一致性检查</p></div><button className="select-button">全部状态 <ChevronDown size={14} /></button></div><div className="rule-grid">{rules.map((rule, index) => { const isWarn = rule.status === 'warning'; const isFail = rule.status === 'failed'; const tone = isFail ? 'red' : isWarn ? 'orange' : 'green'; const label = isFail ? '失败' : isWarn ? '警告' : '通过'; const msg = rule.message ?? (isWarn ? '存在警告，建议复核' : '检查通过 · 结果已记录'); return <div className="validation-rule" key={rule.rule_name || index}><div className={`validation-icon ${isWarn ? 'warning' : isFail ? 'failed' : ''}`}>{isFail || isWarn ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}</div><div><strong>{rule.rule_name}</strong><span>{msg}</span></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{label}</StatusPill></div>; })}</div></section></div>;
 }
 
+const VIDEO_EXTS = ['.mp4', '.avi', '.mkv', '.mov'];
+const ALIGN_CHANNEL_MAP: Record<string, string> = { current: 'cur', voltage: 'vol' };
+const ALIGN_TRACK_META: Record<string, { label: string; tone: string }> = {
+  video: { label: '视频帧', tone: 'blue' },
+  current: { label: '电流', tone: 'mint' },
+  voltage: { label: '电压', tone: 'orange' },
+  audio: { label: '音频', tone: 'purple' },
+  infrared: { label: '红外', tone: 'blue' },
+};
+
+function jobErrorMessage(error: unknown): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const msg = (error as { message?: unknown }).message;
+    if (typeof msg === 'string' && msg) return msg;
+  }
+  return '未知错误';
+}
+
+function AvailabilityTag({ track }: { track: AlignmentTrack }) {
+  const pair = ({ available: ['真实', 'ok'], generated: ['生成', 'warn'], unavailable: ['缺失', 'bad'] } as Record<string, [string, string]>)[track.availability] ?? ['未知', 'warn'];
+  return <span className={`track-availability ${pair[1]}`} title={track.reason ?? undefined}>{pair[0]}</span>;
+}
+
 function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
+  const [record, setRecord] = useState<DataRecord | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [signals, setSignals] = useState<SignalData | null>(null);
+  const [playhead, setPlayhead] = useState(0);
   const [keepEventBuffer, setKeepEventBuffer] = useState(true);
   const [bufferSeconds, setBufferSeconds] = useState(0.2);
-  const { status: jobStatus, progress, result } = useJob<SplitResult | AlignmentResult>(jobId);
+  const { job, status: jobStatus, progress, result } = useJob<SplitResult | AlignmentResult>(jobId);
   const splitRes = result && 'sample_count' in result ? (result as SplitResult) : null;
   const alignRes = result && 'events' in result ? (result as AlignmentResult) : null;
+  // 焊缝详情：最新版本号（handleRun 目标）+ 登记模态（不再硬编码模态表）
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
-    getWeld(dataId).then((r) => { if (!cancelled) setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); }).catch((err) => { if (!cancelled) console.warn('[alignment] getWeld failed', err); });
+    getWeld(dataId).then((r) => {
+      if (cancelled) return;
+      setRecord(r);
+      setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null);
+    }).catch((err) => { if (!cancelled) console.warn('[alignment] getWeld failed', err); });
     return () => { cancelled = true; };
   }, [dataId]);
+  // v1.0 原始数据 → 真实视频预签名 URL + 真实信号波形（与后端对齐内核同源 v1.0）
+  useEffect(() => {
+    if (!dataId || splitOnly) return;
+    let cancelled = false;
+    listVersions(dataId).then((versions) => {
+      if (cancelled) return;
+      const v10 = versions.find((v) => v.version_no === 'v1.0');
+      if (!v10) return;
+      const videoKey = (v10.object_keys ?? []).find((k) => VIDEO_EXTS.some((e) => k.toLowerCase().endsWith(e)));
+      if (videoKey) getFileUrl(videoKey).then((r) => { if (!cancelled) setVideoUrl(r.url); }).catch(() => {});
+      getSignals(dataId, String(v10.id)).then((s) => { if (!cancelled) setSignals(s); }).catch(() => {});
+    }).catch((err) => { if (!cancelled) console.warn('[alignment] listVersions failed', err); });
+    return () => { cancelled = true; };
+  }, [dataId, splitOnly]);
+  // 对齐成功：时间轴切到新版本；视频轨道有源对象 → 用内核实际使用的视频刷新播放器
+  useEffect(() => {
+    if (!alignRes) return;
+    setVersionId(alignRes.version.id);
+    const key = alignRes.tracks.find((t) => t.modality === 'video' && t.object_key)?.object_key;
+    if (!key) return;
+    let cancelled = false;
+    getFileUrl(key).then((r) => { if (!cancelled) setVideoUrl(r.url); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [alignRes]);
   const handleRun = () => {
     if (!dataId || versionId == null) { console.warn('[alignment] 尚未解析版本，请稍后再试'); return; }
     const run = splitOnly
       ? createSplitTask(dataId, String(versionId), { fixed_rate: 10, keep_event_buffer: keepEventBuffer ? bufferSeconds : 0, task_format: '目标检测' })
-      : createAlignmentTask(dataId, String(versionId), ['video', 'timeseries', 'audio']);
+      : createAlignmentTask(dataId, String(versionId), record?.modalities?.length ? record.modalities : ['video', 'timeseries']);
     run.then((res) => setJobId(res.job_id)).catch((err) => console.warn('[alignment] 任务创建失败', err));
   };
   const tone = jobStatus === 'running' ? 'orange' : jobStatus === 'failed' ? 'red' : 'green';
   const statusText = jobStatus === 'succeeded' ? '已完成' : jobStatus === 'running' ? `处理中 ${progress}%` : jobStatus === 'failed' ? '失败' : (splitOnly ? '待切分' : '已对齐');
   const done = jobStatus === 'succeeded';
   const running = jobStatus === 'running';
-  const events = alignRes?.events ?? null;
-  return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title="对齐与切分" description="自动识别起收弧事件，完成视频、波形和音频的时间同步与样本切分。" action={<Toolbar action="生成切分样本" secondary="导出标注集" exportType="annotation" />} /><div className="alignment-layout"><section className="panel alignment-board"><div className="board-toolbar"><div><span className="file-badge"><GitBranch size={15} />多模态对齐任务 · ALIGN-0248</span><h2>熔池视频 / 电流电压 / 音频</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="video-placeholder"><div className="video-grid" /><div className="play-orb"><Play size={22} /></div><div className="video-label">熔池视频 · Frame 0248</div><span className="video-time">00:02.18 / 00:05.42</span></div><div className="timeline-stack"><Track label="视频帧" tone="blue" /><Track label="电流" tone="mint" /><Track label="电压" tone="orange" /><Track label="音频" tone="purple" /></div><div className="alignment-events"><span><i className="event-start" />起弧 <b>{events ? fmt(events.arc) : '00:00.42'}</b></span><span><i className="event-active" />有效焊接段 <b>{events ? `${fmt(events.weld_segment[0])} - ${fmt(events.weld_segment[1])}` : '00:00.78 - 00:04.28'}</b></span><span><i className="event-end" />收弧 <b>{events ? fmt(events.tail) : '00:04.86'}</b></span></div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>切分规则</h2><p>配置样本生成策略</p></div><SlidersHorizontal size={17} /></div><label className="switch-row"><span>按固定频率切分</span><input type="checkbox" defaultChecked /></label><div className="select-field">10 帧 / 样本 <ChevronDown size={14} /></div><label className="switch-row"><span>保留事件点前后缓冲</span><input type="checkbox" checked={keepEventBuffer} onChange={(e) => setKeepEventBuffer(e.target.checked)} /></label><div className="select-field" style={{ gap: 8, justifyContent: 'space-between' }}><span>± {bufferSeconds.toFixed(2)} 秒</span><input type="number" min={0} step={0.1} value={bufferSeconds} disabled={!keepEventBuffer} onChange={(e) => { const next = Number.parseFloat(e.target.value); setBufferSeconds(Number.isFinite(next) && next >= 0 ? next : 0); }} style={{ width: 96, background: 'transparent', border: 'none', color: 'inherit', textAlign: 'right' }} /></div><button className="full-button" onClick={handleRun}>{splitOnly ? (done ? <><Check size={16} />已生成 {splitRes?.sample_count ?? 248} 个样本</> : running ? <><Activity size={16} />切分处理中…</> : <><ScissorsIcon />预览切分结果</>) : (done ? <><Check size={16} />已完成时间对齐</> : running ? <><Activity size={16} />对齐处理中…</> : <><Play size={16} />开始多模态对齐</>)}</button></section><section className="panel"><div className="panel-heading"><div><h2>输出任务格式</h2><p>兼容主流视觉任务</p></div></div><div className="format-chips"><span className="chosen">目标检测</span><span>图像分类</span><span>语义分割</span><span>时序分类</span></div><div className="export-note"><FileText size={15} /><span>将生成图像、信号片段及 JSON 标注文件</span></div></section></aside></div></div>;
+  // 事件/时长：对齐结果优先，其次 v1.0 真实信号，最后保持旧兜底常量
+  const events = alignRes?.events ?? signals?.events ?? null;
+  const timelineDur = signals?.duration ?? 5.42;
+  const trackRows: { channel: string; label: string; tone: string; track?: AlignmentTrack; values?: number[]; lo?: number; hi?: number; color?: string }[] = (() => {
+    const rows = (splitOnly || !alignRes)
+      ? ['video', 'current', 'voltage', 'audio'].map((ch) => ({ channel: ch, label: ALIGN_TRACK_META[ch].label, tone: ALIGN_TRACK_META[ch].tone }))
+      : alignRes.tracks.map((tr) => ({ channel: tr.channel, label: ALIGN_TRACK_META[tr.channel]?.label ?? tr.channel, tone: ALIGN_TRACK_META[tr.channel]?.tone ?? 'blue', track: tr }));
+    return rows.map((row) => {
+      const chanId = ALIGN_CHANNEL_MAP[row.channel];
+      const chan = chanId ? signals?.channels.find((c) => c.id === chanId) : undefined;
+      return { ...row, values: chan?.values, lo: chan?.lo, hi: chan?.hi, color: chanId ? chanColor[chanId] : undefined };
+    });
+  })();
+  const errMsg = jobErrorMessage(job?.error);
+  return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title="对齐与切分" description="自动识别起收弧事件，完成视频、波形和音频的时间同步与样本切分。" action={<Toolbar action="生成切分样本" secondary="导出标注集" exportType="annotation" />} /><div className="alignment-layout"><section className="panel alignment-board">{!splitOnly && alignRes?.version && <div className="alignment-banner ok" role="status"><CheckCircle2 size={15} />已生成「时间对齐」版本 {alignRes.version.version_no}（{alignRes.version.object_keys.length} 个产物 · 事件来源 {alignRes.event_source === 'real' ? '真实信号' : '生成回退'}）</div>}{!splitOnly && jobStatus === 'failed' && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />对齐任务失败：{errMsg}</div>}<div className="board-toolbar"><div><span className="file-badge"><GitBranch size={15} />多模态对齐任务{record ? ` · ${record.weld_id}` : ''}</span><h2>熔池视频 / 电流电压 / 音频</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="video-placeholder">{videoUrl ? <video className="alignment-video" src={videoUrl} controls onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)} /> : <><div className="video-grid" /><div className="play-orb"><Play size={22} /></div></>}<div className="video-label">{record ? `熔池视频 · ${record.weld_id}` : '熔池视频 · Frame 0248'}</div><span className="video-time">{fmt(playhead)} / {fmt(timelineDur)}</span></div><div className="timeline-stack">{trackRows.map((row) => <Track key={row.channel} label={row.label} tone={row.tone} track={row.track} duration={timelineDur} events={events} playhead={playhead} values={row.values} lo={row.lo} hi={row.hi} color={row.color} />)}</div><div className="alignment-events"><span><i className="event-start" />起弧 <b>{events ? fmt(events.arc) : '00:00.42'}</b></span><span><i className="event-active" />有效焊接段 <b>{events ? `${fmt(events.weld_segment[0])} - ${fmt(events.weld_segment[1])}` : '00:00.78 - 00:04.28'}</b></span><span><i className="event-end" />收弧 <b>{events ? fmt(events.tail) : '00:04.86'}</b></span></div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>切分规则</h2><p>配置样本生成策略</p></div><SlidersHorizontal size={17} /></div><label className="switch-row"><span>按固定频率切分</span><input type="checkbox" defaultChecked /></label><div className="select-field">10 帧 / 样本 <ChevronDown size={14} /></div><label className="switch-row"><span>保留事件点前后缓冲</span><input type="checkbox" checked={keepEventBuffer} onChange={(e) => setKeepEventBuffer(e.target.checked)} /></label><div className="select-field" style={{ gap: 8, justifyContent: 'space-between' }}><span>± {bufferSeconds.toFixed(2)} 秒</span><input type="number" min={0} step={0.1} value={bufferSeconds} disabled={!keepEventBuffer} onChange={(e) => { const next = Number.parseFloat(e.target.value); setBufferSeconds(Number.isFinite(next) && next >= 0 ? next : 0); }} style={{ width: 96, background: 'transparent', border: 'none', color: 'inherit', textAlign: 'right' }} /></div><button className="full-button" onClick={handleRun}>{splitOnly ? (done ? <><Check size={16} />已生成 {splitRes?.sample_count ?? 248} 个样本</> : running ? <><Activity size={16} />切分处理中…</> : <><ScissorsIcon />预览切分结果</>) : (done ? <><Check size={16} />已完成时间对齐</> : running ? <><Activity size={16} />对齐处理中…</> : <><Play size={16} />开始多模态对齐</>)}</button></section><section className="panel"><div className="panel-heading"><div><h2>输出任务格式</h2><p>兼容主流视觉任务</p></div></div><div className="format-chips"><span className="chosen">目标检测</span><span>图像分类</span><span>语义分割</span><span>时序分类</span></div><div className="export-note"><FileText size={15} /><span>将生成图像、信号片段及 JSON 标注文件</span></div></section></aside></div></div>;
 }
 
-function Track({ label, tone }: { label: string; tone: string }) { return <div className="timeline-row"><span>{label}</span><div className={`timeline-track ${tone}`}><i /><b /></div><small>0s</small><small>5.42s</small></div>; }
+function Track({ label, tone, track, duration, events, playhead, values, lo, hi, color }: {
+  label: string; tone: string; track?: AlignmentTrack; duration: number;
+  events?: WeldEvent | null; playhead?: number;
+  values?: number[]; lo?: number; hi?: number; color?: string;
+}) {
+  const dur = duration > 0 ? duration : 5.42;
+  const pct = (s: number) => `${Math.min(100, Math.max(0, (s / dur) * 100)).toFixed(2)}%`;
+  return <div className="timeline-row"><span>{label}{track && <AvailabilityTag track={track} />}</span><div className={`timeline-track ${tone}`}>{values && values.length > 1 && lo != null && hi != null && <svg className="track-wave" viewBox="0 0 100 16" preserveAspectRatio="none"><path d={buildPath(values, lo, hi, 100, 16)} fill="none" stroke={color ?? '#2c9caf'} strokeWidth="1" vectorEffect="non-scaling-stroke" /></svg>}{events && <i style={{ left: pct(events.arc) }} />}{events && <b style={{ left: pct(events.tail) }} />}{playhead != null && playhead > 0 && <span className="timeline-playhead" style={{ left: pct(playhead) }} />}</div><small>0s</small><small>{fmt(dur)}</small></div>;
+}
 function ScissorsIcon() { return <span className="scissors-icon">✂</span>; }
 
 function ModelTest() {
