@@ -104,7 +104,7 @@ const detailImage = 'https://images.pexels.com/photos/36522029/pexels-photo-3652
 type Route = 'overview' | 'data-center/datasets' | 'data-center/registration' | 'data-center/validation' | 'data-center/versions' | 'analysis/select' | 'analysis/alignment' | 'analysis/analysis' | 'analysis/split' | 'analysis/annotation' | 'analysis/features' | 'model-center/repository' | 'model-center/training' | 'model-center/testing' | 'model-center/inference';
 
 const workspaceHeaders: Record<string, { eyebrow: string; title: string; description: string }> = {
-  'data-center': { eyebrow: '数据资产中心', title: '数据中心', description: '以单条焊缝数据为单位，管理登记信息、质量核验和版本链路。' },
+  'data-center': { eyebrow: '数据资产中心', title: '数据中心', description: '以单条焊缝数据为单位，管理数据上传、质量核验和版本链路。' },
   'analysis': { eyebrow: '多模态数据生产线', title: '分析与标注', description: '选择一条焊缝后，完成对齐、信号分析、切分与标注。' },
   'model-center': { eyebrow: '模型研发中心', title: '模型中心', description: '统一管理模型版本、训练任务、测试评估与推理验证。' },
 };
@@ -113,7 +113,7 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
   { id: 'overview', label: '数据总览', icon: BarChart3, route: 'overview' },
   { id: 'data-center', label: '数据中心', icon: Database, route: 'data-center/datasets', children: [
     { route: 'data-center/datasets', label: '数据集' },
-    { route: 'data-center/registration', label: '数据登记' },
+    { route: 'data-center/registration', label: '数据上传' },
     { route: 'data-center/validation', label: '数据核验' },
     { route: 'data-center/versions', label: '数据版本' },
   ] },
@@ -1015,7 +1015,7 @@ function AnalysisSelect({ onContinue }: { onContinue: (id: string) => void }) {
       .finally(() => { if (!cancelled) setLoadingWeld(false); });
     return () => { cancelled = true; };
   }, [selectedDatasetId]);
-  return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择数据集，再选择一条焊缝开始分析</h2><p>先选定数据集，再在数据集内选择核验通过的焊缝进入多模态分析流程；未核验通过的焊缝置灰不可选。</p></div></div><div className="selection-dataset-bar"><label className="filter-field">所属数据集<select value={selectedDatasetId ?? ''} onChange={(event) => setSelectedDatasetId(Number(event.target.value))}>{datasetOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label></div>{selectedDatasetId == null ? <p className="selection-empty">正在加载数据集…</p> : loadingWeld ? <p className="selection-empty">正在加载该数据集的焊缝…</p> : weldRows.length ? <div className="selection-grid">{weldRows.map((row) => <button className={`selection-card ${row.quality !== '通过' ? 'disabled' : ''}`} disabled={row.quality !== '通过'} onClick={() => onContinue(row.id)} key={row.id} title={row.quality !== '通过' ? '该焊缝尚未核验通过，不可进入分析' : undefined}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{row.title ?? '未命名焊缝'}</h3><p>{row.machine ?? '—'} · {row.types}</p></div><StatusPill tone={row.quality === '通过' ? 'green' : row.quality === '异常' ? 'red' : 'orange'}>{row.quality === '通过' ? '核验通过' : row.quality}</StatusPill></button>)}</div> : <p className="selection-empty">该数据集暂无登记数据，请先在数据中心登记或核验。</p>}</div>;
+  return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择数据集，再选择一条焊缝开始分析</h2><p>先选定数据集，再在数据集内选择核验通过的焊缝进入多模态分析流程；未核验通过的焊缝置灰不可选。</p></div></div><div className="selection-dataset-bar"><label className="filter-field">所属数据集<select value={selectedDatasetId ?? ''} onChange={(event) => setSelectedDatasetId(Number(event.target.value))}>{datasetOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label></div>{selectedDatasetId == null ? <p className="selection-empty">正在加载数据集…</p> : loadingWeld ? <p className="selection-empty">正在加载该数据集的焊缝…</p> : weldRows.length ? <div className="selection-grid">{weldRows.map((row) => <button className={`selection-card ${row.quality !== '通过' ? 'disabled' : ''}`} disabled={row.quality !== '通过'} onClick={() => onContinue(row.id)} key={row.id} title={row.quality !== '通过' ? '该焊缝尚未核验通过，不可进入分析' : undefined}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{row.title ?? '未命名焊缝'}</h3><p>{row.machine ?? '—'} · {row.types}</p></div><StatusPill tone={row.quality === '通过' ? 'green' : row.quality === '异常' ? 'red' : 'orange'}>{row.quality === '通过' ? '核验通过' : row.quality}</StatusPill></button>)}</div> : <p className="selection-empty">该数据集暂无数据，请先在数据中心上传数据。</p>}</div>;
 }
 
 function VersionPanel({ dataId }: { dataId?: string }) {
@@ -1164,20 +1164,32 @@ const mockWeldRows: WeldRow[] = [
 
 /** 数据列表：每页条数 + tab 演示计数（API 返回后 active tab 显示响应 total）。 */
 const PAGE_SIZE = 10;
+
+/** 上传数据：分类型上传区配置（CSV / 图片 / 视频 / WAV 各自独立）。 */
+type UploadZoneKey = 'csv' | 'image' | 'video' | 'audio';
+const UPLOAD_ZONES: { key: UploadZoneKey; label: string; accept: string; hint: string }[] = [
+  { key: 'csv', label: '时序数据（CSV）', accept: '.csv', hint: '支持 .csv 时序信号' },
+  { key: 'image', label: '图片', accept: 'image/png,image/jpeg,image/webp,image/bmp', hint: '支持 png / jpg / webp / bmp' },
+  { key: 'video', label: '视频', accept: 'video/*', hint: '支持 mp4 / mov / avi 等' },
+  { key: 'audio', label: '音频（WAV）', accept: '.wav,audio/wav', hint: '支持 .wav 音频' },
+];
+
 function Registration() {
   const [registered, setRegistered] = useState(false);
   const [regNo, setRegNo] = useState('REG-20260815-00249');
   const [regError, setRegError] = useState<string | null>(null);
-  const [uploadState, setUploadState] = useState<{ status: 'uploading' | 'done' | 'error'; fileName: string; pendingKey?: string } | null>(null);
+  const [uploads, setUploads] = useState<Partial<Record<UploadZoneKey, { status: 'uploading' | 'done' | 'error'; fileName: string; errorMsg?: string } | null>>>({});
+  const [hasFile, setHasFile] = useState(false);
   const [recentRows, setRecentRows] = useState<WeldRow[]>(mockWeldRows.slice(0, 3));
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [form, setForm] = useState<RegistrationForm>({ dataset_id: 0, source: '', collected_at: '2026-08-15 09:42', weld_name: '', product: '', machine: 'Fronius CMT', weld_method: 'MAG焊', material: '', thickness: '', current_voltage: '', sample_rate: '' });
-  const fileRef = useRef<HTMLInputElement>(null);
+  // 各上传区的 file input 引用（ref 回调写进同一对象）。
+  const fileRefs = useRef<Partial<Record<UploadZoneKey, HTMLInputElement | null>>>({});
   // 登记 id 与待补挂文件键的"实时"来源：上传/登记的异步回调可能读到旧渲染闭包里的
-  // regId/uploadState（stale closure），用 ref 保证跨渲染读到最新值——
-  // 修复"上传在途时提交登记"导致文件永远补挂不上的竞态（无论先后完成都恰好补挂一次）。
+  // regId/uploads（stale closure），用 ref 保证跨渲染读到最新值——
+  // 修复"上传在途时提交上传"导致文件永远补挂不上的竞态（每个文件键恰好补挂一次）。
   const regIdRef = useRef<number | null>(null);
-  const pendingKeyRef = useRef<string | undefined>(undefined);
+  const pendingKeysRef = useRef<Partial<Record<UploadZoneKey, string>>>({});
   const setField = (key: keyof RegistrationForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((prev) => ({ ...prev, [key]: event.target.value }));
   useEffect(() => {
     let cancelled = false;
@@ -1190,26 +1202,41 @@ function Registration() {
     return () => { cancelled = true; };
   }, []);
   const handleSubmit = () => {
+    if (registered) return;
     if (!form.dataset_id || !form.source.trim() || !form.weld_name?.trim()) return;
+    if (!hasFile) return;
     setRegError(null);
     createRegistration(form).then((reg) => {
       setRegNo(reg.registration_no); setRegistered(true);
       regIdRef.current = reg.id;
-      // 先选文件、后生成登记编号的场景：补挂上传时暂存的 object_key（读 ref 而非
-      // 闭包 uploadState，覆盖"上传在 handleSubmit 执行期间才完成"的竞态）。
-      const pending = pendingKeyRef.current;
-      if (pending) {
-        pendingKeyRef.current = undefined;
-        attachRawFiles(String(reg.id), [pending])
-          .then(() => setUploadState((s) => (s ? { ...s, pendingKey: undefined } : s)))
-          .catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联登记失败，请重新选择文件'); });
+      // 提交完成时统一补挂各上传区暂存的 object_key（读 ref 而非闭包，
+      // 覆盖"上传在 createRegistration 执行期间才完成"的竞态）。
+      const pending = Object.values(pendingKeysRef.current).filter(Boolean) as string[];
+      if (pending.length) {
+        pendingKeysRef.current = {};
+        attachRawFiles(String(reg.id), pending)
+          .catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联失败，请重新选择文件'); });
       }
-    }).catch((err) => { console.warn('[registration] createRegistration failed', err); setRegError('登记创建失败，请检查必填项后重试'); });
+    }).catch((err) => { console.warn('[registration] createRegistration failed', err); setRegError('上传失败，请检查必填项后重试'); });
   };
-  const handleFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const zoneAccepts = (key: UploadZoneKey, file: File): boolean => {
+    const name = file.name.toLowerCase();
+    switch (key) {
+      case 'csv': return name.endsWith('.csv');
+      case 'image': return file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/.test(name);
+      case 'video': return file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm)$/.test(name);
+      case 'audio': return name.endsWith('.wav') || file.type === 'audio/wav' || file.type === 'audio/x-wav';
+    }
+  };
+  const handleFile = (key: UploadZoneKey, event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    setUploadState({ status: 'uploading', fileName: file.name });
+    const zone = UPLOAD_ZONES.find((z) => z.key === key);
+    if (!zoneAccepts(key, file)) {
+      setUploads((prev) => ({ ...prev, [key]: { status: 'error', fileName: file.name, errorMsg: `仅支持 ${zone?.label ?? '该区'}格式` } }));
+      return;
+    }
+    setUploads((prev) => ({ ...prev, [key]: { status: 'uploading', fileName: file.name } }));
     const upload = file.size < 100 * 1024 * 1024
       ? uploadFile(file).then((r) => r.object_key)
       : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' }).then(async (r) => {
@@ -1218,19 +1245,19 @@ function Registration() {
           return r.object_key;
         });
     upload
-      .then(async (objectKey) => {
+      .then((objectKey) => {
+        setHasFile(true);
         // 读 ref 而非闭包 regId：上传完成时若登记已生成（哪怕 handleSubmit 在上传
-        // 在途时先跑），直接补挂；否则暂存 pendingKey 交给 handleSubmit。
+        // 在途时先跑），直接补挂；否则暂存 pendingKeys 交给 handleSubmit 统一补挂。
         const id = regIdRef.current;
-        if (id == null) { pendingKeyRef.current = objectKey; setUploadState({ status: 'done', fileName: file.name, pendingKey: objectKey }); return; }
-        await attachRawFiles(String(id), [objectKey]);
-        pendingKeyRef.current = undefined;
-        setUploadState({ status: 'done', fileName: file.name });
+        if (id == null) { pendingKeysRef.current[key] = objectKey; }
+        else { attachRawFiles(String(id), [objectKey]).catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联失败，请重新选择文件'); }); }
+        setUploads((prev) => ({ ...prev, [key]: { status: 'done', fileName: file.name } }));
       })
-      .catch((err) => { console.warn('[registration] upload failed', err); setUploadState({ status: 'error', fileName: file.name }); });
+      .catch((err) => { console.warn('[registration] upload failed', err); setUploads((prev) => ({ ...prev, [key]: { status: 'error', fileName: file.name } })); });
   };
 
-  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据登记" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />登记即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>新建数据登记</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">登记草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label>所属数据集 *<select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label>数据来源 *<input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label>采集时间 *<input value={form.collected_at ?? ''} onChange={setField('collected_at')} readOnly /></label><label>焊缝 / 批次名称 *<input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="upload-zone"><Upload size={20} /><strong>拖入或选择原始数据文件</strong><span>支持视频、CSV、WAV、JSON、图片 · 单文件不超过 2 GB</span>{uploadState && <span className={uploadState.status === 'error' ? 'toolbar-error' : 'accent-text'} role={uploadState.status === 'error' ? 'alert' : undefined}>{uploadState.status === 'uploading' ? `上传中：${uploadState.fileName}…` : uploadState.status === 'error' ? `${uploadState.fileName} 上传失败，请重试` : uploadState.pendingKey ? `${uploadState.fileName} 已上传，生成登记编号后自动关联` : `${uploadState.fileName} 上传成功，已关联登记`}</span>}<button className="outline-button" onClick={() => fileRef.current?.click()}>选择文件</button><input ref={fileRef} type="file" style={{ display: 'none' }} onChange={handleFile} onClick={(e) => { e.currentTarget.value = ''; }} /></div><button className="full-button" disabled={!form.dataset_id || !form.source.trim() || !form.weld_name?.trim()} onClick={handleSubmit}>{registered ? <><CheckCircle2 size={16} />登记已生成：{regNo}</> : <><FileCheck2 size={16} />生成登记编号</>}</button>{regError && <span className="toolbar-error" role="alert">{regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>登记规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一登记编号', '原始文件与后续版本自动关联', '登记后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近登记</h2><p>最近 24 小时新增数据</p></div></div>{recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已登记</StatusPill></div>)}</section></aside></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据上传" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />上传数据即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>上传数据</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">上传草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label>所属数据集 *<select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label>数据来源 *<input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label>采集时间 *<input value={form.collected_at ?? ''} onChange={setField('collected_at')} readOnly /></label><label>焊缝 / 批次名称 *<input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="form-section-title"><span>上传数据文件</span><i /></div><div className="upload-zones">{UPLOAD_ZONES.map((zone) => { const st = uploads[zone.key]; return <div className="upload-zone" key={zone.key}><Upload size={16} /><strong>{zone.label}</strong><span>{zone.hint}</span>{st && <span className={st.status === 'error' ? 'toolbar-error' : 'accent-text'} role={st.status === 'error' ? 'alert' : undefined}>{st.status === 'uploading' ? `上传中：${st.fileName}…` : st.status === 'error' ? (st.errorMsg ?? `${st.fileName} 上传失败，请重试`) : `${st.fileName} 已上传`}</span>}<button className="outline-button" onClick={() => fileRefs.current[zone.key]?.click()}>{st?.status === 'done' ? '更换文件' : '选择文件'}</button><input ref={(el) => { fileRefs.current[zone.key] = el; }} type="file" accept={zone.accept} style={{ display: 'none' }} onChange={(event) => handleFile(zone.key, event)} onClick={(e) => { e.currentTarget.value = ''; }} /></div>; })}</div><button className="full-button" disabled={!form.dataset_id || !form.source.trim() || !form.weld_name?.trim() || !hasFile} onClick={handleSubmit}>{registered ? <><CheckCircle2 size={16} />上传成功：{regNo}</> : <><FileCheck2 size={16} />上传数据</>}</button>{regError && <span className="toolbar-error" role="alert">{regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>上传规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一编号', '原始文件与后续版本自动关联', '上传后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近上传</h2><p>最近 24 小时新增数据</p></div></div>{recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已上传</StatusPill></div>)}</section></aside></div></div>;
 }
 
 const CH = 720; const CW = 220; const AXIS_L = 44; const AXIS_B = 22; const PLOT_W = CH - AXIS_L; const PLOT_H = CW - AXIS_B;
