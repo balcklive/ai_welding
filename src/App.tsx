@@ -555,7 +555,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
       legend: { data: channels.map((c) => c.name), top: 0 },
       dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 6, height: 16 }],
       grid: channels.map((_, i) => ({ left: 64, right: 28, top: 30 + i * (gridHeight + 14), height: gridHeight })),
-      xAxis: channels.map((_, i) => ({ type: 'value', gridIndex: i, min: 0, max: dur, boundaryGap: false, axisLabel: { show: i === channels.length - 1 } })),
+      xAxis: channels.map((_, i) => ({ type: 'value', gridIndex: i, min: 0, max: dur, boundaryGap: [0, 0], axisLabel: { show: i === channels.length - 1 } })),
       yAxis: channels.map((c, i) => ({ type: 'value', gridIndex: i, name: `${c.name} (${c.unit})`, min: c.lo, max: c.hi, axisLabel: { fontSize: 10 } })),
       series: channels.map((c, i) => ({
         name: c.name,
