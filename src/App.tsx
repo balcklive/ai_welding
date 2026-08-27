@@ -929,12 +929,16 @@ const PAGE_SIZE = 10;
 function Registration() {
   const [registered, setRegistered] = useState(false);
   const [regNo, setRegNo] = useState('REG-20260815-00249');
-  const [regId, setRegId] = useState<number | null>(null);
   const [regError, setRegError] = useState<string | null>(null);
   const [uploadState, setUploadState] = useState<{ status: 'uploading' | 'done' | 'error'; fileName: string; pendingKey?: string } | null>(null);
   const [recentRows, setRecentRows] = useState<WeldRow[]>(mockWeldRows.slice(0, 3));
   const [form, setForm] = useState<RegistrationForm>({ source: '', collected_at: '2026-08-15 09:42', weld_name: '', product: '', machine: 'Fronius CMT', weld_method: 'MAG焊', material: '', thickness: '', current_voltage: '', sample_rate: '' });
   const fileRef = useRef<HTMLInputElement>(null);
+  // 登记 id 与待补挂文件键的"实时"来源：上传/登记的异步回调可能读到旧渲染闭包里的
+  // regId/uploadState（stale closure），用 ref 保证跨渲染读到最新值——
+  // 修复"上传在途时提交登记"导致文件永远补挂不上的竞态（无论先后完成都恰好补挂一次）。
+  const regIdRef = useRef<number | null>(null);
+  const pendingKeyRef = useRef<string | undefined>(undefined);
   const setField = (key: keyof RegistrationForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((prev) => ({ ...prev, [key]: event.target.value }));
   useEffect(() => {
     let cancelled = false;
@@ -947,10 +951,13 @@ function Registration() {
   const handleSubmit = () => {
     setRegError(null);
     createRegistration(form).then((reg) => {
-      setRegId(reg.id); setRegNo(reg.registration_no); setRegistered(true);
-      // 先选文件、后生成登记编号的场景：补挂上传时暂存的 object_key
-      const pending = uploadState?.pendingKey;
+      setRegNo(reg.registration_no); setRegistered(true);
+      regIdRef.current = reg.id;
+      // 先选文件、后生成登记编号的场景：补挂上传时暂存的 object_key（读 ref 而非
+      // 闭包 uploadState，覆盖"上传在 handleSubmit 执行期间才完成"的竞态）。
+      const pending = pendingKeyRef.current;
       if (pending) {
+        pendingKeyRef.current = undefined;
         attachRawFiles(String(reg.id), [pending])
           .then(() => setUploadState((s) => (s ? { ...s, pendingKey: undefined } : s)))
           .catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联登记失败，请重新选择文件'); });
@@ -970,8 +977,12 @@ function Registration() {
         });
     upload
       .then(async (objectKey) => {
-        if (regId == null) { setUploadState({ status: 'done', fileName: file.name, pendingKey: objectKey }); return; }
-        await attachRawFiles(String(regId), [objectKey]);
+        // 读 ref 而非闭包 regId：上传完成时若登记已生成（哪怕 handleSubmit 在上传
+        // 在途时先跑），直接补挂；否则暂存 pendingKey 交给 handleSubmit。
+        const id = regIdRef.current;
+        if (id == null) { pendingKeyRef.current = objectKey; setUploadState({ status: 'done', fileName: file.name, pendingKey: objectKey }); return; }
+        await attachRawFiles(String(id), [objectKey]);
+        pendingKeyRef.current = undefined;
         setUploadState({ status: 'done', fileName: file.name });
       })
       .catch((err) => { console.warn('[registration] upload failed', err); setUploadState({ status: 'error', fileName: file.name }); });
