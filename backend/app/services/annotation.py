@@ -55,12 +55,16 @@ _IMG_W, _IMG_H = 640, 480
 
 
 def annotation_payload(a: Annotation) -> dict:
-    """单条标注 → JSON（confidence Decimal → float）。"""
+    """单条标注 → JSON（confidence Decimal → float；几何字段按 kind 透传）。"""
     return {
         "id": a.id,
         "sample_id": a.sample_id,
         "category": a.category,
+        "kind": a.kind,
         "box": a.box or [],
+        "points": a.points or [],
+        "start_time": a.start_time,
+        "end_time": a.end_time,
         "confidence": float(a.confidence) if a.confidence is not None else None,
         "annotator": a.annotator,
         "created_at": _iso_utc(a.created_at),
@@ -312,7 +316,11 @@ def save_labels(
         ann = Annotation(
             sample_id=sample.id,
             category=label.category,
+            kind=label.kind,
             box=label.box,
+            points=label.points,
+            start_time=label.start_time,
+            end_time=label.end_time,
             confidence=Decimal(str(conf)) if conf is not None else None,
             annotator=annotator,
             created_at=now,
@@ -350,6 +358,13 @@ def simulate_annotation(session: Session, task: AnnotationTask, job: Job) -> dic
             s.annotation_task_id = task.id
             session.add(s)
         reassigned = len(samples)
+    elif task.source == "signal":
+        # 信号锚点样本在任务创建时同步生成（route），这里只统计数量回填 result。
+        reassigned = int(
+            session.exec(
+                select(func.count(Sample.id)).where(Sample.annotation_task_id == task.id)
+            ).one()
+        )
 
     result = {
         "source": task.source,

@@ -85,15 +85,17 @@
   "只 flush 不 commit" 约定）；缺已知模态兜底 `video` 轨道。
 - `annotation.py`：**Task 14**。标注服务（编排真、内核演示，实施边界 §3.1）：
   `simulate_annotation(session, task, job)`（handler 领域逻辑：进度逐步 → source=split_task
-  时把该切分任务样本 `annotation_task_id` 指向本任务 → `mark_succeeded(job,
-  {source,name,samples_count})`）；`resolve_annotation_task` / `resolve_split_task`
+  时把该切分任务样本 `annotation_task_id` 指向本任务；source=signal 时统计本任务已有样本数
+  （信号锚点样本在创建路由同步生成）→ `mark_succeeded(job, {source,name,samples_count})`）；`resolve_annotation_task` / `resolve_split_task`
   （**job_uid / DB id 双兼容**：先 `get_job_by_uid` 且 type 匹配才认，再按 int 查表，前端
   创建后只拿 job_id 即可直用）；`list_label_categories`（模型口径 5 类）；
   `import_samples`（files 建 `Sample` 行 / split_task 改归属）；`list_samples`（分页 +
   **批量预查 annotations 防 N+1**）；`get_sample` / `get_sample_detail`（样本须属于该任务）；
   `pretag_sample`（**确定性**模拟 2 区域，seed=`random.Random(sample_id)`，替换现有标注，
   annotator=AI预标注）；`save_labels`（**覆盖写**删旧插新，annotator=当前用户，confidence
-  缺省沿用先前同类别值）；payload 序列化 `annotation_payload` / `sample_payload`。
+  缺省沿用先前同类别值；**标注 kind 升级**：`LabelItem` 透传 `kind`(box/segment/polygon) +
+  `points`/`start_time`/`end_time` 到 `Annotation` 行）；payload 序列化 `annotation_payload` /
+  `sample_payload`（`annotation_payload` 输出 `kind/points/start_time/end_time`）。
   **confidence 语义（契约 §3.4）**：每条 `Annotation` 自带 confidence；样本级
   `_sample_confidence` = 当前标注置信度均值（无标注 → None）。写操作（import/pretag/
   save_labels）**不 commit**（路由提交）；`simulate_annotation` 内的 commit 是执行器专用

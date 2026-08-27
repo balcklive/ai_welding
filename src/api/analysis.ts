@@ -137,10 +137,11 @@ export async function listLabelCategories(): Promise<LabelCategory[]> {
   return request<LabelCategory[]>('/label-categories');
 }
 
-/** 创建标注任务（异步：从切分样本/手动选样生成）。 */
+/** 创建标注任务（异步：切分样本 / 手动选样 / 时序信号锚点）。signal 来源需带 version_id。 */
 export async function createAnnotationTask(body: {
-  source: 'split_task' | 'manual';
+  source: 'split_task' | 'manual' | 'signal';
   split_task_id?: string;
+  version_id?: number;
   name?: string;
 }): Promise<{ job_id: string }> {
   return request<{ job_id: string }>('/annotation-tasks', {

@@ -116,7 +116,12 @@ export interface Annotation {
   id: number;
   sample_id: number;
   category: string;
+  /** 几何类型：box（目标检测 bbox）/ segment（时序区间）/ polygon（多边形区域）。 */
+  kind: string;
   box: number[];
+  points: number[][];
+  start_time: number | null;
+  end_time: number | null;
   confidence: number | null;
   annotator: string | null;
   created_at: string | null;
@@ -509,10 +514,14 @@ export interface ImportSamplesBody {
   split_task_id?: string;
 }
 
-/** 单条标注标签输入（box 为 `[x, y, w, h]`）。 */
+/** 单条标注标签输入。按 `kind` 分支：box 为 `[x, y, w, h]`；segment 用 start_time/end_time；polygon 用 points。 */
 export interface LabelItem {
   category: string;
-  box: number[];
+  kind?: string;
+  box?: number[];
+  points?: number[][];
+  start_time?: number | null;
+  end_time?: number | null;
   confidence?: number | null;
 }
 

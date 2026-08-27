@@ -148,9 +148,9 @@
 > - `brand` → 映射 `machine` 前缀（`machine LIKE 'brand%'`，无 brand 列）；`source` → `source LIKE '前缀%'`；`status` → `quality` 精确匹配。
 > - `dataset_id` → `dataset_id` 精确匹配（列已有索引）；`dataset_id` 指向不存在的数据集 → `40401 数据集不存在`。
 | GET | `/api/v1/welds/{weld_id}` | 单条焊缝详情（来源/焊机/模态/核验状态/最新版本） | — 需登录 |
-| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填） |
+| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `dataset_id`, `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`；`dataset_id` 必填，登记不得成为孤立数据（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填） |
 | GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
-| PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息 | body 同 POST（部分字段可选） |
+| PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息（含 `dataset_id` 可将数据移动到另一数据集） | body 同 POST（部分字段可选） |
 | POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量）。**含 `.csv` 对象键时自动创建 `signal_ingest` 任务**（解析+校验+写 MinIO Parquet，幂等：同文件不重复建任务） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0) |
 | GET | `/api/v1/welds/{weld_id}/versions` | 版本链（v1.0~v1.3 + 操作人/时间/动作） | — 需登录 |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}` | 单个版本详情 | — 需登录 |
@@ -176,7 +176,7 @@
 | GET | `/api/v1/annotation-tasks/{task_id}/samples` | 标注样本列表（分页，如样本 0248/1209） | query: `page`, `page_size` |
 | GET | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}` | 单个样本详情（图像/信号 + 现有标注）；返回样本级 `confidence`（AI 预标注平均置信度，人工修正后为最新值，供标注信息面板展示） | — 需登录 |
 | POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/ai-pretag` | AI 预标注（同步）：返回疑似缺陷区域+置信度 | 需登录 |
-| POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/labels` | 保存/更新标注（同步） | body: `labels[]`（类别+框坐标） |
+| POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/labels` | 保存/更新标注（同步） | body: `labels[]`（类别 + `kind`(`box`/`segment`/`polygon`)；`box`=[x,y,w,h] / `start_time,end_time`=区间秒 / `points`=多边形顶点，按 kind 分支校验） |
 | GET | `/api/v1/annotation-tasks/{task_id}` | 标注任务整体状态（进度/当前样本） | 轮询（Job 结构） |
 | POST | `/api/v1/features/extract` | 执行特征提取（**同步**）：时序/视觉/声音特征 + 统一向量 | body: `weld_id`, `version_id`, `normalization`(Z-Score/Min-Max/L2/无), `format`(NPY/CSV/JSON/PT) |
 | GET | `/api/v1/features/{extraction_id}` | 特征提取结果（导出时使用） | — 需登录 |
