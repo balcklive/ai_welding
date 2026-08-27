@@ -75,6 +75,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "thickness",
     "current_voltage",
     "sample_rate",
+    "dataset_id",
 )
 
 _REGISTRATION_PAYLOAD_LOCK = Lock()
@@ -317,6 +318,7 @@ def create_registration(
         current_voltage=data.get("current_voltage"),
         sample_rate=data.get("sample_rate"),
         product=data.get("product"),
+        dataset_id=int(data["dataset_id"]),
         modalities=[],
         quality="待复核",
         operator=operator,
@@ -867,6 +869,7 @@ def _record_dict(record: DataRecord, latest: DataVersion | None) -> dict:
         "current_voltage": record.current_voltage,
         "sample_rate": record.sample_rate,
         "product": record.product,
+        "dataset_id": record.dataset_id,
         "modalities": record.modalities or [],
         "quality": record.quality,
         "operator": record.operator,

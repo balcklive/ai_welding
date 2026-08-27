@@ -20,6 +20,7 @@ from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import SignalIngest
 from app.models.data import User
+from app.models.datasets import Dataset
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
 from app.services.jobs import create_job
@@ -32,8 +33,9 @@ VALID_ACTIONS = {"去噪处理", "人工修正"}
 
 
 class RegistrationCreate(BaseModel):
-    """新建登记请求体（§3.3 POST /registrations）。`source` 必填，其余可空。"""
+    """新建登记请求体：登记必须归属一个已有数据集。"""
 
+    dataset_id: int
     source: str
     collected_at: datetime | None = None
     weld_name: str | None = None
@@ -178,6 +180,8 @@ def create_registration(
     source = (body.source or "").strip()
     if not source:
         return err(40000, "数据来源不能为空", status=400)
+    if session.get(Dataset, body.dataset_id) is None:
+        return err(40401, "所属数据集不存在", status=404)
     payload = body.model_dump()
     for attempt in range(3):
         request_lock = None
@@ -251,7 +255,10 @@ def update_registration(
     if record is None:
         return err(40401, "登记信息不存在", status=404)
     forbid_unless_record_owned(session, current_user, record)
-    svc.update_registration(session, record, body.model_dump(exclude_unset=True))
+    changes = body.model_dump(exclude_unset=True)
+    if "dataset_id" in changes and session.get(Dataset, changes["dataset_id"]) is None:
+        return err(40401, "所属数据集不存在", status=404)
+    svc.update_registration(session, record, changes)
     write_audit(
         session,
         current_user.id,

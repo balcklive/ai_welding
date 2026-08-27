@@ -47,6 +47,8 @@ class DataRecord(SQLModel, table=True):
     current_voltage: str | None = Field(default=None, max_length=32)
     sample_rate: str | None = Field(default=None, max_length=32)
     product: str | None = Field(default=None, max_length=128)
+    # 每条登记必须归属一个数据集；历史数据通过迁移清理/归属后不允许为空。
+    dataset_id: int | None = Field(default=None, foreign_key="datasets.id", index=True)
     # 登记创建时初始 []，挂载原始文件时按文件类型推导回填。
     modalities: list = Field(default_factory=list, sa_column=Column(JSON))
     quality: str = Field(max_length=16, default="待复核", index=True)

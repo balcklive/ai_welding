@@ -71,6 +71,7 @@ export interface DataRecord {
   current_voltage: string | null;
   sample_rate: string | null;
   product: string | null;
+  dataset_id: number;
   modalities: string[];
   quality: string;
   operator: string | null;
@@ -481,6 +482,7 @@ export interface ExportRequest {
 }
 
 export interface RegistrationForm {
+  dataset_id: number;
   source: string;
   collected_at?: string | null;
   weld_name?: string | null;
