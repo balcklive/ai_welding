@@ -28,7 +28,7 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
-from app.models import DataRecord, DataVersion, User
+from app.models import DataRecord, DataVersion, Dataset, User
 
 client = TestClient(app)
 
@@ -101,6 +101,8 @@ def override_get_current_user():
 
 def _register(**overrides):
     body = {
+        # 登记必须归属数据集（RegistrationCreate.dataset_id 必填）；seed 第一个数据集 id=1。
+        "dataset_id": 1,
         "source": "产线相机 · 04号",
         "collected_at": "2026-08-16T08:00:00Z",
         "weld_name": "测试焊缝",
@@ -195,6 +197,8 @@ def test_create_registration_retries_generated_id_conflict(
     resp = client.post(
         "/api/v1/registrations",
         json={
+            # 登记必须归属数据集；seed 第一个数据集 id=1。
+            "dataset_id": 1,
             "source": "并发测试产线",
             "collected_at": "2026-08-16T08:00:00Z",
             "weld_name": "并发登记",
@@ -208,7 +212,7 @@ def test_create_registration_retries_generated_id_conflict(
 def test_create_registration_requires_source(
     override_get_session, override_get_current_user
 ) -> None:
-    resp = client.post("/api/v1/registrations", json={"source": "  "})
+    resp = client.post("/api/v1/registrations", json={"dataset_id": 1, "source": "  "})
     assert resp.status_code == 400
     assert resp.json()["code"] == 40000
 
@@ -256,6 +260,8 @@ def test_create_registration_rejects_concurrent_duplicate_payload(
     monkeypatch.setattr(welds_api.svc, "create_registration", _slow_create_registration)
 
     payload = {
+        # 登记必须归属数据集；seed 第一个数据集 id=1。
+        "dataset_id": 1,
         "source": "task5p2-dup",
         "collected_at": "2026-08-16T08:00:00Z",
         "weld_name": "重复登记",
@@ -332,6 +338,17 @@ def test_mysql_registration_lock_released_after_rollback_allows_followup_registr
                 role="admin",
             )
         )
+        # 登记必须归属数据集：独立库里也补一条 Dataset(id=1)，否则新登记的
+        # `session.get(Dataset, dataset_id)` 存在性校验（40401）过不了。
+        session.add(
+            Dataset(
+                id=1,
+                dataset_no="DS-TEST-LOCK-001",
+                name="锁回归数据集",
+                task="目标检测",
+                status="标注中",
+            )
+        )
         session.commit()
 
     def _override_session():
@@ -375,6 +392,8 @@ def test_mysql_registration_lock_released_after_rollback_allows_followup_registr
         resp = client.post(
             "/api/v1/registrations",
             json={
+                # 登记必须归属数据集；seed 第一个数据集 id=1。
+                "dataset_id": 1,
                 "source": "task5-lock-followup",
                 "collected_at": f"{test_day.isoformat()}T09:00:00Z",
                 "weld_name": "锁释放后普通登记",
@@ -468,6 +487,42 @@ def test_list_welds_filters(override_get_session, override_get_current_user) -> 
     # 组合：待核验 + source
     total, ids = _ids(tab="待核验", source="实训线")
     assert total == 1 and ids == {WELD_0247}
+
+
+def test_list_welds_dataset_filter(
+    db_session, override_get_session, override_get_current_user
+) -> None:
+    """GET /welds?dataset_id：按归属数据集过滤；数据集不存在 → 404（40401）。"""
+    created = client.post(
+        "/api/v1/datasets",
+        json={"name": "过滤测试数据集", "task": "目标检测"},
+    ).json()["data"]
+    new_id = created["id"]
+    # 把 0246 移入新数据集，其余焊缝仍归 seed 默认数据集
+    record = db_session.exec(
+        select(DataRecord).where(DataRecord.weld_id == WELD_0246)
+    ).one()
+    record.dataset_id = new_id
+    db_session.commit()
+
+    def _ids(**params):
+        data = client.get("/api/v1/welds", params=params).json()["data"]
+        return data["total"], {item["weld_id"] for item in data["items"]}
+
+    # 新数据集：只剩 0246
+    total, ids = _ids(dataset_id=new_id)
+    assert total == 1 and ids == {WELD_0246}
+    # seed 默认数据集：其余 3 条
+    default_dataset = db_session.exec(select(Dataset).order_by(Dataset.id)).first()
+    total, ids = _ids(dataset_id=default_dataset.id)
+    assert total == 3 and ids == {WELD_0248, WELD_0247, WELD_0245}
+    # 可与其他筛选组合
+    total, ids = _ids(dataset_id=default_dataset.id, status="通过")
+    assert total == 1 and ids == {WELD_0248}
+    # 数据集不存在 → 404
+    resp = client.get("/api/v1/welds", params={"dataset_id": 999999})
+    assert resp.status_code == 404
+    assert resp.json()["code"] == 40401
 
 
 # ---------- GET / PATCH /registrations/{id} ----------

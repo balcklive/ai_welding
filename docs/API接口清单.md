@@ -91,7 +91,7 @@
 | 实体 | 说明 | 关键字段 |
 |---|---|---|
 | `User` | 用户（暂不细分角色） | id, username, display_name, role, avatar |
-| `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, weld_name, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, product, modalities, quality, operator, storage_bytes, latest_version_id |
+| `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, weld_name, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, product, **dataset_id**(归属数据集 FK, 登记必填), modalities, quality, operator, storage_bytes, latest_version_id |
 | `DataVersion` | 数据版本（原始/去噪/对齐/人工修正…） | id, **record_id**(关联焊缝，后端序列化如此，前端经它关联所属焊缝), version_no, action, operator, object_keys[], created_at, note |
 | `ValidationReport` | 数据核验报告 | id, version_id, score, passed, warning, failed, duration, rules[] |
 | `ValidationRule` | 核验规则结果（15 项） | name, status(passed/warning/failed), message |
@@ -140,12 +140,13 @@
 
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
-| GET | `/api/v1/welds` | 数据列表：服务端分页+筛选，按焊缝 ID 去重、仅最新版本 | query: `q`(关键词:焊缝ID/登记编号), `source`(数据来源前缀), `brand`(焊机品牌前缀), `status`(通过/待复核/异常), `tab`(全部最新/待核验/已归档/最近), `page`, `page_size` |
+| GET | `/api/v1/welds` | 数据列表：服务端分页+筛选，按焊缝 ID 去重、仅最新版本 | query: `q`(关键词:焊缝ID/登记编号), `source`(数据来源前缀), `brand`(焊机品牌前缀), `status`(通过/待复核/异常), `tab`(全部最新/待核验/已归档/最近), `dataset_id`(归属数据集精确筛选，供「分析·选择数据」两级选择第二级), `page`, `page_size` |
 
 > **§3.3 GET /welds 筛选映射说明**（schema 无独立归档位/品牌列，按既有列映射）：
 > - `tab=已归档` → `quality=='通过'`（schema 无归档位，取"已核验通过视为归档"的确定映射）；
 > - `tab=最近` / `tab=全部最新` → 不追加过滤，仅 `created_at desc` 排序（等价 N=page_size 取最新）；
 > - `brand` → 映射 `machine` 前缀（`machine LIKE 'brand%'`，无 brand 列）；`source` → `source LIKE '前缀%'`；`status` → `quality` 精确匹配。
+> - `dataset_id` → `dataset_id` 精确匹配（列已有索引）；`dataset_id` 指向不存在的数据集 → `40401 数据集不存在`。
 | GET | `/api/v1/welds/{weld_id}` | 单条焊缝详情（来源/焊机/模态/核验状态/最新版本） | — 需登录 |
 | POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填） |
 | GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
@@ -161,7 +162,7 @@
 
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
-| GET | `/api/v1/analysis/candidates` | 选择数据页：已登记且核验通过的可分析数据列表 | 需登录 |
+| GET | `/api/v1/analysis/candidates` | 已登记且核验通过的可分析焊缝最小载荷。**注**：「分析·选择数据」页已改为数据集优先两级选择，第二级经 `GET /welds?dataset_id=...`（全量焊缝、未通过置灰）；本端点保留兼容 | 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/alignment-tasks` | 提交多模态对齐任务（**异步**；成功后自动生成新版本 `action=时间对齐` 并更新 `latest_version_id`） | body: `modalities[]` |
 | GET | `/api/v1/alignment-tasks/{task_id}` | 对齐任务状态/结果：时间轴、起弧/有效段/收弧事件、各模态轨道、`assets[]`（对齐后视频/轨道/JSON 的对象键，前端经 `files.getFileUrl` 播放） | 轮询（Job 结构） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形（电流/电压/气体/送丝）。响应含 `source`(`real`=读导入的真实信号 / `generated`=确定性生成) | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2` |
@@ -263,7 +264,7 @@ getDistributions(): Promise<DashboardDistributions>
 getProjects(): Promise<Project[]>
 
 // welds.ts
-listWelds(params: WeldListQuery): Promise<Page<DataRecord>>          // GET /welds
+listWelds(params: WeldListQuery): Promise<Page<DataRecord>>          // GET /welds（WeldListQuery 含 dataset_id 可选，归属数据集精确筛选）
 getWeld(weldId: string): Promise<DataRecord>                          // GET /welds/{weld_id}
 createRegistration(body: RegistrationForm): Promise<Registration>     // POST /registrations（同时生成 v1.0 原始数据版本）
 updateRegistration(id: string, body: Partial<RegistrationForm>): Promise<Registration>
@@ -276,7 +277,7 @@ runValidation(weldId: string, versionId: string): Promise<ValidationReport>
 getValidation(weldId: string, versionId: string): Promise<ValidationReport>
 
 // analysis.ts
-listCandidates(): Promise<DataRecord[]>
+listCandidates(): Promise<DataRecord[]>                             // 兼容保留；「选择数据」页已改走 listDatasets + listWelds({dataset_id})
 createAlignmentTask(weldId: string, versionId: string, modalities: string[]): Promise<{ job_id: string }>
 getAlignmentTask(taskId: string): Promise<Job<AlignmentResult>>
 getSignals(weldId: string, versionId: string, opts: SignalQuery): Promise<SignalData>
@@ -359,7 +360,7 @@ exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string
 | 数据核验 · 15 规则明细 | `welds.getValidation()` | `GET …/validation` |
 | 数据版本 · 版本链 | `welds.listVersions()` | `GET /welds/{weld_id}/versions` |
 | 数据版本 · 新建（去噪/人工修正） | `welds.createVersion()` | `POST /welds/{weld_id}/versions` |
-| 分析 · 选择数据 | `analysis.listCandidates()` | `GET /analysis/candidates` |
+| 分析 · 选择数据 | `datasets.listDatasets()` + `welds.listWelds({ dataset_id })`（数据集优先两级选择，未核验通过置灰） | `GET /datasets` + `GET /welds?dataset_id=` |
 | 对齐 · 时间轴/事件/轨道 | `analysis.createAlignmentTask()` + `useJob(getAlignmentTask)` | `POST` / `GET …/alignment-tasks`（成功自动生成时间对齐版本） |
 | 切分 · 规则/预览/样本数 | `analysis.createSplitTask()` + `useJob(getSplitTask)` | `POST` / `GET …/split-tasks` |
 | 信号分析 · 时域波形+滤波 | `analysis.getSignals()` | `GET …/signals` |

@@ -37,7 +37,7 @@ function decimate(values: number[], n = 512): number[] {
   return out;
 }
 
-/** 选择数据页：已登记且核验通过的可分析数据列表。 */
+/** 兼容保留：「选择数据」页已改走 listDatasets + listWelds({ dataset_id })（数据集优先两级选择）。 */
 export async function listCandidates(): Promise<DataRecord[]> {
   return request<DataRecord[]>('/analysis/candidates');
 }

@@ -35,7 +35,8 @@
   `_acquire/_release_registration_payload_lock`（**Task 5 P2 修复**：按 operator+表单载荷算自然幂等键；
   MySQL 用 `GET_LOCK`、SQLite/本地并发用进程内集合锁，拦截**正在提交中的**重复登记，避免顺序编号锁把双击变两条 200，同时不阻塞稍后的合法重复登记）；**Task 5 修复轮次 1**：MySQL 的登记编号锁 / payload 锁 / raw-files 锁改为**独立专用连接持有**，`RELEASE_LOCK` 后才 `close()` 归还池，避免 `commit/rollback` 后 session 改绑别的 pooled connection 导致 advisory lock 驻留、后续普通登记误报 `40900 获取登记编号锁失败`；`list_welds`（服务端筛选+
   分页：`q` LIKE weld_id/registration_no、`source`/`brand` 前缀、`status` 精确、
-  `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序）；版本链/新建版本；
+  `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序、`dataset_id` 归属精确——
+  供分析「选择数据」数据集优先两级选择的第二级范围）；版本链/新建版本；
   `run_validation` = **15 项确定性核验引擎**（规则名照抄 seed/App.tsx，结果只依赖版本
   `object_keys` 与登记工艺参数，无随机；score=max(0,100-警告*5-失败*20)；质量级联
   失败>0→异常 / 仅警告→待复核 / 否则→通过）；`attach_raw_files`（去重追加 keys +

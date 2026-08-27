@@ -428,6 +428,8 @@ export interface WeldListQuery {
   brand?: string;
   status?: string;
   tab?: string;
+  /** 归属数据集精确筛选（分析与标注「选择数据」两级选择的第二级范围）。 */
+  dataset_id?: number;
   page?: number;
   page_size?: number;
 }

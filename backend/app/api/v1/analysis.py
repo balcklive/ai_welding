@@ -141,7 +141,11 @@ def list_candidates(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """选择数据页：已登记且核验通过（quality=通过）的可分析数据列表（最小载荷）。"""
+    """已登记且核验通过（quality=通过）的可分析焊缝列表（最小载荷）。
+
+    注：分析与标注「选择数据」页已改为数据集优先两级选择，经
+    `GET /welds?dataset_id=...` 取第二级（全量焊缝、未通过置灰）；本端点保留兼容。
+    """
     records = svc.list_through_welds(session, owned_weld_ids(session, current_user))
     return ok(
         [

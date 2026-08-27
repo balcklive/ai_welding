@@ -10,7 +10,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
@@ -131,14 +131,20 @@ def list_welds(
     brand: str | None = None,
     status: str | None = None,
     tab: str | None = None,
+    dataset_id: int | None = Query(None, ge=1),
     page: int = 1,
     page_size: int = 20,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """数据列表：服务端筛选 + 分页，按焊缝 ID 去重、仅最新版本（§3.3）。"""
+    """数据列表：服务端筛选 + 分页，按焊缝 ID 去重、仅最新版本（§3.3）。
+
+    `dataset_id`：归属数据集精确筛选（分析与标注「选择数据」两级选择的第二级范围）。
+    """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
+    if dataset_id is not None and session.get(Dataset, dataset_id) is None:
+        return err(40401, "数据集不存在", status=404)
     items, total = svc.list_welds(
         session,
         q=q,
@@ -146,6 +152,7 @@ def list_welds(
         brand=brand,
         status=status,
         tab=tab,
+        dataset_id=dataset_id,
         page=page,
         page_size=page_size,
         weld_ids=owned_weld_ids(session, current_user),
