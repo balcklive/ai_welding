@@ -109,7 +109,7 @@
     **`name`/`note` 仅接受不落库**（`dataset_versions` 表 §3.15 无对应列）。
   - `list_version_items`：`dataset_items → samples → split_tasks/annotation_tasks → data_versions → data_records` 固定快照成员列表；支持 `q`
     (weld_id / weld_name / registration_no 包含匹配)、`quality` 精确、`split`
-    (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。
+    (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。**Task 2–4 前端依此作为数据集概览下的唯一成员来源**，版本切换将重发此查询，故响应字段保持 `DatasetItemRow` 形状。
     **re-review 修复**：过滤/总数/offset/limit 继续留在 SQL 侧，常规构建样本优先走关系外键和
     `DataRecord` 标量列；仅无 split/annotation 外键的历史 meta-only 样本才以 `cast(samples.meta as text)`
     的 JSON 完整 token 关联 `DataRecord`。兼容谓词移除 JSON 规定的四种无意义空白（space/tab/LF/CR），
