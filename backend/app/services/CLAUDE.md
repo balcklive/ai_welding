@@ -35,7 +35,8 @@
   `_acquire/_release_registration_payload_lock`（**Task 5 P2 修复**：按 operator+表单载荷算自然幂等键；
   MySQL 用 `GET_LOCK`、SQLite/本地并发用进程内集合锁，拦截**正在提交中的**重复登记，避免顺序编号锁把双击变两条 200，同时不阻塞稍后的合法重复登记）；**Task 5 修复轮次 1**：MySQL 的登记编号锁 / payload 锁 / raw-files 锁改为**独立专用连接持有**，`RELEASE_LOCK` 后才 `close()` 归还池，避免 `commit/rollback` 后 session 改绑别的 pooled connection 导致 advisory lock 驻留、后续普通登记误报 `40900 获取登记编号锁失败`；`list_welds`（服务端筛选+
   分页：`q` LIKE weld_id/registration_no、`source`/`brand` 前缀、`status` 精确、
-  `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序）；版本链/新建版本；
+  `tab` 映射 待核验→待复核 / 已归档→通过 / 最近·全部→仅排序、`dataset_id` 归属精确——
+  供分析「选择数据」数据集优先两级选择的第二级范围）；版本链/新建版本；
   `run_validation` = **15 项确定性核验引擎**（规则名照抄 seed/App.tsx，结果只依赖版本
   `object_keys` 与登记工艺参数，无随机；score=max(0,100-警告*5-失败*20)；质量级联
   失败>0→异常 / 仅警告→待复核 / 否则→通过）；`attach_raw_files`（去重追加 keys +
@@ -114,15 +115,17 @@
   （对齐 handler 跑在 executor daemon 线程内不能挂死）。
 - `annotation.py`：**Task 14**。标注服务（编排真、内核演示，实施边界 §3.1）：
   `simulate_annotation(session, task, job)`（handler 领域逻辑：进度逐步 → source=split_task
-  时把该切分任务样本 `annotation_task_id` 指向本任务 → `mark_succeeded(job,
-  {source,name,samples_count})`）；`resolve_annotation_task` / `resolve_split_task`
+  时把该切分任务样本 `annotation_task_id` 指向本任务；source=signal 时统计本任务已有样本数
+  （信号锚点样本在创建路由同步生成）→ `mark_succeeded(job, {source,name,samples_count})`）；`resolve_annotation_task` / `resolve_split_task`
   （**job_uid / DB id 双兼容**：先 `get_job_by_uid` 且 type 匹配才认，再按 int 查表，前端
   创建后只拿 job_id 即可直用）；`list_label_categories`（模型口径 5 类）；
   `import_samples`（files 建 `Sample` 行 / split_task 改归属）；`list_samples`（分页 +
   **批量预查 annotations 防 N+1**）；`get_sample` / `get_sample_detail`（样本须属于该任务）；
   `pretag_sample`（**确定性**模拟 2 区域，seed=`random.Random(sample_id)`，替换现有标注，
   annotator=AI预标注）；`save_labels`（**覆盖写**删旧插新，annotator=当前用户，confidence
-  缺省沿用先前同类别值）；payload 序列化 `annotation_payload` / `sample_payload`。
+  缺省沿用先前同类别值；**标注 kind 升级**：`LabelItem` 透传 `kind`(box/segment/polygon) +
+  `points`/`start_time`/`end_time` 到 `Annotation` 行）；payload 序列化 `annotation_payload` /
+  `sample_payload`（`annotation_payload` 输出 `kind/points/start_time/end_time`）。
   **confidence 语义（契约 §3.4）**：每条 `Annotation` 自带 confidence；样本级
   `_sample_confidence` = 当前标注置信度均值（无标注 → None）。写操作（import/pretag/
   save_labels）**不 commit**（路由提交）；`simulate_annotation` 内的 commit 是执行器专用

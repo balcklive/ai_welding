@@ -10,7 +10,7 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
@@ -20,6 +20,7 @@ from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import SignalIngest
 from app.models.data import User
+from app.models.datasets import Dataset
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
 from app.services.jobs import create_job
@@ -32,8 +33,9 @@ VALID_ACTIONS = {"去噪处理", "人工修正"}
 
 
 class RegistrationCreate(BaseModel):
-    """新建登记请求体（§3.3 POST /registrations）。`source` 必填，其余可空。"""
+    """新建登记请求体：登记必须归属一个已有数据集。"""
 
+    dataset_id: int
     source: str
     collected_at: datetime | None = None
     weld_name: str | None = None
@@ -47,8 +49,9 @@ class RegistrationCreate(BaseModel):
 
 
 class RegistrationUpdate(BaseModel):
-    """编辑登记请求体（§3.3 PATCH /registrations/{id}，字段均可选）。"""
+    """编辑登记信息；dataset_id 用于将数据移动到另一数据集。"""
 
+    dataset_id: int | None = None
     source: str | None = None
     collected_at: datetime | None = None
     weld_name: str | None = None
@@ -129,14 +132,20 @@ def list_welds(
     brand: str | None = None,
     status: str | None = None,
     tab: str | None = None,
+    dataset_id: int | None = Query(None, ge=1),
     page: int = 1,
     page_size: int = 20,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """数据列表：服务端筛选 + 分页，按焊缝 ID 去重、仅最新版本（§3.3）。"""
+    """数据列表：服务端筛选 + 分页，按焊缝 ID 去重、仅最新版本（§3.3）。
+
+    `dataset_id`：归属数据集精确筛选（分析与标注「选择数据」两级选择的第二级范围）。
+    """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
+    if dataset_id is not None and session.get(Dataset, dataset_id) is None:
+        return err(40401, "数据集不存在", status=404)
     items, total = svc.list_welds(
         session,
         q=q,
@@ -144,6 +153,7 @@ def list_welds(
         brand=brand,
         status=status,
         tab=tab,
+        dataset_id=dataset_id,
         page=page,
         page_size=page_size,
         weld_ids=owned_weld_ids(session, current_user),
@@ -178,6 +188,8 @@ def create_registration(
     source = (body.source or "").strip()
     if not source:
         return err(40000, "数据来源不能为空", status=400)
+    if session.get(Dataset, body.dataset_id) is None:
+        return err(40401, "所属数据集不存在", status=404)
     payload = body.model_dump()
     for attempt in range(3):
         request_lock = None
@@ -251,7 +263,10 @@ def update_registration(
     if record is None:
         return err(40401, "登记信息不存在", status=404)
     forbid_unless_record_owned(session, current_user, record)
-    svc.update_registration(session, record, body.model_dump(exclude_unset=True))
+    changes = body.model_dump(exclude_unset=True)
+    if "dataset_id" in changes and session.get(Dataset, changes["dataset_id"]) is None:
+        return err(40401, "所属数据集不存在", status=404)
+    svc.update_registration(session, record, changes)
     write_audit(
         session,
         current_user.id,

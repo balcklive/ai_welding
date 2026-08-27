@@ -341,8 +341,9 @@ def seed_admin(session: Session) -> None:
 def seed_demo(session: Session) -> None:
     """演示数据（数值对齐前端 mock）。各子步骤幂等。"""
     _seed_labels(session)
-    _seed_welds(session)
+    # Registrations require a dataset; seed datasets before demo weld records.
     _seed_datasets(session)
+    _seed_welds(session)
     _seed_models(session)
 
 
@@ -375,6 +376,9 @@ def _seed_welds(session: Session) -> None:
         if record is not None:
             continue
 
+        default_dataset = session.exec(select(Dataset).order_by(Dataset.id)).first()
+        if default_dataset is None:
+            raise RuntimeError("无法创建演示登记：默认数据集不存在")
         record = DataRecord(
             weld_id=cfg["weld_id"],
             weld_name=cfg["weld_name"],
@@ -388,6 +392,7 @@ def _seed_welds(session: Session) -> None:
             current_voltage=cfg["current_voltage"],
             sample_rate=cfg["sample_rate"],
             product=cfg["product"],
+            dataset_id=default_dataset.id,
             modalities=cfg["modalities"],
             quality=cfg["quality"],
             operator=cfg["operator"],

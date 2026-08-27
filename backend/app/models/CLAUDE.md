@@ -5,9 +5,9 @@ SQLModel 表类（全部 24 张，`table=True`）。当前进度：Task 2（全�
 ## 文件与内容
 
 - `__init__.py`：re-export 全部 23 个表类。**Alembic env.py `from app.models import *` 依赖它**收集全部表到 `SQLModel.metadata`；新增表必须同步加进 `__all__`。
-- `data.py`：`User`(§3.1)、`DataRecord`(§3.2)、`DataVersion`(§3.3，`request_key`：加工版本并发幂等)、`ValidationReport`(§3.4)、`ValidationRuleResult`(§3.5)、`AuditLog`(§3.23，**Task 5 P2**：`resource_id` 现按迁移 `0005` 扩到 255，兼容长 object key）。
+- `data.py`：`User`(§3.1)、`DataRecord`(§3.2)、`DataVersion`(§3.3，`request_key`：加工版本并发幂等)、`ValidationReport`(§3.4)、`ValidationRuleResult`(§3.5)、`AuditLog`(§3.23，**Task 5 P2**：`resource_id` 现按迁移 `0005` 扩到 255，兼容长 object key）。`DataRecord.dataset_id` 由迁移 `0006` 增加，登记必须归属数据集；历史兼容字段暂允许空值，业务/API 不允许新登记为空。
 - `jobs.py`：`Job`(§3.6) 统一异步任务生命周期。
-- `analysis.py`：`AlignmentTask`(§3.7，`request_key` 保留逻辑幂等历史，`active_request_key` 仅给 pending/running/succeeded 做唯一占位，failed 可释放后重试)、`SplitTask`(§3.8，同上)、`Sample`(§3.9)、`AnnotationTask`(§3.10)、`Annotation`(§3.11)、`LabelCategory`(§3.12)、`FeatureExtraction`(§3.13)、`SignalIngest`(§3.24，**Task 18**：CSV 真实信号导入元数据，`(version_id, source_object_key)` 复合唯一幂等)。
+- `analysis.py`：`AlignmentTask`(§3.7，`request_key` 保留逻辑幂等历史，`active_request_key` 仅给 pending/running/succeeded 做唯一占位，failed 可释放后重试)、`SplitTask`(§3.8，同上)、`Sample`(§3.9)、`AnnotationTask`(§3.10)、`Annotation`(§3.11，**标注 kind 升级**：`kind`(box/segment/polygon) + `points`/`start_time`/`end_time` 四列，见迁移 `0007`)、`LabelCategory`(§3.12)、`FeatureExtraction`(§3.13)、`SignalIngest`(§3.24，**Task 18**：CSV 真实信号导入元数据，`(version_id, source_object_key)` 复合唯一幂等)。
 - `datasets.py`：`Dataset`(§3.14)、`DatasetVersion`(§3.15)、`DatasetItem`(§3.16)、`DatasetBuildTask`(§3.22)。
 - `models.py`：`Model`(§3.17)、`ModelVersion`(§3.18)、`TrainingTask`(§3.19)、`TestTask`(§3.20)、`InferenceTask`(§3.21)。
 

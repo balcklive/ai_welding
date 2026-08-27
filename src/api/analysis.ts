@@ -37,7 +37,7 @@ function decimate(values: number[], n = 512): number[] {
   return out;
 }
 
-/** 选择数据页：已登记且核验通过的可分析数据列表。 */
+/** 兼容保留：「选择数据」页已改走 listDatasets + listWelds({ dataset_id })（数据集优先两级选择）。 */
 export async function listCandidates(): Promise<DataRecord[]> {
   return request<DataRecord[]>('/analysis/candidates');
 }
@@ -137,10 +137,11 @@ export async function listLabelCategories(): Promise<LabelCategory[]> {
   return request<LabelCategory[]>('/label-categories');
 }
 
-/** 创建标注任务（异步：从切分样本/手动选样生成）。 */
+/** 创建标注任务（异步：切分样本 / 手动选样 / 时序信号锚点）。signal 来源需带 version_id。 */
 export async function createAnnotationTask(body: {
-  source: 'split_task' | 'manual';
+  source: 'split_task' | 'manual' | 'signal';
   split_task_id?: string;
+  version_id?: number;
   name?: string;
 }): Promise<{ job_id: string }> {
   return request<{ job_id: string }>('/annotation-tasks', {

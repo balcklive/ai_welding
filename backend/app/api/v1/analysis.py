@@ -51,6 +51,7 @@ from app.models.analysis import (
     AnnotationTask,
     FeatureExtraction,
     LabelCategory,
+    Sample,
     SplitTask,
 )
 from app.models.data import User
@@ -73,7 +74,8 @@ _NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
 _FORMATS = {"NPY", "CSV", "JSON", "PT"}
 #: 切分任务格式 / 标注来源 / 导入来源白名单（契约 §3.4）。
 _SPLIT_FORMATS = {"目标检测", "图像分类", "语义分割", "时序分类"}
-_ANNOTATION_SOURCES = {"split_task", "manual"}
+#: 标注来源：split_task=切分样本 / manual=手动 / signal=时序信号（信号锚点样本，供波形区间标注）。
+_ANNOTATION_SOURCES = {"split_task", "manual", "signal"}
 _IMPORT_SOURCES = {"files", "split_task"}
 
 
@@ -104,10 +106,11 @@ class SplitTaskCreate(BaseModel):
 
 
 class AnnotationTaskCreate(BaseModel):
-    """POST /annotation-tasks 请求体（契约 §3.4）。`source` 必填；从切分样本需给 `split_task_id`。"""
+    """POST /annotation-tasks 请求体（契约 §3.4）。`source` 必填；从切分样本需给 `split_task_id`；`signal` 需给 `version_id`。"""
 
     source: str
     split_task_id: str | None = None
+    version_id: int | None = None
     name: str | None = None
 
 
@@ -120,10 +123,19 @@ class AnnotationImportRequest(BaseModel):
 
 
 class LabelItem(BaseModel):
-    """单条标注：类别 + 框坐标 + 可选置信度（缺省沿用先前 AI 预标注值）。"""
+    """单条标注：类别 + 几何（按 `kind` 分支）+ 可选置信度（缺省沿用先前 AI 预标注值）。
+
+    - kind=box（默认）：`box` = [x, y, w, h] 目标检测框；
+    - kind=segment：`start_time`/`end_time` = 时序区间起点/终点（秒）；
+    - kind=polygon：`points` = 多边形顶点 [[x,y],…]（≥3）。
+    """
 
     category: str
-    box: list
+    kind: str = "box"
+    box: list | None = None
+    points: list | None = None
+    start_time: float | None = None
+    end_time: float | None = None
     confidence: float | None = None
 
 
@@ -141,7 +153,11 @@ def list_candidates(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """选择数据页：已登记且核验通过（quality=通过）的可分析数据列表（最小载荷）。"""
+    """已登记且核验通过（quality=通过）的可分析焊缝列表（最小载荷）。
+
+    注：分析与标注「选择数据」页已改为数据集优先两级选择，经
+    `GET /welds?dataset_id=...` 取第二级（全量焊缝、未通过置灰）；本端点保留兼容。
+    """
     records = svc.list_through_welds(session, owned_weld_ids(session, current_user))
     return ok(
         [
@@ -602,7 +618,8 @@ def create_annotation_task(
     """创建标注任务（**异步**，契约 §3.4）：建 pending Job + `annotation_tasks` 行。
 
     同事务 commit，返回 `{job_id}`。成功后（后台执行器）若来源为 split_task，
-    把该切分任务的样本 `annotation_task_id` 指向本任务。
+    把该切分任务的样本 `annotation_task_id` 指向本任务；`signal` 来源在创建时同步
+    生成 1 个信号锚点样本（`meta.mode='signal'`，波形区间标注的挂载点）。
     """
     if body.source not in _ANNOTATION_SOURCES:
         return err(
@@ -616,6 +633,18 @@ def create_annotation_task(
         if split is None:
             return err(40401, "切分任务不存在", status=404)
         split_id = split.id
+    signal_anchor: dict | None = None
+    if body.source == "signal":
+        if body.version_id is None:
+            return err(40000, "signal 来源需提供 version_id", status=400)
+        version = session.get(DataVersion, body.version_id)
+        if version is None:
+            return err(40402, "版本不存在", status=404)
+        record = session.get(DataRecord, version.record_id)
+        signal_anchor = {
+            "weld_id": record.weld_id if record is not None else None,
+            "version_id": body.version_id,
+        }
 
     job = create_job(session, type="annotation")
     task = AnnotationTask(
@@ -626,13 +655,26 @@ def create_annotation_task(
         created_at=datetime.now(timezone.utc),
     )
     session.add(task)
+    if signal_anchor is not None:
+        session.flush()  # 分配 task.id
+        session.add(
+            Sample(
+                annotation_task_id=task.id,
+                meta={"mode": "signal", "source": "signal-anchor", **signal_anchor},
+            )
+        )
     write_audit(
         session,
         current_user.id,
         "create",
         "annotation_task",
         job.job_uid,
-        {"source": body.source, "split_task_id": body.split_task_id, "name": body.name},
+        {
+            "source": body.source,
+            "split_task_id": body.split_task_id,
+            "version_id": body.version_id,
+            "name": body.name,
+        },
     )
     session.commit()
     return ok({"job_id": job.job_uid})
@@ -772,13 +814,41 @@ def save_annotation_labels(
     for label in body.labels:
         if label.category not in cats:
             return err(40000, f"未知标签类别: {label.category}", status=400)
-        box = label.box
-        if not (
-            isinstance(box, list)
-            and len(box) == 4
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in box)
-        ):
-            return err(40000, "box 需为 [x, y, w, h] 数值数组", status=400)
+        # 按 kind 分支校验几何字段（box/segment/polygon），未知 kind → 400。
+        kind = label.kind
+        if kind == "box":
+            box = label.box
+            if not (
+                isinstance(box, list)
+                and len(box) == 4
+                and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in box)
+            ):
+                return err(40000, "box 需为 [x, y, w, h] 数值数组", status=400)
+        elif kind == "segment":
+            start, end = label.start_time, label.end_time
+            if (
+                start is None
+                or end is None
+                or isinstance(start, bool)
+                or isinstance(end, bool)
+                or not (0 <= start < end)
+            ):
+                return err(40000, "segment 需 start_time/end_time 且 0 <= start < end（秒）", status=400)
+        elif kind == "polygon":
+            points = label.points
+            if not (
+                isinstance(points, list)
+                and len(points) >= 3
+                and all(
+                    isinstance(p, list)
+                    and len(p) == 2
+                    and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)
+                    for p in points
+                )
+            ):
+                return err(40000, "polygon 需 points 至少 3 个 [x, y] 顶点", status=400)
+        else:
+            return err(40000, f"未知标注类型 kind: {kind}", status=400)
         # confidence 列是 Numeric(4,3)，越界（如 >=10）会触发 MySQL DataError → 500；
         # 给定时必须在 [0,1]，否则 400（不落库）。
         conf = label.confidence

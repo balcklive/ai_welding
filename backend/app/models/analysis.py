@@ -6,7 +6,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Column, DateTime, Numeric, UniqueConstraint
+from sqlalchemy import JSON, Column, DateTime, Double, Numeric, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -76,14 +76,18 @@ class AnnotationTask(SQLModel, table=True):
 
 
 class Annotation(SQLModel, table=True):
-    """§3.11 annotations 标注结果"""
+    """§3.11 annotations 标注结果（kind 判别：box 目标检测 bbox / segment 时序区间 / polygon 多边形区域）"""
 
     __tablename__ = "annotations"
 
     id: int | None = Field(default=None, primary_key=True)
     sample_id: int = Field(foreign_key="samples.id", index=True)
     category: str = Field(max_length=32)
+    kind: str = Field(max_length=16, default="box")
     box: list | None = Field(default=None, sa_column=Column(JSON))
+    points: list | None = Field(default=None, sa_column=Column(JSON))
+    start_time: float | None = Field(default=None, sa_column=Column(Double))
+    end_time: float | None = Field(default=None, sa_column=Column(Double))
     confidence: Decimal | None = Field(
         default=None, sa_column=Column(Numeric(4, 3))
     )

@@ -13,6 +13,10 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - `versions/0004_retry_failed_request_keys.py`：为 `alignment_tasks` / `split_tasks` 新增 `active_request_key`；在线升级时把 pending/running/succeeded 的活动占位从 `request_key` 迁到 `active_request_key`，并改唯一约束到该列，允许 failed 任务保留 `request_key` 历史后重试。
 - `versions/0005_audit_resource_id_255.py`：把 `audit_logs.resource_id` 从 64 扩到 255，兼容长文件名/长 object key 的审计写入；**在线验证必须走真实 MySQL `0002 -> 0003 -> head` 路径**，不能只靠 SQLite `create_all`。
 
+- `versions/0006_registration_dataset.py`：为 `data_records` 增加 `dataset_id` 外键并回填历史数据。
+- `versions/0007_annotation_kind.py`：**标注 kind 升级**——`annotations` 表加 `kind`(VARCHAR(16) NOT NULL server_default 'box')、`points`(JSON)、`start_time`(Double)、`end_time`(Double)，时序区间/视频多边形标注复用单表，兼容老 box 数据。
+- `versions/0008_registration_dataset_not_null.py`：将登记的数据集归属约束收紧为非空，数据库层禁止孤立登记。
+
 ## 常用命令（在 `backend/` 下执行）
 
 - 生成迁移：`uv run alembic revision --autogenerate -m "..."`（需要连上远程 MySQL）

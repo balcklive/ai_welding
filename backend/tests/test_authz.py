@@ -118,6 +118,8 @@ def test_creator_can_access_own_registration_but_not_admin_resources(
     created = client.post(
         "/api/v1/registrations",
         json={
+            # 登记必须归属数据集；seed 第一个数据集 id=1。
+            "dataset_id": 1,
             "source": "lab",
             "weld_name": "worker-own-record",
             "machine": "demo",
@@ -180,6 +182,8 @@ def test_owner_keeps_access_after_rename(
     created = client.post(
         "/api/v1/registrations",
         json={
+            # 登记必须归属数据集；seed 第一个数据集 id=1。
+            "dataset_id": 1,
             "source": "lab",
             "weld_name": "rename-safe-record",
             "machine": "demo",

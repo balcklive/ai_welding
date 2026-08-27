@@ -404,6 +404,8 @@ def test_non_admin_data_list_export_only_includes_owned_records_when_ref_ids_emp
     created = client.post(
         "/api/v1/registrations",
         json={
+            # 登记必须归属数据集；seed 第一个数据集 id=1。
+            "dataset_id": 1,
             "source": "lab",
             "weld_name": "worker-owned-record",
             "machine": "demo",

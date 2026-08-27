@@ -75,6 +75,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "thickness",
     "current_voltage",
     "sample_rate",
+    "dataset_id",
 )
 
 _REGISTRATION_PAYLOAD_LOCK = Lock()
@@ -317,6 +318,7 @@ def create_registration(
         current_voltage=data.get("current_voltage"),
         sample_rate=data.get("sample_rate"),
         product=data.get("product"),
+        dataset_id=int(data["dataset_id"]),
         modalities=[],
         quality="待复核",
         operator=operator,
@@ -518,6 +520,7 @@ def list_welds(
     brand: str | None = None,
     status: str | None = None,
     tab: str | None = None,
+    dataset_id: int | None = None,
     page: int = 1,
     page_size: int = 20,
     weld_ids: list[str] | None = None,
@@ -530,8 +533,9 @@ def list_welds(
     - brand: 焊机品牌前缀（如 Fronius）
     - status: quality 精确（通过/待复核/异常）
     - tab: 待核验→待复核 / 已归档→通过 / 最近·全部最新→仅排序
+    - dataset_id: 归属数据集精确（数据集优先两级选择的第二级范围）
     """
-    conditions = _build_filters(q, source, brand, status, tab, weld_ids)
+    conditions = _build_filters(q, source, brand, status, tab, dataset_id, weld_ids)
     total = int(
         session.exec(select(func.count(DataRecord.id)).where(*conditions)).one()
     )
@@ -675,7 +679,7 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _build_filters(q, source, brand, status, tab, weld_ids=None) -> list:
+def _build_filters(q, source, brand, status, tab, dataset_id=None, weld_ids=None) -> list:
     conditions = []
     if q:
         like = f"%{q}%"
@@ -688,6 +692,8 @@ def _build_filters(q, source, brand, status, tab, weld_ids=None) -> list:
         conditions.append(DataRecord.machine.like(f"{brand}%"))
     if status:
         conditions.append(DataRecord.quality == status)
+    if dataset_id is not None:
+        conditions.append(DataRecord.dataset_id == dataset_id)
     if weld_ids is not None:
         if weld_ids:
             conditions.append(DataRecord.weld_id.in_(weld_ids))
@@ -867,6 +873,7 @@ def _record_dict(record: DataRecord, latest: DataVersion | None) -> dict:
         "current_voltage": record.current_voltage,
         "sample_rate": record.sample_rate,
         "product": record.product,
+        "dataset_id": record.dataset_id,
         "modalities": record.modalities or [],
         "quality": record.quality,
         "operator": record.operator,

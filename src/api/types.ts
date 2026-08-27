@@ -71,6 +71,7 @@ export interface DataRecord {
   current_voltage: string | null;
   sample_rate: string | null;
   product: string | null;
+  dataset_id: number;
   modalities: string[];
   quality: string;
   operator: string | null;
@@ -115,7 +116,12 @@ export interface Annotation {
   id: number;
   sample_id: number;
   category: string;
+  /** 几何类型：box（目标检测 bbox）/ segment（时序区间）/ polygon（多边形区域）。 */
+  kind: string;
   box: number[];
+  points: number[][];
+  start_time: number | null;
+  end_time: number | null;
   confidence: number | null;
   annotator: string | null;
   created_at: string | null;
@@ -451,6 +457,8 @@ export interface WeldListQuery {
   brand?: string;
   status?: string;
   tab?: string;
+  /** 归属数据集精确筛选（分析与标注「选择数据」两级选择的第二级范围）。 */
+  dataset_id?: number;
   page?: number;
   page_size?: number;
 }
@@ -505,6 +513,7 @@ export interface ExportRequest {
 }
 
 export interface RegistrationForm {
+  dataset_id: number;
   source: string;
   collected_at?: string | null;
   weld_name?: string | null;
@@ -518,8 +527,9 @@ export interface RegistrationForm {
 }
 
 export interface AnnotationTaskCreate {
-  source: 'split_task' | 'manual';
+  source: 'split_task' | 'manual' | 'signal';
   split_task_id?: string;
+  version_id?: number;
   name?: string;
 }
 
@@ -529,10 +539,14 @@ export interface ImportSamplesBody {
   split_task_id?: string;
 }
 
-/** 单条标注标签输入（box 为 `[x, y, w, h]`）。 */
+/** 单条标注标签输入。按 `kind` 分支：box 为 `[x, y, w, h]`；segment 用 start_time/end_time；polygon 用 points。 */
 export interface LabelItem {
   category: string;
-  box: number[];
+  kind?: string;
+  box?: number[];
+  points?: number[][];
+  start_time?: number | null;
+  end_time?: number | null;
   confidence?: number | null;
 }
 

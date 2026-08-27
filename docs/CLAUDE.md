@@ -18,6 +18,7 @@
 - Task 2–4 的页面层级固定为 数据集概览 → 当前版本成员 → 成员详情；数据中心不再提供独立全局数据列表入口，成员详情仍通过 `selectedDataId` 进入既有核验/版本/分析流。
 - 契约文档当前为"已实现"基准（Task 1~24 已完成，本地跑通）；改动任何接口/表/对象键，仍须按本文件规则同步三份契约 + 两端代码。
 - **已回写差异（Task 25）**：① `POST /registrations/{id}/raw-files` 请求体新增可选 `storage_bytes`（缺省 0）；② `POST /files/presign-upload` 请求体新增可选 `filename`（缺省 `"file"`）；③ `GET /welds` 筛选映射说明（`tab=已归档`→`quality=='通过'`、`tab=最近`=created_at desc、`brand`→`machine` 前缀）；④ `DataVersion` 前端以 `record_id` 关联、`Project` 无 `id` 字段；⑤ `exportReport` 返回 `{urls:[{ref_id,url}]}`、`login` 返回含 `token_type`、`createDatasetVersion` 的 `name` 可选；⑥ `POST /datasets/{id}/versions` 的 `name`/`note` 与 `POST /datasets` 的 `source` 接受但不落库（表无列）；⑦ `数据库设计.md` §4 记录 `training_tasks.base_model_id` 无索引（与"所有任务表 FK 列均建索引"矛盾的既有设计）；⑧ `开发规范.md` §1.1 补"分页自写 `paginate()` helper"刻意不复用项。
+- **已回写差异（标注 kind 升级，2026-08-27）**：`annotations` 表新增 `kind`（box/segment/polygon）、`points`、`start_time`、`end_time` 四列（见 `数据库设计.md` §3.11 与计划 `docs/superpowers/plans/2026-08-27-annotation-kinds.md`）；`POST …/labels` 的 `LabelItem` 支持按 `kind` 分支校验（box 四元组 / segment 时间区间 / polygon 顶点），现有 bbox 标注与老数据兼容。
 - 三份契约强相关：改接口需同步 `API接口清单.md` + `数据库设计.md`（表/字段）+ `OSS存储设计.md`（对象键）+ 两端代码。
 - `POST /files/presign-upload` 为 OSS 设计补充的扩展端点（大文件直传），已回写进 `API接口清单.md`。
 - 登记原始文件挂载（`POST /registrations/{id}/raw-files` → `data_versions.object_keys`、`data_records.storage_bytes`）与标注任务（`POST /annotation-tasks` + `annotation_tasks` 表，`jobs.type` 含 annotation）是为覆盖前端功能补齐的修订，改动时勿删。

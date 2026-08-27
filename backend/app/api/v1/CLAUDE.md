@@ -57,7 +57,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     sample_count 以 split_tasks 行为准合并）。
   - **Task 14 标注**（`app.services.annotation` 领域逻辑）：
     `GET /label-categories`（模型口径 5 类）；`POST /annotation-tasks`（body
-    `{source(split_task|manual), split_task_id?, name?}`，异步 Job type=annotation +
+    `{source(split_task|manual|signal), split_task_id?, version_id?, name?}`（`signal` 需 `version_id`，创建时同步生成 1 个 `meta.mode='signal'` 信号锚点样本供波形区间标注），异步 Job type=annotation +
     `annotation_tasks` 行 → `{job_id}`，成功后 handler 把来源切分样本归属到本任务）；
     `GET /annotation-tasks/{task_id}`（Job 信封）；`POST /annotation-tasks/{task_id}/import`
     （`{source(files|split_task), object_keys[]?, split_task_id?}` → `{imported}`）；
@@ -66,9 +66,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     标注 + confidence = 当前标注置信度均值）；`POST …/samples/{sample_id}/ai-pretag`（同步
     确定性 2 区域，seed=sample_id，**替换**现有标注，annotator=AI预标注）；
     `POST …/samples/{sample_id}/labels`（body `{labels[]}`，**覆盖写**，annotator=当前用户，
-    confidence 缺省沿用先前同类别值，类别须在 label_categories，box 须 [x,y,w,h] 数值，
-    **confidence 给定时须在 [0,1]**（越界如 >=10 撞 Numeric(4,3) 列 → 400 而非 500），写
-    审计 `update`）。
+    confidence 缺省沿用先前同类别值，类别须在 label_categories，**按 `kind` 分支校验几何**：
+    `box`→[x,y,w,h] 四元组 / `segment`→`start_time`/`end_time` 且 0<=start<end / `polygon`→
+    `points` ≥3 个 [x,y] 顶点 / 未知 kind→400，**confidence 给定时须在 [0,1]**（越界如 >=10
+    撞 Numeric(4,3) 列 → 400 而非 500），写审计 `update`）。
   - **坑**：标注任务相关 `{task_id}`（samples/import/labels/ai-pretag 路径）兼容 job_uid 与
     annotation_tasks 表 DB id（`annotation.resolve_annotation_task` 双解析）；`split_task_id`
     同理双解析。业务错误码 40401（焊缝/任务/样本不存在）、40402（版本不存在）、40000（参数）。

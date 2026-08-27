@@ -723,6 +723,128 @@ def test_save_labels_validation(
     assert resp.status_code == 200, resp.text[:300]
 
 
+# ---------- 标注 kind 升级：segment（时序区间）/ polygon（多边形） ----------
+
+
+def test_save_labels_segment_and_polygon(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+) -> None:
+    annot_job_id = _create_annotation_task("manual")
+    client.post(
+        f"/api/v1/annotation-tasks/{annot_job_id}/import",
+        json={"source": "files", "object_keys": ["processed/WLD-20260815-0248/split/1.jpg"]},
+    )
+    sample_id = client.get(f"/api/v1/annotation-tasks/{annot_job_id}/samples").json()["data"]["items"][0]["id"]
+    url = f"/api/v1/annotation-tasks/{annot_job_id}/samples/{sample_id}/labels"
+
+    # segment：时序区间保存 + 回读
+    resp = client.post(
+        url,
+        json={
+            "labels": [
+                {"category": "焊瘤", "kind": "segment", "start_time": 1.2, "end_time": 2.8, "confidence": 0.9},
+                {"category": "气孔", "kind": "segment", "start_time": 3.5, "end_time": 4.1},
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    saved = resp.json()["data"]
+    assert len(saved) == 2
+    seg = {a["category"]: a for a in saved}["焊瘤"]
+    assert seg["kind"] == "segment"
+    assert seg["start_time"] == 1.2 and seg["end_time"] == 2.8
+    assert seg["box"] == [] and seg["points"] == []
+
+    detail = client.get(f"/api/v1/annotation-tasks/{annot_job_id}/samples/{sample_id}").json()["data"]
+    by_cat = {a["category"]: a for a in detail["annotations"]}
+    assert by_cat["焊瘤"]["kind"] == "segment"
+    assert by_cat["焊瘤"]["start_time"] == 1.2
+    assert by_cat["焊瘤"]["end_time"] == 2.8
+    assert by_cat["气孔"]["start_time"] == 3.5 and by_cat["气孔"]["end_time"] == 4.1
+
+    # polygon：多边形顶点保存（覆盖写，老 segment 被替换）
+    resp = client.post(
+        url,
+        json={
+            "labels": [
+                {"category": "焊瘤", "kind": "polygon", "points": [[10, 10], [50, 10], [30, 60], [15, 45]]},
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    saved = resp.json()["data"]
+    assert len(saved) == 1
+    assert saved[0]["kind"] == "polygon"
+    assert saved[0]["points"] == [[10, 10], [50, 10], [30, 60], [15, 45]]
+
+    detail = client.get(f"/api/v1/annotation-tasks/{annot_job_id}/samples/{sample_id}").json()["data"]
+    assert len(detail["annotations"]) == 1
+    assert detail["annotations"][0]["kind"] == "polygon"
+
+
+def test_save_labels_kind_validation(
+    override_get_session, override_get_current_user
+) -> None:
+    annot_job_id = _create_annotation_task("manual")
+    client.post(
+        f"/api/v1/annotation-tasks/{annot_job_id}/import",
+        json={"source": "files", "object_keys": ["processed/WLD-20260815-0248/split/1.jpg"]},
+    )
+    sample_id = client.get(f"/api/v1/annotation-tasks/{annot_job_id}/samples").json()["data"]["items"][0]["id"]
+    url = f"/api/v1/annotation-tasks/{annot_job_id}/samples/{sample_id}/labels"
+
+    # 未知 kind → 400
+    resp = client.post(url, json={"labels": [{"category": "焊瘤", "kind": "ellipse", "box": [1, 2, 3, 4]}]})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+    # segment 缺时间 / start>=end / 负起点 → 400
+    resp = client.post(url, json={"labels": [{"category": "焊瘤", "kind": "segment"}]})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    resp = client.post(url, json={"labels": [{"category": "焊瘤", "kind": "segment", "start_time": 2.0, "end_time": 1.0}]})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    resp = client.post(url, json={"labels": [{"category": "焊瘤", "kind": "segment", "start_time": -1, "end_time": 2}]})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+    # polygon 顶点不足 / 坐标非法 → 400
+    resp = client.post(url, json={"labels": [{"category": "焊瘤", "kind": "polygon", "points": [[10, 10], [20, 20]]}]})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    resp = client.post(url, json={"labels": [{"category": "焊瘤", "kind": "polygon", "points": [[10, 10], [20, "x"], [30, 30]]}]})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+def test_annotation_signal_source_creates_anchor_sample(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    resp = client.post("/api/v1/annotation-tasks", json={"source": "signal", "version_id": vid})
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+
+    run_job(job_id)
+    done = client.get(f"/api/v1/annotation-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    assert done["result"]["source"] == "signal"
+    assert done["result"]["samples_count"] == 1
+
+    samples = client.get(f"/api/v1/annotation-tasks/{job_id}/samples").json()["data"]
+    assert samples["total"] == 1
+    anchor = samples["items"][0]
+    assert anchor["meta"]["mode"] == "signal"
+    assert anchor["meta"]["version_id"] == vid
+    assert anchor["meta"]["weld_id"] == WELD_0248
+
+    # 非法：缺 version_id / 版本不存在
+    resp = client.post("/api/v1/annotation-tasks", json={"source": "signal"})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    resp = client.post("/api/v1/annotation-tasks", json={"source": "signal", "version_id": 999999})
+    assert resp.status_code == 404 and resp.json()["code"] == 40402
+
+
 # ---------- 样本分页 ----------
 
 
