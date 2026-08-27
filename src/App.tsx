@@ -5,16 +5,12 @@ import {
   MoreHorizontal, Play, Plus, Search, Settings2, SlidersHorizontal, Sparkles,
   Tag, Terminal, TrainFront, Upload, WandSparkles, Waves, Zap,
   ClipboardCheck, FileText, GitBranch, ScanLine, Download, CheckCircle2,
-  AlertTriangle, Eye, RefreshCw, ChevronLeft, ChevronRight, Cpu,
+  AlertTriangle, RefreshCw, ChevronLeft, Cpu,
   Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
 } from 'lucide-react';
 import { getToken } from './api/client';
-import {
-  getAttributes,
-  getDistributions,
-  getProjects,
-  getStats,
-} from './api/dashboard';
+import { getDashboardData } from './api/dashboard';
+import type { DashboardData } from './api/dashboard';
 import {
   attachRawFiles,
   createRegistration,
@@ -67,9 +63,6 @@ import type {
   AlignmentResult,
   AnalysisResult,
   Annotation as AnnotationLabel,
-  DashboardAttributes,
-  DashboardDistributions,
-  DashboardStats,
   DataRecord,
   Dataset,
   DatasetItemRow,
@@ -102,7 +95,6 @@ import type {
   WaveletData,
 } from './api/types';
 import Login from './pages/Login';
-const overviewImage = 'https://images.pexels.com/photos/14804699/pexels-photo-14804699.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const labelImage = 'https://images.pexels.com/photos/13296053/pexels-photo-13296053.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const modelImage = 'https://images.pexels.com/photos/11951215/pexels-photo-11951215.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
 const detailImage = 'https://images.pexels.com/photos/36522029/pexels-photo-36522029.jpeg?auto=compress&cs=tinysrgb&h=650&w=940';
@@ -140,12 +132,6 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
 ];
 
 const routesRequiringData: Route[] = ['data-center/validation', 'data-center/versions', 'analysis/alignment', 'analysis/analysis', 'analysis/split', 'analysis/annotation', 'analysis/features'];
-const mockProjects: ProjectCard[] = [
-  { name: '焊接缺陷检测 · 主数据集', count: '1,209', status: '已完成', tone: 'green', progress: '100%' },
-  { name: '表面质量巡检数据', count: '842', status: '标注中', tone: 'blue', progress: '68%' },
-  { name: '红外热成像样本', count: '367', status: '待处理', tone: 'orange', progress: '24%' },
-];
-
 function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
   const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
@@ -243,61 +229,8 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
 }
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-intro"><div><div className="eyebrow"><span />{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>; }
-const mockManufacturers = [
-  { name: '中车四方', value: 28, tone: '#2c9caf' },
-  { name: '中船重工', value: 22, tone: '#5fb8a6' },
-  { name: '中集集团', value: 16, tone: '#f0a34a' },
-  { name: '三一重工', value: 12, tone: '#e88d6c' },
-  { name: '徐工集团', value: 9, tone: '#7ba7c4' },
-  { name: '其他厂商', value: 13, tone: '#b0c4b8' },
-];
-const mockTransitionTypes = [
-  { name: '短路过渡', value: 32, tone: '#2c9caf' },
-  { name: '射流过渡', value: 26, tone: '#5fb8a6' },
-  { name: '混合过渡', value: 22, tone: '#f0a34a' },
-  { name: 'CMT', value: 14, tone: '#e88d6c' },
-  { name: '脉冲过渡', value: 6, tone: '#7ba7c4' },
-];
-const mockDefectTypes = [
-  { name: '气孔', count: 1086, tone: '#2c9caf' },
-  { name: '焊瘤', count: 842, tone: '#5fb8a6' },
-  { name: '未焊透', count: 624, tone: '#f0a34a' },
-  { name: '焊穿', count: 467, tone: '#e88d6c' },
-  { name: '咬边', count: 312, tone: '#7ba7c4' },
-  { name: '夹渣', count: 293, tone: '#b0c4b8' },
-];
-const mockWeldingTypes = [
-  { name: 'MAG焊', value: 30, tone: '#2c9caf' },
-  { name: 'MIG焊', value: 24, tone: '#5fb8a6' },
-  { name: 'TIG焊', value: 18, tone: '#f0a34a' },
-  { name: '埋弧焊', value: 14, tone: '#e88d6c' },
-  { name: '等离子焊', value: 9, tone: '#7ba7c4' },
-  { name: '激光焊', value: 5, tone: '#b0c4b8' },
-];
-const mockWordCloud = [
-  { name: '中车四方', size: 34 },
-  { name: '中船重工', size: 29 },
-  { name: '中集集团', size: 24 },
-  { name: '三一重工', size: 20 },
-  { name: '徐工集团', size: 17 },
-  { name: '宝武钢铁', size: 15 },
-  { name: '振华重工', size: 13 },
-  { name: '大连船舶', size: 12 },
-  { name: '沪东中华', size: 11 },
-  { name: '江南造船', size: 10 },
-  { name: '中冶集团', size: 9 },
-  { name: '长城汽车', size: 9 },
-  { name: '比亚迪', size: 8 },
-  { name: '格力电器', size: 8 },
-  { name: '中核集团', size: 7 },
-  { name: '东方电气', size: 7 },
-  { name: '哈电集团', size: 6 },
-  { name: '上海电气', size: 6 },
-];
-const mockWeldingMachines = ['Fronius CMT', 'Kemppi Minarc', 'OTC FD-V8', 'Panasonic YD-500', 'Lincoln Power Wave', 'ESAB Aristo', '唐山松下', '奥太 NBC-350'];
-
 // ── 总览/数据列表 API 接线辅助（Task 21） ─────────────────────────────
-/** 分布/缺陷统一色调板（复用 mock 常量 tone，API 数据按序取色）。 */
+/** 分布/缺陷统一色调板（API 不输出颜色，按数据顺序取色）。 */
 const donutPalette = ['#2c9caf', '#5fb8a6', '#f0a34a', '#e88d6c', '#7ba7c4', '#b0c4b8'];
 /**
  * 把后端返回的原始记录数归一化为百分比（和恒为 100，DonutChart 中心/图例带 %）。
@@ -336,23 +269,6 @@ function parseFreq(tier: string): number {
   return m ? parseFloat(m[0]) : 0;
 }
 
-/** 总览统计卡：getStats 的 mock 初始值（对齐原硬编码展示）。 */
-const mockStats: DashboardStats = {
-  data_total: 12847,
-  manufacturer_total: 18,
-  max_storage_bytes: 2.4 * 1024 * 1024 * 1024,
-  annotated_samples: 10038,
-  annotation_completion: 78.1,
-};
-
-/** 总览属性面板：getAttributes 的 mock 初始值（数据形状对齐响应）。 */
-const mockAttributes: DashboardAttributes = {
-  weld_methods: mockWeldingMachines,
-  defect_types: mockDefectTypes.map((d) => ({ name: d.name, count: d.count })),
-  modalities: ['video', 'timeseries', 'audio', 'infrared'],
-  sample_rate_tiers: ['1 kHz', '5 kHz', '10 kHz', '20 kHz', '50 kHz'],
-};
-
 /** 数据项目卡片展示形状（progress 已字符串化为 "68%"）。 */
 interface ProjectCard {
   name: string;
@@ -360,6 +276,7 @@ interface ProjectCard {
   status: string;
   tone: string;
   progress: string;
+  updatedAt: string | null;
 }
 const projectTone = (status: string): string => {
   if (status === '标注中') return 'blue';
@@ -373,6 +290,7 @@ function mapProject(p: Project): ProjectCard {
     status: p.status,
     tone: projectTone(p.status),
     progress: `${p.progress}%`,
+    updatedAt: p.updated_at,
   };
 }
 
@@ -400,29 +318,30 @@ function toWeldRow(r: DataRecord): WeldRow {
 
 function Overview({ navigate }: { navigate: (route: Route) => void }) {
   const [activeProject] = useState(0);
-  const [stats, setStats] = useState<DashboardStats>(mockStats);
-  const [attrs, setAttrs] = useState<DashboardAttributes>(mockAttributes);
-  const [dist, setDist] = useState<DashboardDistributions>({
-    manufacturers: mockManufacturers.map((m) => ({ name: m.name, value: m.value })),
-    transition_types: mockTransitionTypes.map((t) => ({ name: t.name, value: t.value })),
-    welding_types: mockWeldingTypes.map((t) => ({ name: t.name, value: t.value })),
-    defects: mockDefectTypes.map((d) => ({ name: d.name, count: d.count })),
-    wordcloud: mockWordCloud,
-  });
-  const [projects, setProjects] = useState<ProjectCard[]>(mockProjects);
-  const filteredProjects = projects;
-  const displayedDatasets = filteredProjects.slice(0, 6);
+  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getStats().then(setStats).catch((err) => console.warn('[overview] getStats failed', err));
-    getAttributes().then(setAttrs).catch((err) => console.warn('[overview] getAttributes failed', err));
-    getDistributions().then(setDist).catch((err) => console.warn('[overview] getDistributions failed', err));
-    getProjects().then((list) => setProjects(list.map(mapProject))).catch((err) => console.warn('[overview] getProjects failed', err));
+    let cancelled = false;
+    getDashboardData()
+      .then((data) => { if (!cancelled) setDashboard(data); })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : '数据总览接口请求失败');
+      });
+    return () => { cancelled = true; };
   }, []);
 
+  if (!dashboard) {
+    return <div className="page-wrap"><PageIntro eyebrow="数据资产中心" title="数据总览" description="全面掌握焊接数据资产的规模、来源与质量分布。" /><section className="panel"><p>{error ? `数据加载失败：${error}` : '正在加载数据总览…'}</p></section></div>;
+  }
+
+  const { stats, attributes: attrs, distributions: dist, projects: apiProjects } = dashboard;
+  const projects = apiProjects.map(mapProject);
+  const filteredProjects = projects;
+  const displayedDatasets = filteredProjects.slice(0, 6);
   const freqValues = attrs.sample_rate_tiers.map(parseFreq).filter((n) => n > 0);
-  const freqMin = freqValues.length ? Math.min(...freqValues) : 1;
-  const freqMax = freqValues.length ? Math.max(...freqValues) : 50;
+  const freqMin = freqValues.length ? Math.min(...freqValues) : null;
+  const freqMax = freqValues.length ? Math.max(...freqValues) : null;
   const maxDefectCount = Math.max(1, ...dist.defects.map((d) => d.count));
 
   return <div className="page-wrap"><PageIntro eyebrow="数据资产中心" title="数据总览" description="全面掌握焊接数据资产的规模、来源与质量分布。" />
@@ -432,7 +351,7 @@ function Overview({ navigate }: { navigate: (route: Route) => void }) {
       <section className="panel attr-panel"><div className="attr-head"><Factory size={16} /><h2>焊机种类</h2><span className="attr-count">{attrs.weld_methods.length} 种</span></div><div className="attr-tags">{attrs.weld_methods.map((machine) => <span className="attr-tag" key={machine}>{machine}</span>)}</div></section>
       <section className="panel attr-panel"><div className="attr-head"><WandSparkles size={16} /><h2>缺陷种类</h2><span className="attr-count">{attrs.defect_types.length} 种</span></div><div className="attr-tags">{attrs.defect_types.map((defect, index) => <span className="attr-tag attr-tag-defect" key={defect.name}><i style={{ background: donutPalette[index % donutPalette.length] }} />{defect.name}</span>)}</div></section>
       <section className="panel attr-panel"><div className="attr-head"><Layers3 size={16} /><h2>多模态种类</h2><span className="attr-count">{attrs.modalities.length} 种</span></div><div className="modality-list">{attrs.modalities.map((token) => { const m = modalityMeta[token] ?? { name: token, icon: Boxes, desc: '多模态数据' }; const Icon = m.icon; return <div className="modality-item" key={token}><Icon size={15} /><div><strong>{m.name}</strong><span>{m.desc}</span></div></div>; })}</div></section>
-      <section className="panel attr-panel"><div className="attr-head"><Gauge size={16} /><h2>时序数据采集频率</h2></div><div className="freq-display"><div className="freq-item"><span>最低频率</span><strong>{freqMin} kHz</strong></div><div className="freq-bar"><div className="freq-fill" /><div className="freq-dot" /><div className="freq-dot freq-dot-max" /></div><div className="freq-item"><span>最高频率</span><strong>{freqMax} kHz</strong></div></div><p className="freq-note">覆盖 {attrs.sample_rate_tiers.length} 个采样档位，支持多速率同步采集</p></section>
+      <section className="panel attr-panel"><div className="attr-head"><Gauge size={16} /><h2>时序数据采集频率</h2></div><div className="freq-display"><div className="freq-item"><span>最低频率</span><strong>{freqMin === null ? '—' : `${freqMin} kHz`}</strong></div><div className="freq-bar"><div className="freq-fill" /><div className="freq-dot" /><div className="freq-dot freq-dot-max" /></div><div className="freq-item"><span>最高频率</span><strong>{freqMax === null ? '—' : `${freqMax} kHz`}</strong></div></div><p className="freq-note">覆盖 {attrs.sample_rate_tiers.length} 个采样档位，支持多速率同步采集</p></section>
     </div>
 
     <div className="chart-row">
@@ -446,8 +365,7 @@ function Overview({ navigate }: { navigate: (route: Route) => void }) {
       <section className="panel wordcloud-panel"><div className="panel-heading"><div><h2>焊接厂商词云</h2><p>按数据量大小排列厂商名称</p></div></div><div className="wordcloud">{dist.wordcloud.map((word, index) => <span className="wordcloud-item" style={{ fontSize: `${word.size}px`, opacity: 0.45 + word.size / 50, color: index < 3 ? '#2c9caf' : index < 6 ? '#5fb8a6' : '#7a9b9d' }} key={word.name}>{word.name}</span>)}</div></section>
     </div>
 
-    <div className="section-title"><div><h2>数据集</h2><p>共 {filteredProjects.length} 个数据集</p></div><div><button className="ghost-button" onClick={() => navigate('data-center/datasets')}>查看全部数据集 <ArrowUpRight size={14} /></button><button className="ghost-button"><Filter size={15} />筛选</button></div></div><div className="dataset-grid">{displayedDatasets.map((project, index) => <div className={`dataset-card ${index === activeProject ? 'current' : ''}`} key={project.name}><div className="dataset-top"><div className={`dataset-icon ${project.tone}`}><Box size={18} /></div><span className={`status ${project.tone}`}>{project.status}</span><MoreHorizontal size={17} className="muted-icon" /></div><h3>{project.name}</h3><p>最近更新于今天 09:42 · 多模态数据</p><div className="progress-meta"><span>标注进度</span><strong>{project.progress}</strong></div><div className="progress"><span style={{ width: project.progress }} /></div><div className="dataset-footer"><span><Layers3 size={14} />{project.count} 条样本</span><button onClick={() => navigate('analysis/select')}>查看详情 <ArrowUpRight size={14} /></button></div></div>)}</div>
-    <img className="hidden-reference" src={overviewImage} alt="" />
+    <div className="section-title"><div><h2>数据集</h2><p>共 {filteredProjects.length} 个数据集</p></div><div><button className="ghost-button" onClick={() => navigate('data-center/datasets')}>查看全部数据集 <ArrowUpRight size={14} /></button><button className="ghost-button"><Filter size={15} />筛选</button></div></div><div className="dataset-grid">{displayedDatasets.map((project, index) => <div className={`dataset-card ${index === activeProject ? 'current' : ''}`} key={project.name}><div className="dataset-top"><div className={`dataset-icon ${project.tone}`}><Box size={18} /></div><span className={`status ${project.tone}`}>{project.status}</span><MoreHorizontal size={17} className="muted-icon" /></div><h3>{project.name}</h3><p>{project.updatedAt ? `最近更新于 ${fmtDT(project.updatedAt)}` : '暂无更新时间'}</p><div className="progress-meta"><span>标注进度</span><strong>{project.progress}</strong></div><div className="progress"><span style={{ width: project.progress }} /></div><div className="dataset-footer"><span><Layers3 size={14} />{project.count} 条样本</span><button onClick={() => navigate('analysis/select')}>查看详情 <ArrowUpRight size={14} /></button></div></div>)}</div>
   </div>;
 }
 function StatCard({ icon: Icon, label, value, sub }: { icon: typeof Database; label: string; value: string; sub: string }) { return <div className="stat-card"><div className="stat-icon"><Icon size={18} /></div><span className="stat-label">{label}</span><strong>{value}</strong><span className="stat-sub">{sub}</span></div>; }
@@ -649,10 +567,6 @@ const mockDimensions: DimensionStatus[] = inputDimensions.map((dim) => {
   const isAvailable = ['Current', 'Voltage', 'GasSpeed', 'Molten_feature', 'Sound_feature'].includes(dim);
   return { name: dim, status: isAvailable ? '已具备' : isRequired ? '必需' : '缺失', required: isRequired };
 });
-const mockDatasetVersions: DatasetVersion[] = [
-  { id: 2, dataset_id: 1, version_no: 'v1.3', split: { train: 6736, val: 842, test: 842 }, item_count: 8420, snapshot_id: null, quality: null, created_at: '2026-08-15 10:06:00' },
-  { id: 1, dataset_id: 1, version_no: 'v1.2', split: { train: 6483, val: 811, test: 810 }, item_count: 8104, snapshot_id: null, quality: null, created_at: '2026-08-14 18:20:00' },
-];
 const mockLineage: LineageNode[] = [
   { type: 'records', label: '原始焊缝数据', count: 1086, items: [] },
   { type: 'annotation_tasks', label: '标注任务', count: 1, items: [{ name: 'AN-0248' }] },
@@ -994,43 +908,6 @@ const mockWeldRows: WeldRow[] = [
 
 /** 数据列表：每页条数 + tab 演示计数（API 返回后 active tab 显示响应 total）。 */
 const PAGE_SIZE = 10;
-const mockTabCounts: Record<string, number> = { '全部最新数据': 12847, '待核验': 126, '已归档': 8204 };
-const DATA_TABS = ['全部最新数据', '待核验', '已归档'] as const;
-
-function ManagementFiltered({ navigate, selectedDataId, setSelectedDataId }: { navigate: (route: Route) => void; selectedDataId: string | null; setSelectedDataId: (id: string) => void }) {
-  const [query, setQuery] = useState('');
-  const [source, setSource] = useState('全部来源');
-  const [brand, setBrand] = useState('全部品牌');
-  const [tab, setTab] = useState('全部最新数据');
-  const [page, setPage] = useState(1);
-  const [rows, setRows] = useState<WeldRow[]>(mockWeldRows);
-  const [total, setTotal] = useState(12847);
-
-  useEffect(() => { setPage(1); }, [query, source, brand, tab]);
-
-  useEffect(() => {
-    let cancelled = false;
-    listWelds({
-      q: query.trim() || undefined,
-      source: source === '全部来源' ? undefined : source,
-      brand: brand === '全部品牌' ? undefined : brand,
-      tab,
-      page,
-      page_size: PAGE_SIZE,
-    }).then((res) => {
-      if (cancelled) return;
-      setRows(res.items.map(toWeldRow));
-      setTotal(res.total);
-    }).catch((err) => {
-      if (!cancelled) console.warn('[data-list] listWelds failed', err);
-    });
-    return () => { cancelled = true; };
-  }, [query, source, brand, tab, page]);
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  return <section className="panel table-panel"><div className="data-filter-strip"><label className="filter-field keyword">关键词<div className="inline-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="焊缝ID、登记编号" /></div></label><label className="filter-field">数据来源<select value={source} onChange={(event) => setSource(event.target.value)}><option>全部来源</option><option>产线相机</option><option>实训线</option></select></label><label className="filter-field">焊机品牌<select value={brand} onChange={(event) => setBrand(event.target.value)}><option>全部品牌</option><option>Fronius</option><option>OTC</option><option>Kemppi</option><option>Panasonic</option></select></label><button className="outline-button filter-reset" onClick={() => { setQuery(''); setSource('全部来源'); setBrand('全部品牌'); setTab('全部最新数据'); setPage(1); }}><RefreshCw size={13} />重置</button></div><div className="latest-version-note"><GitBranch size={14} />列表按焊缝 ID 去重，仅显示每条数据的最新版本</div><div className="table-toolbar"><div className="filter-tabs">{DATA_TABS.map((label) => <button key={label} className={tab === label ? 'active' : ''} onClick={() => setTab(label)}>{label} <b>{tab === label ? total.toLocaleString() : mockTabCounts[label].toLocaleString()}</b></button>)}</div><div className="table-actions"><button className="select-button" onClick={() => { setQuery(''); setSource('全部来源'); setBrand('全部品牌'); setTab('全部最新数据'); setPage(1); }}><RefreshCw size={14} />重置筛选</button></div></div><div className="selection-bar">{selectedDataId ? <>当前选中：<strong>{selectedDataId}</strong><span>登记、核验、版本和分析操作将基于此数据</span></> : <>尚未选择数据<span>点击任意数据行即可选择</span></>}<button className="ghost-button" onClick={() => selectedDataId && navigate('analysis/select')}>进入分析与标注 <ArrowUpRight size={14} /></button></div><div className="data-table"><div className="table-row table-head"><span>状态</span><span>焊缝 / 登记编号</span><span>采集时间</span><span>数据来源</span><span>焊机品牌 / 型号</span><span>数据模态</span><span>核验状态</span><span>最新版本</span><span>操作</span></div>{rows.map((row) => <div className={`table-row ${selectedDataId === row.id ? 'selected-row' : ''}`} onClick={() => setSelectedDataId(row.id)} key={row.id}><span><input type="radio" checked={selectedDataId === row.id} onChange={() => setSelectedDataId(row.id)} aria-label={`选择 ${row.id}`} /></span><span className="id-cell"><strong>{row.id}</strong><small>登记台账 · 最新版本</small></span><span>{row.time}</span><span>{row.source}</span><span>{row.machine}</span><span>{row.types}</span><span><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill></span><span className="mono">{row.version}</span><span><button className="table-icon" onClick={(event) => { event.stopPropagation(); setSelectedDataId(row.id); navigate('analysis/select'); }} aria-label="进入分析"><Eye size={15} /></button></span></div>)}</div><div className="table-footer"><span>显示 {rows.length} 条最新数据，共 {total.toLocaleString()} 条数据</span><div className="pagination"><button onClick={() => setPage((p) => Math.max(1, p - 1))}><ChevronLeft size={14} /></button><span>{page} / {totalPages}</span><button onClick={() => setPage((p) => Math.min(totalPages, p + 1))}><ChevronRight size={14} /></button></div></div></section>;
-}
-
 function Registration() {
   const [registered, setRegistered] = useState(false);
   const [regNo, setRegNo] = useState('REG-20260815-00249');
