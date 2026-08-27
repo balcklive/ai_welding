@@ -407,6 +407,7 @@ function Overview({ navigate }: { navigate: (route: Route) => void }) {
   });
   const [projects, setProjects] = useState<ProjectCard[]>(mockProjects);
   const filteredProjects = projects;
+  const displayedDatasets = filteredProjects.slice(0, 6);
 
   useEffect(() => {
     getStats().then(setStats).catch((err) => console.warn('[overview] getStats failed', err));
@@ -441,7 +442,7 @@ function Overview({ navigate }: { navigate: (route: Route) => void }) {
       <section className="panel wordcloud-panel"><div className="panel-heading"><div><h2>焊接厂商词云</h2><p>按数据量大小排列厂商名称</p></div></div><div className="wordcloud">{dist.wordcloud.map((word, index) => <span className="wordcloud-item" style={{ fontSize: `${word.size}px`, opacity: 0.45 + word.size / 50, color: index < 3 ? '#2c9caf' : index < 6 ? '#5fb8a6' : '#7a9b9d' }} key={word.name}>{word.name}</span>)}</div></section>
     </div>
 
-    <div className="section-title"><div><h2>数据项目</h2><p>共 {filteredProjects.length} 个项目正在协作</p></div><button className="ghost-button"><Filter size={15} />筛选</button></div><div className="dataset-grid">{filteredProjects.map((project, index) => <div className={`dataset-card ${index === activeProject ? 'current' : ''}`} key={project.name}><div className="dataset-top"><div className={`dataset-icon ${project.tone}`}><Box size={18} /></div><span className={`status ${project.tone}`}>{project.status}</span><MoreHorizontal size={17} className="muted-icon" /></div><h3>{project.name}</h3><p>最近更新于今天 09:42 · 多模态数据</p><div className="progress-meta"><span>标注进度</span><strong>{project.progress}</strong></div><div className="progress"><span style={{ width: project.progress }} /></div><div className="dataset-footer"><span><Layers3 size={14} />{project.count} 条样本</span><button onClick={() => navigate('analysis/select')}>查看详情 <ArrowUpRight size={14} /></button></div></div>)}</div>
+    <div className="section-title"><div><h2>数据集</h2><p>共 {filteredProjects.length} 个数据集</p></div><div><button className="ghost-button" onClick={() => navigate('data-center/datasets')}>查看全部数据集 <ArrowUpRight size={14} /></button><button className="ghost-button"><Filter size={15} />筛选</button></div></div><div className="dataset-grid">{displayedDatasets.map((project, index) => <div className={`dataset-card ${index === activeProject ? 'current' : ''}`} key={project.name}><div className="dataset-top"><div className={`dataset-icon ${project.tone}`}><Box size={18} /></div><span className={`status ${project.tone}`}>{project.status}</span><MoreHorizontal size={17} className="muted-icon" /></div><h3>{project.name}</h3><p>最近更新于今天 09:42 · 多模态数据</p><div className="progress-meta"><span>标注进度</span><strong>{project.progress}</strong></div><div className="progress"><span style={{ width: project.progress }} /></div><div className="dataset-footer"><span><Layers3 size={14} />{project.count} 条样本</span><button onClick={() => navigate('analysis/select')}>查看详情 <ArrowUpRight size={14} /></button></div></div>)}</div>
     <img className="hidden-reference" src={overviewImage} alt="" />
   </div>;
 }
