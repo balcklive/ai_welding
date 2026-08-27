@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Archive, ArrowUpRight, BarChart3, Box, Check, ChevronDown,
   CircleHelp, Database, Factory, FileCheck2, Filter, Gauge, Layers3,
@@ -457,7 +457,7 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
  * → useJob 轮询成功 → listAnnotationSamples 取信号锚点样本 → getSignals 拉四通道波形 →
  * 波形上点击设起点/终点 → 选缺陷类别生成区间 → saveAnnotation(kind='segment') 覆盖写保存。
  */
-function AnnotationSignal({ embedded = false, dataId, onBack }: { embedded?: boolean; dataId?: string; onBack: () => void }) {
+function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: string; onBack: () => void }) {
   const [labels, setLabels] = useState<LabelCategory[]>(mockLabelCategories);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [sample, setSample] = useState<Sample | null>(null);
@@ -534,8 +534,8 @@ function AnnotationSignal({ embedded = false, dataId, onBack }: { embedded?: boo
   }, [dataId, versionId]);
 
   const dur = signal?.duration ?? 5.42;
-  const channels = signal?.channels ?? [];
-  const anomalies = signal?.anomalies ?? [];
+  const channels = useMemo(() => signal?.channels ?? [], [signal]);
+  const anomalies = useMemo(() => signal?.anomalies ?? [], [signal]);
   const fmtT = (t: number | null | undefined) => (t == null ? '—' : `${t.toFixed(2)}s`);
 
   // ECharts 渲染 + 点击选段（起点 → 终点）
