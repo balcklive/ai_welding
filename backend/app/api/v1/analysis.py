@@ -479,7 +479,11 @@ def get_alignment_task(
     session: Session = Depends(get_session),
 ) -> dict:
     """对齐任务状态/结果（契约 §3.4，轮询 Job 结构）：Job 信封，`result` 内嵌
-    `events`/`tracks`/`assets`（对齐产物对象键，前端经 `files.getFileUrl` 播放）。"""
+    `events`/`event_source`/`tracks`/`assets`——tracks 为对齐真实化后的扩展结构
+    （每条含 channel/modality/availability/source/aligned/asset/object_key/metadata/reason，
+    availability=available|generated|unavailable 部分成功语义）；assets 为真实产物
+    （时序 CSV/关键帧 JPG/tracks.json），前端经 `files.getFileUrl` 下载，视频播放
+    raw 原始对象（track.object_key）。"""
     job = get_job_by_uid(session, task_id)
     if job is None:
         return err(40401, "任务不存在", status=404)
