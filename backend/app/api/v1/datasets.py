@@ -8,10 +8,10 @@
 经 `create_job(result={"source": ...})` 随 Job 携带（`dataset_build_tasks.source` 仅存类型，
 契约 §3.22）。后台执行器跑 `app.jobs.dataset_build` handler；状态经通用 `GET /jobs/{job_id}` 轮询。
 
-错误码：40401=数据集/数据集版本不存在、40900=数据集名称冲突、40000=参数错误。
+错误码：40401=数据集不存在、40402=数据集版本不存在（含版本不属于该数据集）、40900=数据集名称冲突、40000=参数错误。
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlmodel import Session
 
@@ -20,7 +20,7 @@ from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.data import User
 from app.models.datasets import DatasetBuildTask, DatasetVersion
-from app.schemas.common import err, ok
+from app.schemas.common import err, ok, paginate
 from app.services import datasets as svc
 from app.services.jobs import create_job
 
@@ -165,6 +165,43 @@ def get_dataset_version(
     if version is None or version.dataset_id != dataset.id:
         return err(40402, "数据集版本不存在", status=404)
     return ok(svc.version_payload(version))
+
+
+@router.get("/datasets/{dataset_id}/versions/{version_id}/items")
+def list_dataset_version_items(
+    dataset_id: str,
+    version_id: int,
+    q: str | None = None,
+    quality: str | None = None,
+    split: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    session: Session = Depends(get_session),
+) -> dict:
+    """数据集版本成员列表：按样本粒度返回固定快照。"""
+    dataset = svc.get_dataset_by_identifier(session, dataset_id)
+    if dataset is None:
+        return err(40401, "数据集不存在", status=404)
+    version = session.get(DatasetVersion, version_id)
+    if version is None or version.dataset_id != dataset.id:
+        return err(40402, "数据集版本不存在", status=404)
+
+    q = q.strip() if q else None
+    quality = quality.strip() if quality else None
+    split = split.strip() if split else None
+    if split not in {None, "train", "val", "test"}:
+        return err(40000, "数据划分参数无效", status=400)
+
+    items, total = svc.list_version_items(
+        session,
+        version,
+        q=q,
+        quality=quality,
+        split=split,
+        page=page,
+        page_size=page_size,
+    )
+    return ok(paginate(items, total, page, page_size))
 
 
 # ── 构建任务（异步 Job，状态经 GET /jobs/{job_id} 轮询） ─────────────

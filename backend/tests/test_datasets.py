@@ -33,7 +33,7 @@ from app.core.db import get_session
 from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
-from app.models import Annotation, Dataset, DatasetItem, DatasetVersion, Sample, User
+from app.models import Annotation, DataRecord, Dataset, DatasetItem, DatasetVersion, Sample, User
 
 client = TestClient(app)
 
@@ -112,6 +112,13 @@ def override_get_current_user():
 
 
 @pytest.fixture()
+def unauthenticated_client(override_get_session):
+    """清掉登录依赖后提供同一个 TestClient，用于 401 覆盖。"""
+    app.dependency_overrides.pop(get_current_user, None)
+    yield client
+
+
+@pytest.fixture()
 def executor_sessionlocal(db_engine, monkeypatch):
     """把 executor 的 SessionLocal 指到同一测试引擎（run_job 用独立 session，不启动线程）。"""
     monkeypatch.setattr(
@@ -130,6 +137,12 @@ def fake_storage(monkeypatch):
 
 
 # ── 小助手 ────────────────────────────────────────────────────────────
+
+
+def _dataset_version_id(dataset_id: int = 1) -> int:
+    versions = client.get(f"/api/v1/datasets/{dataset_id}/versions").json()["data"]
+    assert versions, f"dataset {dataset_id} has no versions"
+    return versions[0]["id"]
 
 
 def _version_id_by_no(weld_id, version_no="v1.0"):
@@ -319,6 +332,102 @@ def test_create_version_increments(
     detail = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
     assert detail["version_no"] == "v1.1"
     assert "snapshot_id" in detail and "quality" in detail
+
+
+def test_dataset_version_items_are_scoped_and_filterable(
+    db_engine, override_get_session, override_get_current_user
+) -> None:
+    dataset = _create_dataset(name="成员分页测试集", task="目标检测")
+    version = _create_version(dataset["id"])
+    with Session(db_engine) as session:
+        weld_0248 = session.exec(
+            select(DataRecord).where(DataRecord.weld_id == WELD_0248)
+        ).one()
+        weld_0246 = session.exec(
+            select(DataRecord).where(DataRecord.weld_id == "WLD-20260814-0246")
+        ).one()
+        samples = [
+            Sample(object_keys=["processed/page/1.jpg"], frame_no=11, meta={"record_id": weld_0248.id}),
+            Sample(object_keys=["processed/page/2.jpg"], frame_no=12, meta={"record_id": weld_0248.id}),
+            Sample(object_keys=["processed/page/3.jpg"], frame_no=13, meta={"record_id": weld_0246.id}),
+        ]
+        session.add_all(samples)
+        session.commit()
+        for sample in samples:
+            session.refresh(sample)
+        session.add_all(
+            [
+                DatasetItem(dataset_version_id=version["id"], sample_id=samples[0].id, split="train"),
+                DatasetItem(dataset_version_id=version["id"], sample_id=samples[1].id, split="train"),
+                DatasetItem(dataset_version_id=version["id"], sample_id=samples[2].id, split="test"),
+            ]
+        )
+        session.commit()
+
+    page1 = client.get(
+        f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
+        params={"split": "train", "quality": "通过", "q": "0248", "page": 1, "page_size": 1},
+    )
+    assert page1.status_code == 200
+    payload1 = page1.json()["data"]
+    assert set(payload1) == {"items", "total", "page", "page_size"}
+    assert payload1["total"] == 2
+    assert payload1["page"] == 1
+    assert payload1["page_size"] == 1
+    assert len(payload1["items"]) == 1
+    assert payload1["items"][0]["sample_id"] > 0
+    assert payload1["items"][0]["weld_id"] == WELD_0248
+    assert payload1["items"][0]["split"] == "train"
+    assert payload1["items"][0]["quality"] == "通过"
+    assert payload1["items"][0]["frame_no"] == 11
+    assert all("weld_id" in item and "registration_no" in item for item in payload1["items"])
+    assert all(
+        set(item) >= {
+            "sample_id",
+            "weld_id",
+            "weld_name",
+            "registration_no",
+            "source",
+            "machine",
+            "modalities",
+            "quality",
+            "split",
+            "frame_no",
+            "created_at",
+        }
+        for item in payload1["items"]
+    )
+
+    page2 = client.get(
+        f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
+        params={"split": "train", "quality": "通过", "q": "0248", "page": 2, "page_size": 1},
+    )
+    assert page2.status_code == 200
+    payload2 = page2.json()["data"]
+    assert payload2["total"] == 2
+    assert payload2["page"] == 2
+    assert payload2["page_size"] == 1
+    assert len(payload2["items"]) == 1
+    assert payload2["items"][0]["sample_id"] > payload1["items"][0]["sample_id"]
+    assert payload2["items"][0]["weld_id"] == WELD_0248
+    assert payload2["items"][0]["split"] == "train"
+    assert payload2["items"][0]["quality"] == "通过"
+    assert payload2["items"][0]["frame_no"] == 12
+
+
+def test_dataset_version_items_rejects_cross_dataset_version(
+    override_get_session, override_get_current_user
+) -> None:
+    other_version_id = _dataset_version_id(2)
+    response = client.get(f"/api/v1/datasets/1/versions/{other_version_id}/items")
+    assert response.status_code == 404
+    assert response.json()["code"] == 40402
+
+
+def test_dataset_version_items_requires_auth(unauthenticated_client) -> None:
+    response = unauthenticated_client.get("/api/v1/datasets/1/versions/1/items")
+    assert response.status_code == 401
+    assert response.json()["code"] == 40100
 
 
 # ---------- 构建任务（空来源 → 兜底合成样本，覆盖多焊缝 8:1:1） ----------

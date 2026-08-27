@@ -35,7 +35,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import func
+from sqlalchemy import Integer, cast, func, or_
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.models.analysis import (
@@ -433,6 +434,188 @@ def version_payload(version: DatasetVersion) -> dict:
         "snapshot_id": version.snapshot_id,
         "quality": version.quality,
         "created_at": _iso_utc(version.created_at),
+    }
+
+
+def list_version_items(
+    session: Session,
+    version: DatasetVersion,
+    *,
+    q: str | None,
+    quality: str | None,
+    split: str | None,
+    page: int,
+    page_size: int,
+) -> tuple[list[dict], int]:
+    """数据集版本成员列表：SQL 侧过滤/计数/分页，按样本粒度返回固定快照成员。"""
+    resolved = _version_item_resolved_fields()
+    filters = [DatasetItem.dataset_version_id == version.id]
+    if split:
+        filters.append(DatasetItem.split == split)
+    if quality:
+        filters.append(resolved["quality"] == quality)
+    if q:
+        filters.append(
+            or_(
+                resolved["weld_id"].contains(q),
+                resolved["weld_name"].contains(q),
+                resolved["registration_no"].contains(q),
+            )
+        )
+
+    total = int(
+        session.exec(
+            select(func.count())
+            .select_from(DatasetItem)
+            .join(Sample, Sample.id == DatasetItem.sample_id)
+            .outerjoin(resolved["meta_record"], resolved["meta_record"].id == resolved["meta_record_id"])
+            .outerjoin(resolved["meta_weld"], resolved["meta_weld"].weld_id == resolved["meta_weld_id"])
+            .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
+            .outerjoin(resolved["split_version"], resolved["split_version"].id == SplitTask.version_id)
+            .outerjoin(resolved["split_record"], resolved["split_record"].id == resolved["split_version"].record_id)
+            .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
+            .outerjoin(resolved["annotation_split"], resolved["annotation_split"].id == AnnotationTask.split_task_id)
+            .outerjoin(resolved["annotation_version"], resolved["annotation_version"].id == resolved["annotation_split"].version_id)
+            .outerjoin(resolved["annotation_record"], resolved["annotation_record"].id == resolved["annotation_version"].record_id)
+            .where(*filters)
+        ).one()
+    )
+    if total == 0:
+        return [], 0
+
+    rows = session.exec(
+        select(
+            DatasetItem.id,
+            DatasetItem.sample_id,
+            resolved["weld_id"],
+            resolved["weld_name"],
+            resolved["registration_no"],
+            resolved["source"],
+            resolved["machine"],
+            resolved["modalities"],
+            resolved["quality"],
+            DatasetItem.split,
+            Sample.frame_no,
+            resolved["created_at"],
+        )
+        .join(Sample, Sample.id == DatasetItem.sample_id)
+        .outerjoin(resolved["meta_record"], resolved["meta_record"].id == resolved["meta_record_id"])
+        .outerjoin(resolved["meta_weld"], resolved["meta_weld"].weld_id == resolved["meta_weld_id"])
+        .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
+        .outerjoin(resolved["split_version"], resolved["split_version"].id == SplitTask.version_id)
+        .outerjoin(resolved["split_record"], resolved["split_record"].id == resolved["split_version"].record_id)
+        .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
+        .outerjoin(resolved["annotation_split"], resolved["annotation_split"].id == AnnotationTask.split_task_id)
+        .outerjoin(resolved["annotation_version"], resolved["annotation_version"].id == resolved["annotation_split"].version_id)
+        .outerjoin(resolved["annotation_record"], resolved["annotation_record"].id == resolved["annotation_version"].record_id)
+        .where(*filters)
+        .order_by(DatasetItem.sample_id, DatasetItem.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+
+    return [
+        {
+            "id": item_id,
+            "sample_id": sample_id,
+            "weld_id": weld_id,
+            "weld_name": weld_name,
+            "registration_no": registration_no,
+            "source": source,
+            "machine": machine,
+            "modalities": list(modalities or []),
+            "quality": row_quality,
+            "split": row_split,
+            "frame_no": frame_no,
+            "created_at": _iso_utc(created_at),
+        }
+        for (
+            item_id,
+            sample_id,
+            weld_id,
+            weld_name,
+            registration_no,
+            source,
+            machine,
+            modalities,
+            row_quality,
+            row_split,
+            frame_no,
+            created_at,
+        ) in rows
+    ], total
+
+
+def _version_item_resolved_fields() -> dict[str, object]:
+    """构造成员列表的统一解析字段：meta → split_task → annotation_task 三路兜底。"""
+    split_version = aliased(DataVersion)
+    split_record = aliased(DataRecord)
+    annotation_split = aliased(SplitTask)
+    annotation_version = aliased(DataVersion)
+    annotation_record = aliased(DataRecord)
+    meta_record = aliased(DataRecord)
+    meta_weld = aliased(DataRecord)
+    meta_record_id = cast(Sample.meta["record_id"].as_string(), Integer)
+    meta_weld_id = Sample.meta["weld_id"].as_string()
+    return {
+        "split_version": split_version,
+        "split_record": split_record,
+        "annotation_split": annotation_split,
+        "annotation_version": annotation_version,
+        "annotation_record": annotation_record,
+        "meta_record": meta_record,
+        "meta_weld": meta_weld,
+        "meta_record_id": meta_record_id,
+        "meta_weld_id": meta_weld_id,
+        "weld_id": func.coalesce(
+            meta_record.weld_id,
+            meta_weld.weld_id,
+            split_record.weld_id,
+            annotation_record.weld_id,
+            meta_weld_id,
+        ),
+        "weld_name": func.coalesce(
+            meta_record.weld_name,
+            meta_weld.weld_name,
+            split_record.weld_name,
+            annotation_record.weld_name,
+        ),
+        "registration_no": func.coalesce(
+            meta_record.registration_no,
+            meta_weld.registration_no,
+            split_record.registration_no,
+            annotation_record.registration_no,
+        ),
+        "source": func.coalesce(
+            meta_record.source,
+            meta_weld.source,
+            split_record.source,
+            annotation_record.source,
+        ),
+        "machine": func.coalesce(
+            meta_record.machine,
+            meta_weld.machine,
+            split_record.machine,
+            annotation_record.machine,
+        ),
+        "modalities": func.coalesce(
+            meta_record.modalities,
+            meta_weld.modalities,
+            split_record.modalities,
+            annotation_record.modalities,
+        ),
+        "quality": func.coalesce(
+            meta_record.quality,
+            meta_weld.quality,
+            split_record.quality,
+            annotation_record.quality,
+        ),
+        "created_at": func.coalesce(
+            meta_record.created_at,
+            meta_weld.created_at,
+            split_record.created_at,
+            annotation_record.created_at,
+        ),
     }
 
 
