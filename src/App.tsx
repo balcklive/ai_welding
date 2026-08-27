@@ -19,6 +19,7 @@ import {
   attachRawFiles,
   createRegistration,
   getValidation,
+  getVersion,
   getWeld,
   listVersions,
   listWelds,
@@ -28,6 +29,7 @@ import {
   createDataset,
   createDatasetVersion,
   getDataset,
+  getDatasetVersion,
   getDimensions,
   getLineage,
   getReadiness,
@@ -546,6 +548,61 @@ function SelectionRequired({ onBack }: { onBack: () => void }) {
   return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择一条数据</h2><p>该功能需要基于具体焊缝数据执行，请返回数据列表选择后继续。</p><button className="outline-button" onClick={onBack}><ChevronLeft size={14} />返回数据列表</button></div>;
 }
 
+type VersionDetailDrawerProps =
+  | { mode: 'weld'; weldId: string; versionId: string; onClose: () => void }
+  | { mode: 'dataset'; datasetId: string; version: DatasetVersion; onClose: () => void };
+
+function VersionDetailDrawer(props: VersionDetailDrawerProps) {
+  const { onClose } = props;
+  const ownerId = props.mode === 'weld' ? props.weldId : props.datasetId;
+  const versionId = props.mode === 'weld' ? props.versionId : String(props.version.id);
+  const [weldVersion, setWeldVersion] = useState<DataVersion | null>(null);
+  const [validation, setValidation] = useState<ValidationReport | null>(null);
+  const [datasetVersion, setDatasetVersion] = useState<DatasetVersion | null>(props.mode === 'dataset' ? props.version : null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = previousOverflow; };
+  }, [onClose]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    if (props.mode === 'weld') {
+      Promise.all([
+        getVersion(ownerId, versionId),
+        getValidation(ownerId, versionId).catch(() => null),
+      ]).then(([version, report]) => {
+        if (cancelled) return;
+        setWeldVersion(version);
+        setValidation(report);
+        setLoading(false);
+      }).catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : '版本详情加载失败'); setLoading(false); } });
+    } else {
+      getDatasetVersion(ownerId, versionId)
+        .then((version) => { if (!cancelled) { setDatasetVersion(version); setLoading(false); } })
+        .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : '快照详情加载失败'); setLoading(false); } });
+    }
+    return () => { cancelled = true; };
+  }, [props.mode, ownerId, versionId]);
+
+  const version = props.mode === 'weld' ? weldVersion : datasetVersion;
+  const split = version && 'split' in version
+    ? `${version.split.train?.toLocaleString() ?? '—'} / ${version.split.val?.toLocaleString() ?? '—'} / ${version.split.test?.toLocaleString() ?? '—'}`
+    : null;
+  const quality = version && 'quality' in version && version.quality
+    ? `${((1 - version.quality.repeat_rate - version.quality.empty_label_rate - version.quality.dimension_missing_rate) * 100).toFixed(1)}%`
+    : '—';
+
+  return <div className="version-drawer-backdrop" role="presentation" onClick={onClose}><aside className="version-drawer" role="dialog" aria-modal="true" aria-label="版本详情" onClick={(event) => event.stopPropagation()}><div className="version-drawer-head"><div><span className="eyebrow"><span />版本详情</span><h2>{version?.version_no ?? '加载中…'}</h2></div><button className="icon-button" onClick={onClose} aria-label="关闭版本详情">×</button></div>{loading && <div className="version-drawer-state">正在加载版本详情…</div>}{error && <div className="version-drawer-state error">{error}</div>}{!loading && !error && version && props.mode === 'weld' && <><div className="version-drawer-summary"><StatusPill>{weldVersion?.action}</StatusPill><span>{weldVersion?.operator ?? '—'} · {fmtDT(weldVersion?.created_at)}</span></div><div className="version-drawer-section"><h3>版本信息</h3><InfoRow label="处理动作" value={weldVersion?.action ?? '—'} /><InfoRow label="操作人" value={weldVersion?.operator ?? '—'} /><InfoRow label="备注" value={weldVersion?.note ?? '暂无备注'} /><InfoRow label="数据文件" value={weldVersion?.object_keys.length ? `${weldVersion.object_keys.length} 个文件` : '暂无关联文件'} /></div><div className="version-drawer-section"><h3>核验结果</h3>{validation ? <><InfoRow label="质量分数" value={`${validation.score.toFixed(1)} 分`} accent /><InfoRow label="规则统计" value={`通过 ${validation.passed} · 警告 ${validation.warning} · 失败 ${validation.failed}`} /></> : <p className="version-drawer-muted">尚未执行核验</p>}</div></>}{!loading && !error && version && props.mode === 'dataset' && <><div className="version-drawer-summary"><StatusPill>固定快照</StatusPill><span>创建于 {fmtDT(datasetVersion?.created_at)}</span></div><div className="version-drawer-section"><h3>快照信息</h3><InfoRow label="样本总数" value={`${datasetVersion?.item_count.toLocaleString() ?? '—'} 条`} /><InfoRow label="训练 / 验证 / 测试" value={split ?? '—'} /><InfoRow label="数据质量" value={quality} accent /><InfoRow label="快照 ID" value={datasetVersion?.snapshot_id ?? '尚未生成'} /></div><div className="version-drawer-section"><h3>使用说明</h3><p className="version-drawer-muted">该版本是固定样本清单，不会随原始数据变化。</p></div></>}</aside></div>;
+}
+
 /** 数据集列表/详情行展示形状（table/detail 期望的字段）。 */
 interface DatasetRow {
   id: string;
@@ -639,6 +696,7 @@ function DatasetDetail({ dataset, navigate }: { dataset: DatasetRow; navigate: (
   const [dims, setDims] = useState<DimensionStatus[]>(mockDimensions);
   const [readiness, setReadiness] = useState<ReadinessCheck | null>(null);
   const [versions, setVersions] = useState<DatasetVersion[]>(mockDatasetVersions);
+  const [selectedVersion, setSelectedVersion] = useState<DatasetVersion | null>(null);
   const [lineage, setLineage] = useState<LineageNode[]>(mockLineage);
   useEffect(() => {
     let cancelled = false;
@@ -662,7 +720,7 @@ function DatasetDetail({ dataset, navigate }: { dataset: DatasetRow; navigate: (
   const currentVersionId = detail?.current_version_id ?? versions[0]?.id ?? null;
   const lineageIcon: Record<string, typeof Database> = { records: Database, annotation_tasks: Tag, dataset_versions: Box, training_tasks: TrainFront };
   const lineageSuffix: Record<string, string> = { records: '条', training_tasks: '次', annotation_tasks: '个', dataset_versions: '个' };
-  return <div className="dataset-detail"><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button" disabled={dataset.status !== '可训练'} onClick={() => navigate('model-center/training')}><Play size={14} />进入模型训练</button></div></div><div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>样本总数</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>已生成切分样本</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按焊缝 ID 固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集版本</h2><p>每个版本对应一份固定样本清单</p></div><button className="outline-button" onClick={handleNewVersion}><GitBranch size={14} />新建版本</button></div><div className="dataset-version-list">{versions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no}><span>{v.version_no}</span><div><strong>数据快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前版本</StatusPill> : <button className="ghost-button">查看</button>}</div>)}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从原始数据到训练任务的关联</p></div></div><div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div></section></div></div>;
+  return <><div className="dataset-detail"><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button" disabled={dataset.status !== '可训练'} onClick={() => navigate('model-center/training')}><Play size={14} />进入模型训练</button></div></div><div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>样本总数</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>已生成切分样本</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按焊缝 ID 固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集版本</h2><p>每个版本对应一份固定样本清单</p></div><button className="outline-button" onClick={handleNewVersion}><GitBranch size={14} />新建版本</button></div><div className="dataset-version-list">{versions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no}><span>{v.version_no}</span><div><strong>数据快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前版本</StatusPill> : <button className="ghost-button" onClick={() => setSelectedVersion(v)}>查看</button>}</div>)}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从原始数据到训练任务的关联</p></div></div><div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div></section></div></div>{selectedVersion && <VersionDetailDrawer mode="dataset" datasetId={dataset.id} version={selectedVersion} onClose={() => setSelectedVersion(null)} />}</>;
 }
 
 function DatasetInputPanel({ task, dims }: { task: string; dims: DimensionStatus[] }) {
@@ -723,6 +781,7 @@ function VersionPanel({ dataId }: { dataId?: string }) {
     { id: 4, record_id: 1, version_no: 'v1.3', action: '人工修正', operator: '林工', note: null, object_keys: [], created_at: '2026-08-15 10:06:00' },
   ];
   const [versions, setVersions] = useState<DataVersion[]>(mockVersions);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
@@ -730,7 +789,7 @@ function VersionPanel({ dataId }: { dataId?: string }) {
     return () => { cancelled = true; };
   }, [dataId]);
   const last = versions[versions.length - 1];
-  return <section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的版本链路</p></div><StatusPill>当前版本 {last?.version_no ?? '—'}</StatusPill></div><div className="version-line">{versions.map((version, index) => <div className={index === versions.length - 1 ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{fmtDT(version.created_at)} · {version.operator ?? '—'}</small></span><button className="ghost-button">查看</button></div>)}</div></section>;
+  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的版本链路</p></div><StatusPill>当前版本 {last?.version_no ?? '—'}</StatusPill></div><div className="version-line">{versions.map((version, index) => <div className={index === versions.length - 1 ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{fmtDT(version.created_at)} · {version.operator ?? '—'}</small></span><button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button></div>)}</div></section>{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
 }
 
 const mockModelSummary = { total: 18, prod_candidates: 6, recent_training: '今天 09:42', gpu_usage: 42 };

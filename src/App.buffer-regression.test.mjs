@@ -14,3 +14,11 @@ test('Alignment split panel exposes editable buffer seconds and wires them to sp
   assert.match(source, /createSplitTask\([^\n]+keep_event_buffer:/s);
   assert.doesNotMatch(source, /createSplitTask\([^\n]+keep_event_buffer:\s*0\.2/s);
 });
+
+test('version view buttons open the appropriate detail drawer', () => {
+  assert.match(source, /function VersionDetailDrawer/);
+  assert.match(source, /<VersionDetailDrawer mode="weld"/);
+  assert.match(source, /onClick=\{\(\) => setSelectedVersionId\(String\(version\.id\)\)\}/);
+  assert.match(source, /<VersionDetailDrawer mode="dataset"/);
+  assert.match(source, /onClick=\{\(\) => setSelectedVersion\(v\)\}/);
+});
