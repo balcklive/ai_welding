@@ -35,7 +35,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import func
+from sqlalchemy import Integer, cast, func, or_
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.models.analysis import (
@@ -446,172 +447,176 @@ def list_version_items(
     page: int,
     page_size: int,
 ) -> tuple[list[dict], int]:
-    """数据集版本成员列表：按样本粒度返回固定快照成员。"""
-    rows = session.exec(
-        select(DatasetItem, Sample)
-        .join(Sample, Sample.id == DatasetItem.sample_id)
-        .where(DatasetItem.dataset_version_id == version.id)
-        .order_by(DatasetItem.sample_id, DatasetItem.id)
-    ).all()
-    if not rows:
+    """数据集版本成员列表：SQL 侧过滤/计数/分页，按样本粒度返回固定快照成员。"""
+    resolved = _version_item_resolved_fields()
+    filters = [DatasetItem.dataset_version_id == version.id]
+    if split:
+        filters.append(DatasetItem.split == split)
+    if quality:
+        filters.append(resolved["quality"] == quality)
+    if q:
+        filters.append(
+            or_(
+                resolved["weld_id"].contains(q),
+                resolved["weld_name"].contains(q),
+                resolved["registration_no"].contains(q),
+            )
+        )
+
+    total = int(
+        session.exec(
+            select(func.count())
+            .select_from(DatasetItem)
+            .join(Sample, Sample.id == DatasetItem.sample_id)
+            .outerjoin(resolved["meta_record"], resolved["meta_record"].id == resolved["meta_record_id"])
+            .outerjoin(resolved["meta_weld"], resolved["meta_weld"].weld_id == resolved["meta_weld_id"])
+            .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
+            .outerjoin(resolved["split_version"], resolved["split_version"].id == SplitTask.version_id)
+            .outerjoin(resolved["split_record"], resolved["split_record"].id == resolved["split_version"].record_id)
+            .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
+            .outerjoin(resolved["annotation_split"], resolved["annotation_split"].id == AnnotationTask.split_task_id)
+            .outerjoin(resolved["annotation_version"], resolved["annotation_version"].id == resolved["annotation_split"].version_id)
+            .outerjoin(resolved["annotation_record"], resolved["annotation_record"].id == resolved["annotation_version"].record_id)
+            .where(*filters)
+        ).one()
+    )
+    if total == 0:
         return [], 0
 
-    samples = [sample for _item, sample in rows]
-    records = _batch_resolve_sample_records(session, samples)
+    rows = session.exec(
+        select(
+            DatasetItem.id,
+            DatasetItem.sample_id,
+            resolved["weld_id"],
+            resolved["weld_name"],
+            resolved["registration_no"],
+            resolved["source"],
+            resolved["machine"],
+            resolved["modalities"],
+            resolved["quality"],
+            DatasetItem.split,
+            Sample.frame_no,
+            resolved["created_at"],
+        )
+        .join(Sample, Sample.id == DatasetItem.sample_id)
+        .outerjoin(resolved["meta_record"], resolved["meta_record"].id == resolved["meta_record_id"])
+        .outerjoin(resolved["meta_weld"], resolved["meta_weld"].weld_id == resolved["meta_weld_id"])
+        .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
+        .outerjoin(resolved["split_version"], resolved["split_version"].id == SplitTask.version_id)
+        .outerjoin(resolved["split_record"], resolved["split_record"].id == resolved["split_version"].record_id)
+        .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
+        .outerjoin(resolved["annotation_split"], resolved["annotation_split"].id == AnnotationTask.split_task_id)
+        .outerjoin(resolved["annotation_version"], resolved["annotation_version"].id == resolved["annotation_split"].version_id)
+        .outerjoin(resolved["annotation_record"], resolved["annotation_record"].id == resolved["annotation_version"].record_id)
+        .where(*filters)
+        .order_by(DatasetItem.sample_id, DatasetItem.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
 
-    items: list[dict] = []
-    for item, sample in rows:
-        record = records.get(sample.id)
-        payload = _version_item_payload(item, sample, record)
-        if _version_item_matches(payload, q=q, quality=quality, split=split):
-            items.append(payload)
-
-    total = len(items)
-    items.sort(
-        key=lambda row: (row["sample_id"], row.get("frame_no") or -1, str(row.get("weld_id") or ""))
-    )
-    start = (page - 1) * page_size
-    end = start + page_size
-    return items[start:end], total
-
-
-def _batch_resolve_sample_records(
-    session: Session, samples: list[Sample]
-) -> dict[int, DataRecord | None]:
-    """批量解析样本所属焊缝，避免列表循环逐条查库。"""
-    by_sample: dict[int, DataRecord | None] = {}
-    if not samples:
-        return by_sample
-
-    meta_record_ids: set[int] = set()
-    meta_weld_ids: set[str] = set()
-    split_task_ids: set[int] = set()
-    annot_task_ids: set[int] = set()
-    for sample in samples:
-        meta = sample.meta or {}
-        rid = meta.get("record_id")
-        if rid is not None:
-            try:
-                meta_record_ids.add(int(rid))
-            except (TypeError, ValueError):
-                pass
-        wid = meta.get("weld_id")
-        if wid:
-            meta_weld_ids.add(str(wid))
-        if sample.split_task_id is not None:
-            split_task_ids.add(sample.split_task_id)
-        if sample.annotation_task_id is not None:
-            annot_task_ids.add(sample.annotation_task_id)
-
-    record_by_id: dict[int, DataRecord] = {}
-    if meta_record_ids:
-        for record in session.exec(
-            select(DataRecord).where(DataRecord.id.in_(meta_record_ids))
-        ).all():
-            record_by_id[record.id] = record
-
-    record_by_weld_id: dict[str, DataRecord] = {}
-    if meta_weld_ids:
-        for record in session.exec(
-            select(DataRecord).where(DataRecord.weld_id.in_(meta_weld_ids))
-        ).all():
-            record_by_weld_id[record.weld_id] = record
-
-    annot_by_id: dict[int, AnnotationTask] = {}
-    if annot_task_ids:
-        for task in session.exec(
-            select(AnnotationTask).where(AnnotationTask.id.in_(annot_task_ids))
-        ).all():
-            annot_by_id[task.id] = task
-            if task.split_task_id is not None:
-                split_task_ids.add(task.split_task_id)
-
-    split_by_id: dict[int, SplitTask] = {}
-    if split_task_ids:
-        for split in session.exec(
-            select(SplitTask).where(SplitTask.id.in_(split_task_ids))
-        ).all():
-            split_by_id[split.id] = split
-
-    version_ids: set[int] = set()
-    for split in split_by_id.values():
-        version_ids.add(split.version_id)
-    for task in annot_by_id.values():
-        if task.split_task_id is not None and task.split_task_id in split_by_id:
-            version_ids.add(split_by_id[task.split_task_id].version_id)
-
-    record_by_version_id: dict[int, DataRecord] = {}
-    if version_ids:
-        for version in session.exec(
-            select(DataVersion).where(DataVersion.id.in_(version_ids))
-        ).all():
-            record = session.get(DataRecord, version.record_id)
-            if record is not None:
-                record_by_version_id[version.id] = record
-
-    for sample in samples:
-        record: DataRecord | None = None
-        meta = sample.meta or {}
-        rid = meta.get("record_id")
-        if rid is not None:
-            try:
-                record = record_by_id.get(int(rid))
-            except (TypeError, ValueError):
-                record = None
-        if record is None:
-            wid = meta.get("weld_id")
-            if wid:
-                record = record_by_weld_id.get(str(wid))
-        if record is None and sample.split_task_id is not None:
-            split = split_by_id.get(sample.split_task_id)
-            if split is not None:
-                record = record_by_version_id.get(split.version_id)
-        if record is None and sample.annotation_task_id is not None:
-            task = annot_by_id.get(sample.annotation_task_id)
-            if task is not None and task.split_task_id is not None:
-                split = split_by_id.get(task.split_task_id)
-                if split is not None:
-                    record = record_by_version_id.get(split.version_id)
-        by_sample[sample.id] = record
-    return by_sample
+    return [
+        {
+            "id": item_id,
+            "sample_id": sample_id,
+            "weld_id": weld_id,
+            "weld_name": weld_name,
+            "registration_no": registration_no,
+            "source": source,
+            "machine": machine,
+            "modalities": list(modalities or []),
+            "quality": row_quality,
+            "split": row_split,
+            "frame_no": frame_no,
+            "created_at": _iso_utc(created_at),
+        }
+        for (
+            item_id,
+            sample_id,
+            weld_id,
+            weld_name,
+            registration_no,
+            source,
+            machine,
+            modalities,
+            row_quality,
+            row_split,
+            frame_no,
+            created_at,
+        ) in rows
+    ], total
 
 
-def _version_item_payload(
-    item: DatasetItem, sample: Sample, record: DataRecord | None
-) -> dict:
-    """数据集成员列表项。"""
-    meta = sample.meta or {}
+def _version_item_resolved_fields() -> dict[str, object]:
+    """构造成员列表的统一解析字段：meta → split_task → annotation_task 三路兜底。"""
+    split_version = aliased(DataVersion)
+    split_record = aliased(DataRecord)
+    annotation_split = aliased(SplitTask)
+    annotation_version = aliased(DataVersion)
+    annotation_record = aliased(DataRecord)
+    meta_record = aliased(DataRecord)
+    meta_weld = aliased(DataRecord)
+    meta_record_id = cast(Sample.meta["record_id"].as_string(), Integer)
+    meta_weld_id = Sample.meta["weld_id"].as_string()
     return {
-        "id": item.id,
-        "sample_id": sample.id,
-        "weld_id": record.weld_id if record is not None else meta.get("weld_id"),
-        "weld_name": record.weld_name if record is not None else None,
-        "registration_no": record.registration_no if record is not None else None,
-        "source": record.source if record is not None else None,
-        "machine": record.machine if record is not None else None,
-        "modalities": list(record.modalities or []) if record is not None else [],
-        "quality": record.quality if record is not None else None,
-        "split": item.split,
-        "frame_no": sample.frame_no,
-        "created_at": _iso_utc(record.created_at) if record is not None else None,
+        "split_version": split_version,
+        "split_record": split_record,
+        "annotation_split": annotation_split,
+        "annotation_version": annotation_version,
+        "annotation_record": annotation_record,
+        "meta_record": meta_record,
+        "meta_weld": meta_weld,
+        "meta_record_id": meta_record_id,
+        "meta_weld_id": meta_weld_id,
+        "weld_id": func.coalesce(
+            meta_record.weld_id,
+            meta_weld.weld_id,
+            split_record.weld_id,
+            annotation_record.weld_id,
+            meta_weld_id,
+        ),
+        "weld_name": func.coalesce(
+            meta_record.weld_name,
+            meta_weld.weld_name,
+            split_record.weld_name,
+            annotation_record.weld_name,
+        ),
+        "registration_no": func.coalesce(
+            meta_record.registration_no,
+            meta_weld.registration_no,
+            split_record.registration_no,
+            annotation_record.registration_no,
+        ),
+        "source": func.coalesce(
+            meta_record.source,
+            meta_weld.source,
+            split_record.source,
+            annotation_record.source,
+        ),
+        "machine": func.coalesce(
+            meta_record.machine,
+            meta_weld.machine,
+            split_record.machine,
+            annotation_record.machine,
+        ),
+        "modalities": func.coalesce(
+            meta_record.modalities,
+            meta_weld.modalities,
+            split_record.modalities,
+            annotation_record.modalities,
+        ),
+        "quality": func.coalesce(
+            meta_record.quality,
+            meta_weld.quality,
+            split_record.quality,
+            annotation_record.quality,
+        ),
+        "created_at": func.coalesce(
+            meta_record.created_at,
+            meta_weld.created_at,
+            split_record.created_at,
+            annotation_record.created_at,
+        ),
     }
-
-
-def _version_item_matches(
-    item: dict, *, q: str | None, quality: str | None, split: str | None
-) -> bool:
-    if split and item.get("split") != split:
-        return False
-    if quality and item.get("quality") != quality:
-        return False
-    if q:
-        q_str = str(q)
-        if not any(
-            q_str in str(item.get(field) or "")
-            for field in ("weld_id", "weld_name", "registration_no")
-        ):
-            return False
-    return True
 
 
 # ── 构建任务（异步 handler 领域逻辑） ───────────────────────────────

@@ -110,6 +110,10 @@
   - `list_version_items`：`dataset_items → samples → data_records` 固定快照成员列表；支持 `q`
     (weld_id / weld_name / registration_no 包含匹配)、`quality` 精确、`split`
     (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。
+    **review 修复**：过滤/总数/offset/limit 全在 SQL 侧执行，并通过 joined/batched 解析
+    `sample.meta.record_id|weld_id`、`split_task→data_version→record`、
+    `annotation_task→split_task→data_version→record`，避免先全量拉回 Python 再过滤，也避免
+    列表循环里的 `session.get(...)`。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
     空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
     稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落

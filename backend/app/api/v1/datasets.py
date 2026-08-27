@@ -8,7 +8,7 @@
 经 `create_job(result={"source": ...})` 随 Job 携带（`dataset_build_tasks.source` 仅存类型，
 契约 §3.22）。后台执行器跑 `app.jobs.dataset_build` handler；状态经通用 `GET /jobs/{job_id}` 轮询。
 
-错误码：40401=数据集/数据集版本不存在、40900=数据集名称冲突、40000=参数错误。
+错误码：40401=数据集不存在、40402=数据集版本不存在（含版本不属于该数据集）、40900=数据集名称冲突、40000=参数错误。
 """
 
 from fastapi import APIRouter, Depends, Query

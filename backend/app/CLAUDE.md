@@ -48,7 +48,7 @@
   `v1/analysis.py` 为 **Task 11 ~ Task 14 + Task 18 已实现**（candidates / signals / 六 mode DSP /
   result / features 提取 / alignment-tasks / split-tasks / label-categories /
   annotation-tasks 全端点）、`v1/datasets.py` 为 **Task 15 已实现**（datasets 全端点：
-  列表/新建/详情/dimensions/readiness/versions/版本详情/build-tasks/lineage）、
+  列表/新建/详情/dimensions/readiness/versions/版本详情/**版本成员 items 分页**/build-tasks/lineage），
   `v1/models.py` 为 **Task 16 已实现**（models 全端点：列表/详情/新建/状态流转 +
   training-tasks/test-tasks/inference-tasks 创建与轮询）、`v1/reports.py` 为 **Task 17 已实现**
   （通用报告导出 POST /reports/export），详见 `api/CLAUDE.md`。

@@ -97,16 +97,16 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /datasets/{dataset_id}/dimensions`（7 项 `{name, status, required}`）、
     `GET /datasets/{dataset_id}/readiness`（`{readiness, checks[]}`）。
   - `GET/POST /datasets/{dataset_id}/versions`（新建固定快照占位，下一版本号）、
-    `GET /datasets/{dataset_id}/versions/{version_id}`（版本不属于该数据集 → 40402）、
+    `GET /datasets/{dataset_id}/versions/{version_id}`（数据集不存在 → 40401；版本不存在或不属于该数据集 → 40402）、
     `GET /datasets/{dataset_id}/versions/{version_id}/items`（按样本粒度分页；`q` 过滤
-    weld_id/weld_name/registration_no，`quality` 精确，`split` 仅 train/val/test，
-    40401/40402/40000 对齐）。
+    weld_id/weld_name/registration_no，`quality` 精确，`split` 仅 train/val/test；
+    服务端按 `sample_id` 稳定排序，SQL 侧过滤/计数/offset/limit，40401/40402/40000 对齐）。
   - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks`（**异步**，body `{source}` =
     DatasetSource 字典或类型字符串；类型白名单校验 → 40000；同事务建 pending Job +
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
     状态经通用 `GET /jobs/{job_id}` 轮询）。
   - `GET /datasets/{dataset_id}/lineage`（4 层节点）。
-  - 错误码：40401=数据集/版本不存在、40402=版本不属于该数据集、40900=同名冲突、40000=参数。
+  - 错误码：40401=数据集不存在、40402=数据集版本不存在（含版本不属于该数据集）、40900=同名冲突、40000=参数。
 - `models.py`：**Task 16 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.6，业务逻辑在
   `app.services.models`：

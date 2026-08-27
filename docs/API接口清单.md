@@ -192,9 +192,12 @@
 | GET | `/api/v1/datasets/{dataset_id}/versions` | 数据集版本列表 | 需登录 |
 | POST | `/api/v1/datasets/{dataset_id}/versions` | 新建版本（固定快照，不覆盖旧版，保证可复现） | body: `name`, `note` |
 | GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}` | 版本详情（固定样本清单、划分） | — 需登录 |
+| GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}/items` | 版本成员分页列表（样本粒度，不按焊缝去重） | query: `q`(weld_id/weld_name/registration_no 包含匹配), `quality`(精确), `split`(train/val/test), `page`, `page_size` |
 | POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source` |
 | GET | `/api/v1/datasets/{dataset_id}/lineage` | 数据血缘：原始焊缝→标注任务→数据集版本→模型训练 | — 需登录 |
 
+> **§3.5 错误语义**：`40401` = 数据集不存在；`40402` = 数据集版本不存在（含版本不属于该数据集）；`GET /datasets/{dataset_id}/versions/{version_id}/items` 的 `split` 仅允许 `train/val/test`，否则返回 `40000`。
+>
 > **§3.5 已知限制（接受但不落库）**：`POST /datasets` 的 `source` 与 `POST /datasets/{id}/versions` 的 `name`/`note` 当前**仅接受、不落库**——`datasets`（§3.14）无 `source` 列、`dataset_versions`（§3.15）无 `name`/`note` 列。此为表结构已定、尚未加列+迁移前的已知限制；后续需落库时加列 + 迁移 + 两端同步。
 
 ### 3.6 🤖 models 模型中心
