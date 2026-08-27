@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import and_, exists, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -447,7 +447,14 @@ def list_version_items(
     page: int,
     page_size: int,
 ) -> tuple[list[dict], int]:
-    """数据集版本成员列表：SQL 侧过滤/计数/分页，页内再批量解析 JSON 字段。"""
+    """数据集版本成员列表：常规样本走关系外键 SQL 过滤/计数/分页。
+
+    常规构建样本通过 dataset_items→samples→split_tasks→data_versions→data_records，
+    或 dataset_items→samples→annotation_tasks→split_tasks→data_versions→data_records
+    解析焊缝；SQL 筛选只引用这些关系列，避免在 MySQL/SQLite 间不一致的 JSON path
+    表达式。历史手工/导入样本若只有 ``samples.meta`` 记录线索，则仅在页内批量回填 payload，
+    在 q/quality 过滤时不会用 JSON 关联参与匹配。
+    """
     split_version = aliased(DataVersion)
     split_record = aliased(DataRecord)
     annotation_split = aliased(SplitTask)
@@ -541,29 +548,9 @@ def list_version_items(
     ], total
 
 
-def _version_item_record_filter(sample_model, split_record, annotation_record, predicate):
-    """成员列表筛选：优先走 SQL 标量列，meta 仅用于关联到 DataRecord 后复用同一谓词。"""
-    meta_record = aliased(DataRecord)
-    return or_(
-        predicate(split_record),
-        predicate(annotation_record),
-        exists(
-            select(1)
-            .select_from(meta_record)
-            .where(
-                or_(
-                    and_(
-                        meta_record.id == sample_model.meta["record_id"].as_integer(),
-                        predicate(meta_record),
-                    ),
-                    and_(
-                        meta_record.weld_id == sample_model.meta["weld_id"].as_string(),
-                        predicate(meta_record),
-                    ),
-                )
-            )
-        ),
-    )
+def _version_item_record_filter(_sample_model, split_record, annotation_record, predicate):
+    """成员列表筛选：只走关系外键解析出的 DataRecord 标量列，不使用 JSON path。"""
+    return or_(predicate(split_record), predicate(annotation_record))
 
 
 def _version_item_meta_records(

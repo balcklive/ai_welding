@@ -109,3 +109,34 @@ Implemented dataset version member listing:
 ### Concerns
 - `q` / `quality` filtering still uses SQLAlchemy JSON path comparison only to correlate `samples.meta` back to `data_records`; payload materialization itself no longer depends on SQL-side JSON/datetime coalescing.
 - `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.
+
+---
+
+## Fix Report — 2026-08-27 relational portability follow-up
+
+### Files
+- `backend/app/services/datasets.py`
+- `backend/app/services/CLAUDE.md`
+- `backend/tests/CLAUDE.md`
+- `backend/tests/test_datasets.py`
+
+### What changed
+- Refactored `list_version_items()` filtering/counting to use only relational paths for normal dataset rows: `DatasetItem -> Sample -> SplitTask -> DataVersion -> DataRecord`, plus `Sample -> AnnotationTask -> SplitTask -> DataVersion -> DataRecord`.
+- Removed the `samples.meta[...].as_integer()/as_string()` JSON path `exists()` predicate from q/quality filters, so MySQL portability no longer depends on dialect-specific JSON extraction in WHERE/COUNT.
+- Kept SQL-side count, q/quality/split filtering, ordering, offset, and limit for relationally correlated rows; historical manual/imported meta-only rows remain a page-local batched payload fallback and are not matched by q/quality without relational linkage.
+- Added a relational-path endpoint regression test and a source-level guard that fails if the version item SQL filter path reintroduces `samples.meta` JSON operators.
+
+### Tests / output
+- `cd backend && uv run pytest tests/test_datasets.py -k "version_item" -v`
+  - `6 passed, 16 deselected`
+- `cd backend && uv run pytest tests/test_datasets.py -v`
+  - `22 passed`
+- `cd backend && uv run pytest -q`
+  - `284 passed, 2 warnings`
+
+### Commit
+- See final response for commit hash.
+
+### Concerns
+- `q` / `quality` filters intentionally do not match legacy manual/imported samples that only contain `samples.meta` record hints; those rows still render via bounded page-local batch fallback when not excluded by q/quality filters.
+- `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.

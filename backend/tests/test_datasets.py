@@ -17,6 +17,7 @@
 - 404（数据集/版本/非法来源 400）、401（10 端点全验证）、构建失败 → job failed。
 """
 
+import inspect
 import json
 import time
 from datetime import datetime, timezone
@@ -34,7 +35,18 @@ from app.core.db import get_session
 from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
-from app.models import Annotation, DataRecord, Dataset, DatasetItem, DatasetVersion, Sample, User
+from app.models import (
+    Annotation,
+    DataRecord,
+    DataVersion,
+    Dataset,
+    DatasetItem,
+    DatasetVersion,
+    Job,
+    Sample,
+    SplitTask,
+    User,
+)
 from app.services import datasets as datasets_svc
 
 client = TestClient(app)
@@ -348,10 +360,38 @@ def test_dataset_version_items_are_scoped_and_filterable(
         weld_0246 = session.exec(
             select(DataRecord).where(DataRecord.weld_id == "WLD-20260814-0246")
         ).one()
+        data_version_0248 = session.exec(
+            select(DataVersion).where(DataVersion.record_id == weld_0248.id)
+        ).first()
+        data_version_0246 = session.exec(
+            select(DataVersion).where(DataVersion.record_id == weld_0246.id)
+        ).first()
+        jobs = [
+            Job(job_uid="job_dataset_items_rel_0248", type="split", status="succeeded", progress=100),
+            Job(job_uid="job_dataset_items_rel_0246", type="split", status="succeeded", progress=100),
+        ]
+        session.add_all(jobs)
+        session.flush()
+        split_0248 = SplitTask(
+            job_id=jobs[0].id,
+            version_id=data_version_0248.id,
+            rules={"fixed_rate": 25},
+            task_format="目标检测",
+            sample_count=2,
+        )
+        split_0246 = SplitTask(
+            job_id=jobs[1].id,
+            version_id=data_version_0246.id,
+            rules={"fixed_rate": 25},
+            task_format="目标检测",
+            sample_count=1,
+        )
+        session.add_all([split_0248, split_0246])
+        session.flush()
         samples = [
-            Sample(object_keys=["processed/page/1.jpg"], frame_no=11, meta={"record_id": weld_0248.id}),
-            Sample(object_keys=["processed/page/2.jpg"], frame_no=12, meta={"record_id": weld_0248.id}),
-            Sample(object_keys=["processed/page/3.jpg"], frame_no=13, meta={"record_id": weld_0246.id}),
+            Sample(split_task_id=split_0248.id, object_keys=["processed/page/1.jpg"], frame_no=11),
+            Sample(split_task_id=split_0248.id, object_keys=["processed/page/2.jpg"], frame_no=12),
+            Sample(split_task_id=split_0246.id, object_keys=["processed/page/3.jpg"], frame_no=13),
         ]
         session.add_all(samples)
         session.commit()
@@ -430,6 +470,15 @@ def test_dataset_version_items_requires_auth(unauthenticated_client) -> None:
     response = unauthenticated_client.get("/api/v1/datasets/1/versions/1/items")
     assert response.status_code == 401
     assert response.json()["code"] == 40100
+
+
+def test_dataset_version_item_filter_source_uses_relational_paths_not_json_operators() -> None:
+    source = inspect.getsource(datasets_svc.list_version_items) + inspect.getsource(
+        datasets_svc._version_item_record_filter
+    )
+    assert '.meta[' not in source
+    assert 'as_integer' not in source
+    assert 'as_string' not in source
 
 
 def test_decode_version_item_payload_handles_json_strings_and_defaults() -> None:
