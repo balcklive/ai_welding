@@ -457,7 +457,7 @@ def test_dataset_version_items_are_scoped_and_filterable(
     assert payload2["items"][0]["frame_no"] == 12
 
 
-def test_dataset_version_items_filters_meta_only_manual_samples_without_neighbor_id_match(
+def test_dataset_version_items_filters_meta_only_manual_samples_with_json_whitespace(
     db_engine, override_get_session, override_get_current_user
 ) -> None:
     dataset = _create_dataset(name="元数据成员筛选集", task="目标检测")
@@ -485,28 +485,42 @@ def test_dataset_version_items_filters_meta_only_manual_samples_without_neighbor
         )
         session.add_all([target, neighbor])
         session.flush()
-        sample = Sample(
-            object_keys=["processed/manual/meta-only.jpg"],
-            meta={"record_id": 12, "weld_id": target.weld_id},
-        )
-        session.add(sample)
+        samples = [
+            Sample(object_keys=["processed/manual/meta-compact.jpg"], meta={}),
+            Sample(object_keys=["processed/manual/meta-pretty.jpg"], meta={}),
+            Sample(object_keys=["processed/manual/meta-quoted.jpg"], meta={}),
+        ]
+        session.add_all(samples)
         session.flush()
-        session.add(
-            DatasetItem(
-                dataset_version_id=version["id"], sample_id=sample.id, split="train"
+        meta_shapes = [
+            '{"record_id":12,"weld_id":"META-RECORD-12"}',
+            '{\n\t"record_id"\r:\t12,\n"weld_id"\t:\r"META-RECORD-12"\n}',
+            '{\r\n "weld_id" : "META-RECORD-12" , \t "record_id" : "12" \n}',
+        ]
+        for sample, meta in zip(samples, meta_shapes, strict=True):
+            session.connection().exec_driver_sql(
+                "UPDATE samples SET meta = ? WHERE id = ?", (meta, sample.id)
             )
-        )
+            session.add(
+                DatasetItem(
+                    dataset_version_id=version["id"], sample_id=sample.id, split="train"
+                )
+            )
         session.commit()
 
     matched = client.get(
         f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
-        params={"q": "目标元数据", "quality": "通过"},
+        params={"q": "目标元数据", "quality": "通过", "page_size": 10},
     )
     assert matched.status_code == 200
     matched_payload = matched.json()["data"]
-    assert matched_payload["total"] == 1
-    assert [item["weld_id"] for item in matched_payload["items"]] == ["META-RECORD-12"]
-    assert [item["quality"] for item in matched_payload["items"]] == ["通过"]
+    assert matched_payload["total"] == 3
+    assert [item["weld_id"] for item in matched_payload["items"]] == [
+        "META-RECORD-12",
+        "META-RECORD-12",
+        "META-RECORD-12",
+    ]
+    assert [item["quality"] for item in matched_payload["items"]] == ["通过", "通过", "通过"]
 
     neighbor_match = client.get(
         f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",

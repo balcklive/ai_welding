@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import String, cast, func, literal, or_
+from sqlalchemy import String, and_, cast, func, literal, or_
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -503,7 +503,14 @@ def list_version_items(
         .outerjoin(annotation_split, annotation_split.id == AnnotationTask.split_task_id)
         .outerjoin(annotation_version, annotation_version.id == annotation_split.version_id)
         .outerjoin(annotation_record, annotation_record.id == annotation_version.record_id)
-        .outerjoin(meta_record, _version_item_meta_record_join(Sample, meta_record))
+        .outerjoin(
+            meta_record,
+            and_(
+                Sample.split_task_id.is_(None),
+                Sample.annotation_task_id.is_(None),
+                _version_item_meta_record_join(Sample, meta_record),
+            ),
+        )
     )
 
     filters = [DatasetItem.dataset_version_id == version.id]
@@ -572,10 +579,13 @@ def _version_item_record_filter(
 def _version_item_meta_record_join(sample_model, meta_record):
     """以可移植文本 token 将 meta-only 样本关联到记录，避免 JSON 方言函数。
 
-    JSON 列经 SQLAlchemy/数据库规范化后可能含或不含空格，故只移除普通空格；记录 id
-    和 weld id 均以 JSON 值边界结束，防止相邻多位 ID 或前缀 weld_id 发生误配。
+    兼容关联仅用于没有 split/annotation 外键的样本。完整 JSON 的四种无意义空白
+    （space、tab、LF、CR）均会移除；记录 id 和 weld id 均以 JSON 值边界结束，防止相邻
+    多位 ID 或前缀 weld_id 发生误配。
     """
-    meta_text = func.replace(cast(sample_model.meta, String), " ", "")
+    meta_text = cast(sample_model.meta, String)
+    for whitespace in (" ", "\t", "\n", "\r"):
+        meta_text = func.replace(meta_text, whitespace, "")
     record_id_prefix = literal('%"record_id":') + cast(meta_record.id, String)
     weld_id_prefix = literal('%"weld_id":"') + meta_record.weld_id
     quoted_record_id_prefix = literal('%"record_id":"') + cast(meta_record.id, String)

@@ -111,9 +111,10 @@
     (weld_id / weld_name / registration_no 包含匹配)、`quality` 精确、`split`
     (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。
     **re-review 修复**：过滤/总数/offset/limit 继续留在 SQL 侧，常规构建样本优先走关系外键和
-    `DataRecord` 标量列；历史手工/导入的 meta-only 样本额外以 `cast(samples.meta as text)` 的 JSON
-    完整 token（`record_id` 的 `,`/`}` 值边界、或完整引号 weld_id）关联 `DataRecord`，不使用 JSON
-    path/dialect 函数且避免 `12` 误配 `123`。页内仍批量补查未关联的 meta，避免列表循环 `session.get(...)`。
+    `DataRecord` 标量列；仅无 split/annotation 外键的历史 meta-only 样本才以 `cast(samples.meta as text)`
+    的 JSON 完整 token 关联 `DataRecord`。兼容谓词移除 JSON 规定的四种无意义空白（space/tab/LF/CR），
+    `record_id` 仍要求 `,`/`}` 值边界、weld_id 要求完整闭引号，故不使用 JSON path/dialect 函数且避免
+    `12` 误配 `123`。页内仍批量补查未关联的 meta，避免列表循环 `session.get(...)`。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
     空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
     稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落
