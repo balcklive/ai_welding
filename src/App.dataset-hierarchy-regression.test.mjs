@@ -21,6 +21,8 @@ test('dataset browser keeps list, overview, records, and record detail as separa
 test('real dataset selection replaces the version id and no-current-version has no fallback', () => {
   assert.match(workspace, /setSelectedVersionId\(selected\?\.currentVersionId \?\? null\)/);
   assert.doesNotMatch(workspace, /setSelectedVersionId\(\(prev\) => prev \?\?/);
+  assert.match(detail, /const \[versions, setVersions\] = useState<DatasetVersion\[]>\(\[\]\)/);
+  assert.doesNotMatch(detail, /useState<DatasetVersion\[]>\(mockDatasetVersions\)/);
   assert.doesNotMatch(detail, /versions\[0\]\?\.id/);
   assert.match(detail, /const visibleVersions = currentVersionId == null \? \[\] : versions/);
   assert.match(detail, /当前数据集尚未创建版本/);
@@ -29,7 +31,8 @@ test('real dataset selection replaces the version id and no-current-version has 
 
 test('records use the selected version split totals instead of the current page', () => {
   assert.match(records, /getDatasetVersion\(dataset\.id, String\(versionId\)\)/);
-  assert.match(records, /const splitTotals = versionSummary\?\.split/);
+  assert.match(records, /setVersionSummaryUnavailable\(true\)/);
+  assert.match(records, /版本信息暂不可用/);
   assert.doesNotMatch(records, /const splitCounts = rows\.reduce/);
 });
 
