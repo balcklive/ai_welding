@@ -82,3 +82,30 @@ Implemented dataset version member listing:
 ### Concerns
 - The SQL resolution path relies on JSON key extraction from `samples.meta` (`record_id` / `weld_id`) plus split/annotation joins; keep this in mind if the project later needs database-specific JSON tuning.
 - `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.
+
+---
+
+## Fix Report — 2026-08-27 MySQL portability follow-up
+
+### Files
+- `backend/app/services/datasets.py`
+- `backend/app/services/CLAUDE.md`
+- `backend/tests/CLAUDE.md`
+- `backend/tests/test_datasets.py`
+
+### What changed
+- Reworked `list_version_items()` to keep SQL-side filtering/count/pagination on stable scalar joins, while selecting raw `samples.meta` plus direct record columns instead of dialect-sensitive `coalesce()` projections over JSON/datetime fields.
+- Added page-local batched resolution for `meta.record_id` / `meta.weld_id`, so paged rows decode JSON in Python and still avoid per-row lookups.
+- Added regression tests for payload decoding when JSON columns come back as strings, for `modalities` defaulting to `[]`, and for `created_at`/other nullable fields staying normalized to `None`.
+
+### Tests / output
+- `cd backend && uv run pytest tests/test_datasets.py -k "version_items or decode_version_item_payload" -v`
+  - `5 passed, 16 deselected`
+- `cd backend && uv run pytest tests/test_datasets.py -v`
+  - `21 passed`
+- `cd backend && uv run pytest -q`
+  - `283 passed, 2 warnings`
+
+### Concerns
+- `q` / `quality` filtering still uses SQLAlchemy JSON path comparison only to correlate `samples.meta` back to `data_records`; payload materialization itself no longer depends on SQL-side JSON/datetime coalescing.
+- `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.

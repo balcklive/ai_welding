@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
-from sqlalchemy import Integer, cast, func, or_
+from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
@@ -447,176 +447,265 @@ def list_version_items(
     page: int,
     page_size: int,
 ) -> tuple[list[dict], int]:
-    """数据集版本成员列表：SQL 侧过滤/计数/分页，按样本粒度返回固定快照成员。"""
-    resolved = _version_item_resolved_fields()
-    filters = [DatasetItem.dataset_version_id == version.id]
-    if split:
-        filters.append(DatasetItem.split == split)
-    if quality:
-        filters.append(resolved["quality"] == quality)
-    if q:
-        filters.append(
-            or_(
-                resolved["weld_id"].contains(q),
-                resolved["weld_name"].contains(q),
-                resolved["registration_no"].contains(q),
-            )
-        )
-
-    total = int(
-        session.exec(
-            select(func.count())
-            .select_from(DatasetItem)
-            .join(Sample, Sample.id == DatasetItem.sample_id)
-            .outerjoin(resolved["meta_record"], resolved["meta_record"].id == resolved["meta_record_id"])
-            .outerjoin(resolved["meta_weld"], resolved["meta_weld"].weld_id == resolved["meta_weld_id"])
-            .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
-            .outerjoin(resolved["split_version"], resolved["split_version"].id == SplitTask.version_id)
-            .outerjoin(resolved["split_record"], resolved["split_record"].id == resolved["split_version"].record_id)
-            .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
-            .outerjoin(resolved["annotation_split"], resolved["annotation_split"].id == AnnotationTask.split_task_id)
-            .outerjoin(resolved["annotation_version"], resolved["annotation_version"].id == resolved["annotation_split"].version_id)
-            .outerjoin(resolved["annotation_record"], resolved["annotation_record"].id == resolved["annotation_version"].record_id)
-            .where(*filters)
-        ).one()
-    )
-    if total == 0:
-        return [], 0
-
-    rows = session.exec(
-        select(
-            DatasetItem.id,
-            DatasetItem.sample_id,
-            resolved["weld_id"],
-            resolved["weld_name"],
-            resolved["registration_no"],
-            resolved["source"],
-            resolved["machine"],
-            resolved["modalities"],
-            resolved["quality"],
-            DatasetItem.split,
-            Sample.frame_no,
-            resolved["created_at"],
-        )
-        .join(Sample, Sample.id == DatasetItem.sample_id)
-        .outerjoin(resolved["meta_record"], resolved["meta_record"].id == resolved["meta_record_id"])
-        .outerjoin(resolved["meta_weld"], resolved["meta_weld"].weld_id == resolved["meta_weld_id"])
-        .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
-        .outerjoin(resolved["split_version"], resolved["split_version"].id == SplitTask.version_id)
-        .outerjoin(resolved["split_record"], resolved["split_record"].id == resolved["split_version"].record_id)
-        .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
-        .outerjoin(resolved["annotation_split"], resolved["annotation_split"].id == AnnotationTask.split_task_id)
-        .outerjoin(resolved["annotation_version"], resolved["annotation_version"].id == resolved["annotation_split"].version_id)
-        .outerjoin(resolved["annotation_record"], resolved["annotation_record"].id == resolved["annotation_version"].record_id)
-        .where(*filters)
-        .order_by(DatasetItem.sample_id, DatasetItem.id)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
-
-    return [
-        {
-            "id": item_id,
-            "sample_id": sample_id,
-            "weld_id": weld_id,
-            "weld_name": weld_name,
-            "registration_no": registration_no,
-            "source": source,
-            "machine": machine,
-            "modalities": list(modalities or []),
-            "quality": row_quality,
-            "split": row_split,
-            "frame_no": frame_no,
-            "created_at": _iso_utc(created_at),
-        }
-        for (
-            item_id,
-            sample_id,
-            weld_id,
-            weld_name,
-            registration_no,
-            source,
-            machine,
-            modalities,
-            row_quality,
-            row_split,
-            frame_no,
-            created_at,
-        ) in rows
-    ], total
-
-
-def _version_item_resolved_fields() -> dict[str, object]:
-    """构造成员列表的统一解析字段：meta → split_task → annotation_task 三路兜底。"""
+    """数据集版本成员列表：SQL 侧过滤/计数/分页，页内再批量解析 JSON 字段。"""
     split_version = aliased(DataVersion)
     split_record = aliased(DataRecord)
     annotation_split = aliased(SplitTask)
     annotation_version = aliased(DataVersion)
     annotation_record = aliased(DataRecord)
+
+    query = (
+        select(
+            DatasetItem.id.label("id"),
+            DatasetItem.sample_id.label("sample_id"),
+            DatasetItem.split.label("split"),
+            Sample.frame_no.label("frame_no"),
+            Sample.meta.label("meta"),
+            split_record.weld_id.label("split_weld_id"),
+            split_record.weld_name.label("split_weld_name"),
+            split_record.registration_no.label("split_registration_no"),
+            split_record.source.label("split_source"),
+            split_record.machine.label("split_machine"),
+            split_record.modalities.label("split_modalities"),
+            split_record.quality.label("split_quality"),
+            split_record.created_at.label("split_created_at"),
+            annotation_record.weld_id.label("annotation_weld_id"),
+            annotation_record.weld_name.label("annotation_weld_name"),
+            annotation_record.registration_no.label("annotation_registration_no"),
+            annotation_record.source.label("annotation_source"),
+            annotation_record.machine.label("annotation_machine"),
+            annotation_record.modalities.label("annotation_modalities"),
+            annotation_record.quality.label("annotation_quality"),
+            annotation_record.created_at.label("annotation_created_at"),
+        )
+        .select_from(DatasetItem)
+        .join(Sample, Sample.id == DatasetItem.sample_id)
+        .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
+        .outerjoin(split_version, split_version.id == SplitTask.version_id)
+        .outerjoin(split_record, split_record.id == split_version.record_id)
+        .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
+        .outerjoin(annotation_split, annotation_split.id == AnnotationTask.split_task_id)
+        .outerjoin(annotation_version, annotation_version.id == annotation_split.version_id)
+        .outerjoin(annotation_record, annotation_record.id == annotation_version.record_id)
+    )
+
+    filters = [DatasetItem.dataset_version_id == version.id]
+    if split:
+        filters.append(DatasetItem.split == split)
+    if quality:
+        filters.append(
+            _version_item_record_filter(
+                Sample,
+                split_record,
+                annotation_record,
+                lambda record: record.quality == quality,
+            )
+        )
+    if q:
+        filters.append(
+            _version_item_record_filter(
+                Sample,
+                split_record,
+                annotation_record,
+                lambda record: or_(
+                    record.weld_id.contains(q),
+                    record.weld_name.contains(q),
+                    record.registration_no.contains(q),
+                ),
+            )
+        )
+
+    total = int(
+        session.exec(query.with_only_columns(func.count()).where(*filters)).one()[0]
+    )
+    if total == 0:
+        return [], 0
+
+    rows = [
+        dict(row._mapping)
+        for row in session.exec(
+            query.where(*filters)
+            .order_by(DatasetItem.sample_id, DatasetItem.id)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+    ]
+    meta_record_by_id, meta_record_by_weld_id = _version_item_meta_records(session, rows)
+    return [
+        _version_item_payload(
+            row,
+            meta_record_by_id=meta_record_by_id,
+            meta_record_by_weld_id=meta_record_by_weld_id,
+        )
+        for row in rows
+    ], total
+
+
+def _version_item_record_filter(sample_model, split_record, annotation_record, predicate):
+    """成员列表筛选：优先走 SQL 标量列，meta 仅用于关联到 DataRecord 后复用同一谓词。"""
     meta_record = aliased(DataRecord)
-    meta_weld = aliased(DataRecord)
-    meta_record_id = cast(Sample.meta["record_id"].as_string(), Integer)
-    meta_weld_id = Sample.meta["weld_id"].as_string()
+    return or_(
+        predicate(split_record),
+        predicate(annotation_record),
+        exists(
+            select(1)
+            .select_from(meta_record)
+            .where(
+                or_(
+                    and_(
+                        meta_record.id == sample_model.meta["record_id"].as_integer(),
+                        predicate(meta_record),
+                    ),
+                    and_(
+                        meta_record.weld_id == sample_model.meta["weld_id"].as_string(),
+                        predicate(meta_record),
+                    ),
+                )
+            )
+        ),
+    )
+
+
+def _version_item_meta_records(
+    session: Session, rows: list[dict]
+) -> tuple[dict[int, dict], dict[str, dict]]:
+    """页内批量解析 meta.record_id / meta.weld_id，再一次性查 DataRecord。"""
+    record_ids: set[int] = set()
+    weld_ids: set[str] = set()
+    for row in rows:
+        meta = _json_object(row.get("meta"))
+        row["meta"] = meta
+        record_id = _json_int(meta.get("record_id"))
+        weld_id = _json_text(meta.get("weld_id"))
+        if record_id is not None:
+            record_ids.add(record_id)
+        if weld_id:
+            weld_ids.add(weld_id)
+
+    clauses = []
+    if record_ids:
+        clauses.append(DataRecord.id.in_(record_ids))
+    if weld_ids:
+        clauses.append(DataRecord.weld_id.in_(weld_ids))
+    if not clauses:
+        return {}, {}
+
+    records = session.exec(select(DataRecord).where(or_(*clauses))).all()
+    by_id = {record.id: _version_item_record_dict(record) for record in records if record.id is not None}
+    by_weld_id = {record.weld_id: _version_item_record_dict(record) for record in records}
+    return by_id, by_weld_id
+
+
+def _version_item_record_dict(record: DataRecord) -> dict:
     return {
-        "split_version": split_version,
-        "split_record": split_record,
-        "annotation_split": annotation_split,
-        "annotation_version": annotation_version,
-        "annotation_record": annotation_record,
-        "meta_record": meta_record,
-        "meta_weld": meta_weld,
-        "meta_record_id": meta_record_id,
-        "meta_weld_id": meta_weld_id,
-        "weld_id": func.coalesce(
-            meta_record.weld_id,
-            meta_weld.weld_id,
-            split_record.weld_id,
-            annotation_record.weld_id,
-            meta_weld_id,
+        "weld_id": record.weld_id,
+        "weld_name": record.weld_name,
+        "registration_no": record.registration_no,
+        "source": record.source,
+        "machine": record.machine,
+        "modalities": record.modalities,
+        "quality": record.quality,
+        "created_at": record.created_at,
+    }
+
+
+def _version_item_payload(
+    row: dict,
+    *,
+    meta_record_by_id: dict[int, dict],
+    meta_record_by_weld_id: dict[str, dict],
+) -> dict:
+    meta = _json_object(row.get("meta"))
+    meta_record = meta_record_by_id.get(_json_int(meta.get("record_id")) or -1)
+    meta_weld_id = _json_text(meta.get("weld_id"))
+    if meta_record is None and meta_weld_id:
+        meta_record = meta_record_by_weld_id.get(meta_weld_id)
+    split_record = _version_item_prefetched_record(row, "split")
+    annotation_record = _version_item_prefetched_record(row, "annotation")
+
+    return {
+        "id": row["id"],
+        "sample_id": row["sample_id"],
+        "weld_id": _first_present(meta_record, split_record, annotation_record, field="weld_id") or meta_weld_id,
+        "weld_name": _first_present(meta_record, split_record, annotation_record, field="weld_name"),
+        "registration_no": _first_present(meta_record, split_record, annotation_record, field="registration_no"),
+        "source": _first_present(meta_record, split_record, annotation_record, field="source"),
+        "machine": _first_present(meta_record, split_record, annotation_record, field="machine"),
+        "modalities": _json_list(
+            _first_present(meta_record, split_record, annotation_record, field="modalities")
         ),
-        "weld_name": func.coalesce(
-            meta_record.weld_name,
-            meta_weld.weld_name,
-            split_record.weld_name,
-            annotation_record.weld_name,
-        ),
-        "registration_no": func.coalesce(
-            meta_record.registration_no,
-            meta_weld.registration_no,
-            split_record.registration_no,
-            annotation_record.registration_no,
-        ),
-        "source": func.coalesce(
-            meta_record.source,
-            meta_weld.source,
-            split_record.source,
-            annotation_record.source,
-        ),
-        "machine": func.coalesce(
-            meta_record.machine,
-            meta_weld.machine,
-            split_record.machine,
-            annotation_record.machine,
-        ),
-        "modalities": func.coalesce(
-            meta_record.modalities,
-            meta_weld.modalities,
-            split_record.modalities,
-            annotation_record.modalities,
-        ),
-        "quality": func.coalesce(
-            meta_record.quality,
-            meta_weld.quality,
-            split_record.quality,
-            annotation_record.quality,
-        ),
-        "created_at": func.coalesce(
-            meta_record.created_at,
-            meta_weld.created_at,
-            split_record.created_at,
-            annotation_record.created_at,
+        "quality": _first_present(meta_record, split_record, annotation_record, field="quality"),
+        "split": row["split"],
+        "frame_no": row["frame_no"],
+        "created_at": _iso_utc(
+            _first_present(meta_record, split_record, annotation_record, field="created_at")
         ),
     }
+
+
+def _version_item_prefetched_record(row: dict, prefix: str) -> dict:
+    return {
+        "weld_id": row.get(f"{prefix}_weld_id"),
+        "weld_name": row.get(f"{prefix}_weld_name"),
+        "registration_no": row.get(f"{prefix}_registration_no"),
+        "source": row.get(f"{prefix}_source"),
+        "machine": row.get(f"{prefix}_machine"),
+        "modalities": row.get(f"{prefix}_modalities"),
+        "quality": row.get(f"{prefix}_quality"),
+        "created_at": row.get(f"{prefix}_created_at"),
+    }
+
+
+def _first_present(*records: dict | None, field: str):
+    for record in records:
+        if record is not None and record.get(field) is not None:
+            return record.get(field)
+    return None
+
+
+def _json_object(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _json_list(value: object) -> list:
+    if isinstance(value, list):
+        return list(value)
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(parsed, list):
+            return list(parsed)
+    return []
+
+
+def _json_int(value: object) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _json_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 # ── 构建任务（异步 handler 领域逻辑） ───────────────────────────────

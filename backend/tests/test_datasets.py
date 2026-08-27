@@ -19,6 +19,7 @@
 
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +35,7 @@ from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
 from app.models import Annotation, DataRecord, Dataset, DatasetItem, DatasetVersion, Sample, User
+from app.services import datasets as datasets_svc
 
 client = TestClient(app)
 
@@ -428,6 +430,100 @@ def test_dataset_version_items_requires_auth(unauthenticated_client) -> None:
     response = unauthenticated_client.get("/api/v1/datasets/1/versions/1/items")
     assert response.status_code == 401
     assert response.json()["code"] == 40100
+
+
+def test_decode_version_item_payload_handles_json_strings_and_defaults() -> None:
+    item = datasets_svc._version_item_payload(
+        row={
+            "id": 9,
+            "sample_id": 7,
+            "frame_no": 21,
+            "split": "val",
+            "meta": '{"record_id": 101, "weld_id": "META-WELD-01"}',
+            "split_weld_id": None,
+            "split_weld_name": None,
+            "split_registration_no": None,
+            "split_source": None,
+            "split_machine": None,
+            "split_modalities": '["video", "audio"]',
+            "split_quality": None,
+            "split_created_at": None,
+            "annotation_weld_id": None,
+            "annotation_weld_name": None,
+            "annotation_registration_no": None,
+            "annotation_source": None,
+            "annotation_machine": None,
+            "annotation_modalities": None,
+            "annotation_quality": None,
+            "annotation_created_at": None,
+        },
+        meta_record_by_id={101: {"weld_name": "元数据焊缝", "registration_no": "REG-101", "source": "产线A"}},
+        meta_record_by_weld_id={},
+    )
+    assert item == {
+        "id": 9,
+        "sample_id": 7,
+        "weld_id": "META-WELD-01",
+        "weld_name": "元数据焊缝",
+        "registration_no": "REG-101",
+        "source": "产线A",
+        "machine": None,
+        "modalities": ["video", "audio"],
+        "quality": None,
+        "split": "val",
+        "frame_no": 21,
+        "created_at": None,
+    }
+
+
+def test_decode_version_item_payload_prefers_meta_record_and_normalizes_created_at() -> None:
+    created_at = datetime(2026, 8, 27, 10, 11, 12, tzinfo=timezone.utc)
+    item = datasets_svc._version_item_payload(
+        row={
+            "id": 3,
+            "sample_id": 2,
+            "frame_no": None,
+            "split": "train",
+            "meta": {"record_id": "55", "weld_id": "META-WELD-55"},
+            "split_weld_id": "SPLIT-WELD",
+            "split_weld_name": "切分焊缝",
+            "split_registration_no": "REG-SPLIT",
+            "split_source": "切分来源",
+            "split_machine": "切分设备",
+            "split_modalities": ["timeseries"],
+            "split_quality": "待复核",
+            "split_created_at": None,
+            "annotation_weld_id": "ANN-WELD",
+            "annotation_weld_name": "标注焊缝",
+            "annotation_registration_no": "REG-ANN",
+            "annotation_source": "标注来源",
+            "annotation_machine": "标注设备",
+            "annotation_modalities": ["video"],
+            "annotation_quality": "异常",
+            "annotation_created_at": None,
+        },
+        meta_record_by_id={
+            55: {
+                "weld_id": "META-REC-55",
+                "weld_name": "元数据记录",
+                "registration_no": "REG-055",
+                "source": "元数据来源",
+                "machine": "元数据设备",
+                "modalities": '["current", "voltage"]',
+                "quality": "通过",
+                "created_at": created_at,
+            }
+        },
+        meta_record_by_weld_id={},
+    )
+    assert item["weld_id"] == "META-REC-55"
+    assert item["weld_name"] == "元数据记录"
+    assert item["registration_no"] == "REG-055"
+    assert item["source"] == "元数据来源"
+    assert item["machine"] == "元数据设备"
+    assert item["modalities"] == ["current", "voltage"]
+    assert item["quality"] == "通过"
+    assert item["created_at"] == "2026-08-27T10:11:12Z"
 
 
 # ---------- 构建任务（空来源 → 兜底合成样本，覆盖多焊缝 8:1:1） ----------
