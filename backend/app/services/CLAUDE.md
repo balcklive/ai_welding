@@ -107,6 +107,9 @@
     `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）；`readiness_for_version` 复用于训练服务端闸门（按指定 dataset_version 而非仅 current_version 判定，且保留 seed 旧版本 `status=可训练` 的兼容放行）。
   - `list_versions` / `create_version`（下一版本号 v1.<n>）/ `version_payload`；
     **`name`/`note` 仅接受不落库**（`dataset_versions` 表 §3.15 无对应列）。
+  - `list_version_items`：`dataset_items → samples → data_records` 固定快照成员列表；支持 `q`
+    (weld_id / weld_name / registration_no 包含匹配)、`quality` 精确、`split`
+    (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
     空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
     稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落

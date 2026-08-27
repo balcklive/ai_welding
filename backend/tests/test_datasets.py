@@ -112,6 +112,13 @@ def override_get_current_user():
 
 
 @pytest.fixture()
+def unauthenticated_client(override_get_session):
+    """清掉登录依赖后提供同一个 TestClient，用于 401 覆盖。"""
+    app.dependency_overrides.pop(get_current_user, None)
+    yield client
+
+
+@pytest.fixture()
 def executor_sessionlocal(db_engine, monkeypatch):
     """把 executor 的 SessionLocal 指到同一测试引擎（run_job 用独立 session，不启动线程）。"""
     monkeypatch.setattr(
@@ -130,6 +137,12 @@ def fake_storage(monkeypatch):
 
 
 # ── 小助手 ────────────────────────────────────────────────────────────
+
+
+def _dataset_version_id(dataset_id: int = 1) -> int:
+    versions = client.get(f"/api/v1/datasets/{dataset_id}/versions").json()["data"]
+    assert versions, f"dataset {dataset_id} has no versions"
+    return versions[0]["id"]
 
 
 def _version_id_by_no(weld_id, version_no="v1.0"):
@@ -319,6 +332,68 @@ def test_create_version_increments(
     detail = client.get(f"/api/v1/datasets/{ds['id']}/versions/{v1['id']}").json()["data"]
     assert detail["version_no"] == "v1.1"
     assert "snapshot_id" in detail and "quality" in detail
+
+
+def test_dataset_version_items_are_scoped_and_filterable(
+    db_engine, override_get_session, override_get_current_user
+) -> None:
+    version_id = _dataset_version_id(1)
+    with Session(db_engine) as session:
+        samples = session.exec(
+            select(Sample)
+            .where(Sample.annotation_task_id.is_not(None))
+            .order_by(Sample.id)
+        ).all()
+        assert len(samples) >= 2
+        session.add_all(
+            [
+                DatasetItem(dataset_version_id=version_id, sample_id=samples[0].id, split="train"),
+                DatasetItem(dataset_version_id=version_id, sample_id=samples[1].id, split="train"),
+            ]
+        )
+        session.commit()
+
+    response = client.get(
+        f"/api/v1/datasets/1/versions/{version_id}/items",
+        params={"split": "train", "q": "0248", "page": 1, "page_size": 2},
+    )
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert set(payload) == {"items", "total", "page", "page_size"}
+    assert payload["page"] == 1
+    assert payload["page_size"] == 2
+    assert all(item["split"] == "train" for item in payload["items"])
+    assert all("weld_id" in item and "registration_no" in item for item in payload["items"])
+    assert all(
+        set(item) >= {
+            "sample_id",
+            "weld_id",
+            "weld_name",
+            "registration_no",
+            "source",
+            "machine",
+            "modalities",
+            "quality",
+            "split",
+            "frame_no",
+            "created_at",
+        }
+        for item in payload["items"]
+    )
+
+
+def test_dataset_version_items_rejects_cross_dataset_version(
+    override_get_session, override_get_current_user
+) -> None:
+    response = client.get("/api/v1/datasets/1/versions/999999/items")
+    assert response.status_code == 404
+    assert response.json()["code"] == 40402
+
+
+def test_dataset_version_items_requires_auth(unauthenticated_client) -> None:
+    response = unauthenticated_client.get("/api/v1/datasets/1/versions/1/items")
+    assert response.status_code == 401
+    assert response.json()["code"] == 40100
 
 
 # ---------- 构建任务（空来源 → 兜底合成样本，覆盖多焊缝 8:1:1） ----------

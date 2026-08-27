@@ -97,7 +97,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /datasets/{dataset_id}/dimensions`（7 项 `{name, status, required}`）、
     `GET /datasets/{dataset_id}/readiness`（`{readiness, checks[]}`）。
   - `GET/POST /datasets/{dataset_id}/versions`（新建固定快照占位，下一版本号）、
-    `GET /datasets/{dataset_id}/versions/{version_id}`（版本不属于数据集 → 40402）。
+    `GET /datasets/{dataset_id}/versions/{version_id}`（版本不属于该数据集 → 40402）、
+    `GET /datasets/{dataset_id}/versions/{version_id}/items`（按样本粒度分页；`q` 过滤
+    weld_id/weld_name/registration_no，`quality` 精确，`split` 仅 train/val/test，
+    40401/40402/40000 对齐）。
   - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks`（**异步**，body `{source}` =
     DatasetSource 字典或类型字符串；类型白名单校验 → 40000；同事务建 pending Job +
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
