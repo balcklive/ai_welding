@@ -39,8 +39,9 @@ Implemented dataset version member listing:
 `cd backend && uv run pytest -q`
 - `281 passed, 2 warnings`
 
-## Commit
+## Commits
 - `a6d7880` — `feat: add dataset version member listing`
+- `ec2c926` — `docs: add task 1 implementation report`
 
 ## Concerns
 - `created_at` is sourced from the related `DataRecord` because `Sample` has no timestamp column.
