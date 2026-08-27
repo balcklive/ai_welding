@@ -77,7 +77,7 @@ Implemented dataset version member listing:
   - `281 passed, 2 warnings`
 
 ### Commit
-- `ae170d7` — `fix: optimize dataset version item listing`
+- `8a10b4c` — `fix: optimize dataset version item listing`
 
 ### Concerns
 - The SQL resolution path relies on JSON key extraction from `samples.meta` (`record_id` / `weld_id`) plus split/annotation joins; keep this in mind if the project later needs database-specific JSON tuning.
