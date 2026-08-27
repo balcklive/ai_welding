@@ -29,9 +29,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import time
 
-import numpy as np
 from loguru import logger
 from sqlmodel import Session, select
 
@@ -186,6 +186,10 @@ def _collect_sources(
 
     buckets: dict[str, list[str]] = {"video": [], "timeseries": [], "audio": [], "infrared": []}
     for key in ordered:
+        if "/align/" in key.lower():
+            # 上次对齐产物（processed/{weld_id}/align/...）不是原始模态源：重复对齐
+            # 会把 keyframes/*.jpg 误归红外桶、align CSV 误归时序桶，故一律跳过。
+            continue
         low = key.lower()
         if low.endswith(_VIDEO_EXTS):
             buckets["video"].append(key)
@@ -445,26 +449,33 @@ def _build_asset_payloads(
 
 
 def _timeseries_csvs(bundle) -> tuple[bytes, bytes]:
-    """全时长 CSV + weld_segment 窗口切片 CSV（`t,cur,vol,gas,wir`；超限抽稀）。"""
+    """全时长 CSV + weld_segment 窗口切片 CSV（`t,cur,vol,gas,wir`；超限抽稀）。
+
+    内存友好（长记录可达千万点）：不建全量时间轴/布尔掩码，采样率均匀时
+    `t = i / fs`，焊接段窗口下标用 `ceil(start*fs) .. floor(end*fs)` 直算，
+    与旧 `np.arange(n)/fs + flatnonzero` 选出完全相同的行。
+    """
     channels = [bundle.channel(cid) for cid in _TS_CHANNEL_IDS]
     if any(c is None for c in channels):
         raise ValueError(f"信号缺少时序通道: {[c for c in _TS_CHANNEL_IDS if bundle.channel(c) is None]}")
     n = len(channels[0].values)
     if any(len(c.values) != n for c in channels):
         raise ValueError("时序通道长度不一致，无法生成对齐 CSV")
+    fs = float(bundle.sample_rate)
 
     full_idx = list(range(0, n, max(1, -(-n // _MAX_TS_ROWS))))
-    t = np.arange(n) / float(bundle.sample_rate)
     seg = events_window(bundle)
-    weld_idx_all = np.flatnonzero((t >= seg[0]) & (t <= seg[1])).tolist()
+    ws = max(0, math.ceil(seg[0] * fs))
+    we = min(n - 1, math.floor(seg[1] * fs))
+    weld_idx_all = list(range(ws, we + 1))
     weld_idx = (
         weld_idx_all[:: max(1, -(-len(weld_idx_all) // _MAX_TS_ROWS))]
         if weld_idx_all
         else []
     )
     return (
-        _csv_bytes(channels, t, full_idx),
-        _csv_bytes(channels, t, weld_idx),
+        _csv_bytes(channels, full_idx, fs),
+        _csv_bytes(channels, weld_idx, fs),
     )
 
 
@@ -476,12 +487,12 @@ def events_window(bundle) -> tuple[float, float]:
     return start, end
 
 
-def _csv_bytes(channels, t, idxs: list[int]) -> bytes:
+def _csv_bytes(channels, idxs: list[int], fs: float) -> bytes:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["t", *[c.id for c in channels]])
     for i in idxs:
-        writer.writerow([f"{t[i]:.6f}", *[f"{float(c.values[i]):.6f}" for c in channels]])
+        writer.writerow([f"{i / fs:.6f}", *[f"{float(c.values[i]):.6f}" for c in channels]])
     return buf.getvalue().encode("utf-8")
 
 

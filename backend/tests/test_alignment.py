@@ -412,6 +412,55 @@ def test_alignment_with_real_video_metadata_and_keyframes(
     )
 
 
+# ---------- 重复对齐：上次对齐产物不得回灌为原始模态源 ----------
+
+
+def test_realignment_excludes_prior_align_artifacts_from_sources(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    storage = FakeStorageWithRead()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    # 在 v1.3 上附加"上次对齐产物"（重复对齐时目标版本 object_keys 含 align 产物）
+    with Session(db_engine) as session:
+        record = session.exec(
+            select(DataRecord).where(DataRecord.weld_id == WELD_0248)
+        ).first()
+        v13 = session.exec(
+            select(DataVersion).where(
+                DataVersion.record_id == record.id, DataVersion.version_no == "v1.3"
+            )
+        ).first()
+        v13.object_keys = list(v13.object_keys or []) + [
+            f"processed/{WELD_0248}/align/timeseries.csv",
+            f"processed/{WELD_0248}/align/keyframes/arc.jpg",
+            f"processed/{WELD_0248}/align/tracks.json",
+        ]
+        session.add(v13)
+        session.commit()
+
+    vid = _version_id_by_no(WELD_0248, "v1.3")
+    job_id = _post_alignment_task(WELD_0248, vid, ["timeseries", "infrared"])
+    run_job(job_id)
+
+    done = client.get(f"/api/v1/alignment-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    tracks = done["result"]["tracks"]
+
+    # 红外桶不得出现上次对齐的关键帧 JPG（.jpg 会误归红外）→ 无真实红外源 = unavailable
+    ir = [t for t in tracks if t["modality"] == "infrared"]
+    assert len(ir) == 1
+    assert ir[0]["availability"] == "unavailable"
+    assert ir[0]["object_key"] is None
+
+    # timeseries 源仍是 raw CSV，不是上次对齐的 align CSV
+    ts = [t for t in tracks if t["modality"] == "timeseries"]
+    assert ts and ts[0]["object_key"] == "raw/REG-20260815-00248/timeseries.csv"
+
+
 # ---------- 失败：handler 抛异常 → job failed + error ----------
 
 

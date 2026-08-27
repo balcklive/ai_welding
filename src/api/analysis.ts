@@ -65,7 +65,7 @@ export async function getAlignmentTask(
 export async function getSignals(
   weldId: string,
   versionId: string,
-  opts: SignalQuery,
+  opts: SignalQuery = {},
 ): Promise<SignalData> {
   const data = await request<SignalData>(
     `/welds/${weldId}/versions/${versionId}/signals`,

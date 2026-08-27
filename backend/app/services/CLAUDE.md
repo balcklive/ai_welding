@@ -78,7 +78,9 @@
     80=上传 → 100=mark_succeeded（逐次 `session.commit()` + 小睡，轮询可见）。
   - 输入清单 `_collect_sources`：raw 文件取 **v1.0**（`welds.get_v10_version`）+ 当前版本
     object_keys 合并去重，按 `welds._VIDEO_EXTS/_TS_EXTS/_AUDIO_EXTS/_IMAGE_EXTS` 分桶
-    （图像归 infrared 桶——无连续时间轴仅登记）。
+    （图像归 infrared 桶——无连续时间轴仅登记）。**坑**：跳过 `/align/` 前缀键——上次
+    对齐产物（`processed/{weld_id}/align/...`）不是原始模态源，否则重复对齐会把
+    keyframes/*.jpg 误归红外桶、align CSV 误归时序桶。
   - 信号/事件：`_signal_version_id` **版本回退解析**（task.version_id 有 succeeded
     SignalIngest 用之，否则回退 v1.0——SignalIngest 挂 v1.0 而对齐常在 latest 发起）→
     `signal_ingest.load_signal_bundle`（real/generated 如实标注 `event_source`）。
@@ -92,6 +94,9 @@
     `timeseries.csv`（全时长 4 通道，>10 万行按步长抽稀）+ `timeseries_weld.csv`
     （weld_segment 窗口切片）+ `keyframes/{event}.jpg` + `tracks.json`（恒末尾，
     含 schema_version/events/event_source/tracks）。
+    **内存友好（长记录可达千万点）**：不建全量时间轴/布尔掩码，采样率均匀时
+    `t = i / fs`，焊接段窗口下标 `ceil(start*fs) .. floor(end*fs)` 直算
+    （`_timeseries_csvs`/`_csv_bytes(channels, idxs, fs)`）。
   - 上传失败逆序 `delete_object` 清理后重抛；同事务新建「时间对齐」`DataVersion`
     （v1.<n+1>、operator=算法任务）→ 回填 task.events/tracks/assets →
     `mark_succeeded(job, {events, event_source, tracks, assets, version})`。
