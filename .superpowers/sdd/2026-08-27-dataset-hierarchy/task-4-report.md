@@ -12,7 +12,7 @@
 - Browser acceptance was blocked before navigation: BetterChromium is not installed in this environment.
 
 ## Commit
-- Pending documentation commit.
+- `2c43511 docs: record dataset hierarchy implementation`.
 
 ## Concerns
 - Visual/browser acceptance remains unexecuted only because the browser runtime is unavailable; automated verification is green.
