@@ -199,7 +199,11 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   const header = workspaceHeaders[ws];
   // 模型仓库刷新计数（「新建模型」成功后自增，触发 ModelRepository 重新拉取）。
   const [repoRefresh, setRepoRefresh] = useState(0);
-  const toolbarConfig = ws === 'data-center' ? { action: '上传数据', secondary: '导出报告' }
+  const [isDatasetDetail, setIsDatasetDetail] = useState(false);
+  useEffect(() => {
+    if (route !== 'data-center/datasets') setIsDatasetDetail(false);
+  }, [route]);
+  const toolbarConfig = ws === 'data-center' ? { action: route === 'data-center/datasets' && isDatasetDetail ? '上传数据' : undefined, secondary: '导出报告' }
     : route === 'analysis/annotation' ? { action: '保存标注', secondary: '导出结果' }
     : ws === 'analysis' ? { action: '开始处理', secondary: '导出结果' }
     : route === 'model-center/training' ? { action: '开始训练', secondary: '导出报告' }
@@ -220,7 +224,7 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
 
   let content: React.ReactNode = null;
   if (route === 'data-center/list') content = <ManagementFiltered navigate={navigate} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />;
-  else if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} />;
+  else if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} />;
   else if (route === 'data-center/registration') content = <Registration />;
   else if (route === 'data-center/validation') content = selectedDataId ? <Validation embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/list')} />;
@@ -603,11 +607,15 @@ function mockReadinessChecks(task: string): { name: string; passed: boolean }[] 
   return names.map((name) => ({ name, passed: true }));
 }
 
-function DatasetWorkspace({ navigate }: { navigate: (route: Route) => void }) {
+function DatasetWorkspace({ navigate, onDetailChange }: { navigate: (route: Route) => void; onDetailChange?: (isDetail: boolean) => void }) {
   const [rows, setRows] = useState<DatasetRow[]>(mockDatasetRows);
   const [selectedId, setSelectedId] = useState(mockDatasetRows[0].id);
   const [view, setView] = useState<'list' | 'detail'>('list');
   const dataset = rows.find((item) => item.id === selectedId) ?? rows[0];
+  useEffect(() => {
+    onDetailChange?.(view === 'detail');
+    return () => onDetailChange?.(false);
+  }, [view, onDetailChange]);
   useEffect(() => {
     let cancelled = false;
     listDatasets().then((list) => {
@@ -809,18 +817,29 @@ function InferencePanel() {
   return <section className="panel inference-panel"><div className="panel-heading"><div><h2>推理验证</h2><p>选择模型和样本，预览模型输出结果</p></div><StatusPill tone={statusTone}>{statusText}</StatusPill></div><input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={handleFile} /><div className="inference-layout"><div className="inference-drop"><Upload size={23} /><strong>选择测试样本</strong><span>支持图像、视频帧或时序信号</span><button className="outline-button" onClick={() => fileRef.current?.click()}>选择样本</button></div><div className="inference-result"><div className="result-placeholder"><ScanLine size={28} /><span>{inferSummary}</span></div><div className="result-row"><span>模型置信度</span><strong>{confText}</strong></div><div className="result-row"><span>推理耗时</span><strong>{inferRes ? `${inferRes.latency_ms}ms` : '—'}</strong></div></div></div></section>;
 }
 
-function Toolbar({ action, secondary = '导出报告', onAction, exportType, exportRefIds }: { action: string; secondary?: string; onAction?: () => void; exportType?: string; exportRefIds?: unknown[] }) {
+function Toolbar({ action, secondary = '导出报告', onAction, exportType, exportRefIds }: { action?: string; secondary?: string; onAction?: () => void; exportType?: string; exportRefIds?: unknown[] }) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const handleExport = () => {
-    if (!exportType) { console.warn('[export] 当前页面未配置导出类型'); return; }
+    if (!exportType || exporting) return;
+    setExportError(null);
+    const popup = window.open('', '_blank');
+    setExporting(true);
     exportReport({ type: exportType, ref_ids: exportRefIds ?? [], format: 'pdf' })
       .then((res) => {
         const url = res.urls?.[0]?.url;
-        if (url) window.open(url, '_blank');
-        else console.warn('[export] 未返回下载 URL（ref_ids 可能为空）');
+        if (!url) throw new Error('empty export URL');
+        if (popup && !popup.closed) popup.location.href = url;
+        else window.location.href = url;
       })
-      .catch((err) => console.warn('[export] exportReport failed', err));
+      .catch((err) => {
+        if (popup && !popup.closed) popup.close();
+        setExportError('报告导出失败，请稍后重试');
+        console.warn('[export] exportReport failed', err);
+      })
+      .finally(() => setExporting(false));
   };
-  return <div className="page-toolbar"><button className="ghost-button"><RefreshCw size={14} />刷新</button><button className="outline-button" onClick={handleExport}><Download size={14} />{secondary}</button><button className="primary-button" onClick={onAction}><Plus size={15} />{action}</button></div>;
+  return <div className="page-toolbar"><button className="ghost-button"><RefreshCw size={14} />刷新</button><button className="outline-button" onClick={handleExport} disabled={exporting}><Download size={14} />{exporting ? '导出中…' : secondary}</button>{action && <button className="primary-button" onClick={onAction}><Plus size={15} />{action}</button>}{exportError && <span className="toolbar-error" role="alert">{exportError}</span>}</div>;
 }
 
 function StatusPill({ children, tone = 'green' }: { children: React.ReactNode; tone?: 'green' | 'orange' | 'red' | 'blue' }) {
