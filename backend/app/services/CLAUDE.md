@@ -107,13 +107,14 @@
     `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）；`readiness_for_version` 复用于训练服务端闸门（按指定 dataset_version 而非仅 current_version 判定，且保留 seed 旧版本 `status=可训练` 的兼容放行）。
   - `list_versions` / `create_version`（下一版本号 v1.<n>）/ `version_payload`；
     **`name`/`note` 仅接受不落库**（`dataset_versions` 表 §3.15 无对应列）。
-  - `list_version_items`：`dataset_items → samples → data_records` 固定快照成员列表；支持 `q`
+  - `list_version_items`：`dataset_items → samples → split_tasks/annotation_tasks → data_versions → data_records` 固定快照成员列表；支持 `q`
     (weld_id / weld_name / registration_no 包含匹配)、`quality` 精确、`split`
-    (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。
-    **review 修复**：过滤/总数/offset/limit 全在 SQL 侧执行，并通过 joined/batched 解析
-    `sample.meta.record_id|weld_id`、`split_task→data_version→record`、
-    `annotation_task→split_task→data_version→record`，避免先全量拉回 Python 再过滤，也避免
-    列表循环里的 `session.get(...)`。
+    (train/val/test) 过滤，按 `sample_id` 稳定排序并分页返回，样本粒度保留，不按焊缝去重。**Task 2–4 前端依此作为数据集概览下的唯一成员来源**，版本切换将重发此查询，故响应字段保持 `DatasetItemRow` 形状。
+    **re-review 修复**：过滤/总数/offset/limit 继续留在 SQL 侧，常规构建样本优先走关系外键和
+    `DataRecord` 标量列；仅无 split/annotation 外键的历史 meta-only 样本才以 `cast(samples.meta as text)`
+    的 JSON 完整 token 关联 `DataRecord`。兼容谓词移除 JSON 规定的四种无意义空白（space/tab/LF/CR），
+    `record_id` 仍要求 `,`/`}` 值边界、weld_id 要求完整闭引号，故不使用 JSON path/dialect 函数且避免
+    `12` 误配 `123`。页内仍批量补查未关联的 meta，避免列表循环 `session.get(...)`。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
     空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
     稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落

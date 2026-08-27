@@ -4,7 +4,7 @@
 
 实现状态：**四份契约文档与后端/前端均已实现，本地跑通**（pytest 全绿、`npm run build` 通过）；契约与实现之间的偏差已回写本文档（见下方"已回写差异"），以契约文档 + 实际代码为准。
 
-- `API接口清单.md`：前后端 API 接口清单（v0.1，已实现）。覆盖四个模块全部页面功能 → 后端接口（`/api/v1`）→ 前端接口（`src/api/`）的完整映射；含全局约定（认证/响应信封/分页/异步 Job/文件存储）。
+- `API接口清单.md`：前后端 API 接口清单（v0.1，已实现）。Task 2–4 追加数据集版本成员 `GET /datasets/{dataset_id}/versions/{version_id}/items` 的 `Page<DatasetItemRow>` 契约和前端映射；成员必须来自 `dataset_items` 固定快照，不能回退为全局焊缝前端过滤。覆盖四个模块全部页面功能 → 后端接口（`/api/v1`）→ 前端接口（`src/api/`）的完整映射；含全局约定（认证/响应信封/分页/异步 Job/文件存储）。
 - `数据库设计.md`：MySQL 表结构（23 张表：字段/约束/索引/ER 关系）+ 版本与数据集快照逻辑，对应 API 清单实体。
 - `OSS存储设计.md`：MinIO 对象存储（单桶 + 前缀键体系、小文件代理/大文件预签名直传、访问控制、生命周期）。
 - `文件与目录设计.md`：目录结构设计（后端独立 `backend/`、前端留根）+ 前后端接口文件对应表 + 命名与部署规则。
@@ -15,6 +15,7 @@
 - `真实数据端到端走通记录.md`：**真实数据全流程走通实录**（登记→上传→信号导入→核验→分析，2026-08-25）——每步接口与结果、两个数据适配发现（time 列数值秒、量程放宽）、`detect_events` 阈值自适应 + 边界伪异常修复、复现方法与边界。
 
 坑/限制：
+- Task 2–4 的页面层级固定为 数据集概览 → 当前版本成员 → 成员详情；数据中心不再提供独立全局数据列表入口，成员详情仍通过 `selectedDataId` 进入既有核验/版本/分析流。
 - 契约文档当前为"已实现"基准（Task 1~24 已完成，本地跑通）；改动任何接口/表/对象键，仍须按本文件规则同步三份契约 + 两端代码。
 - **已回写差异（Task 25）**：① `POST /registrations/{id}/raw-files` 请求体新增可选 `storage_bytes`（缺省 0）；② `POST /files/presign-upload` 请求体新增可选 `filename`（缺省 `"file"`）；③ `GET /welds` 筛选映射说明（`tab=已归档`→`quality=='通过'`、`tab=最近`=created_at desc、`brand`→`machine` 前缀）；④ `DataVersion` 前端以 `record_id` 关联、`Project` 无 `id` 字段；⑤ `exportReport` 返回 `{urls:[{ref_id,url}]}`、`login` 返回含 `token_type`、`createDatasetVersion` 的 `name` 可选；⑥ `POST /datasets/{id}/versions` 的 `name`/`note` 与 `POST /datasets` 的 `source` 接受但不落库（表无列）；⑦ `数据库设计.md` §4 记录 `training_tasks.base_model_id` 无索引（与"所有任务表 FK 列均建索引"矛盾的既有设计）；⑧ `开发规范.md` §1.1 补"分页自写 `paginate()` helper"刻意不复用项。
 - 三份契约强相关：改接口需同步 `API接口清单.md` + `数据库设计.md`（表/字段）+ `OSS存储设计.md`（对象键）+ 两端代码。

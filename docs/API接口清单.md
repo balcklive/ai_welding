@@ -192,10 +192,12 @@
 | GET | `/api/v1/datasets/{dataset_id}/versions` | 数据集版本列表 | 需登录 |
 | POST | `/api/v1/datasets/{dataset_id}/versions` | 新建版本（固定快照，不覆盖旧版，保证可复现） | body: `name`, `note` |
 | GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}` | 版本详情（固定样本清单、划分） | — 需登录 |
-| GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}/items` | 版本成员分页列表（样本粒度，不按焊缝去重） | query: `q`(weld_id/weld_name/registration_no 包含匹配), `quality`(精确), `split`(train/val/test), `page`, `page_size` |
+| GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}/items` | 版本成员分页列表（样本粒度，不按焊缝去重） | query: `q`(weld_id/weld_name/registration_no 包含匹配), `quality`(精确), `split`(train/val/test), `page`, `page_size`；response: `Page<DatasetItemRow>` |
 | POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source` |
 | GET | `/api/v1/datasets/{dataset_id}/lineage` | 数据血缘：原始焊缝→标注任务→数据集版本→模型训练 | — 需登录 |
 
+> **§3.5 成员快照**：`GET /datasets/{dataset_id}/versions/{version_id}/items` 固定从 `dataset_items` 读取，返回 `DatasetItemRow`（sample_id、焊缝/登记/来源/焊机/模态/核验/划分/帧号/时间）；前端不得用全局 `/welds` 加载后过滤。
+>
 > **§3.5 错误语义**：`40401` = 数据集不存在；`40402` = 数据集版本不存在（含版本不属于该数据集）；`GET /datasets/{dataset_id}/versions/{version_id}/items` 的 `split` 仅允许 `train/val/test`，否则返回 `40000`。
 >
 > **§3.5 已知限制（接受但不落库）**：`POST /datasets` 的 `source` 与 `POST /datasets/{id}/versions` 的 `name`/`note` 当前**仅接受、不落库**——`datasets`（§3.14）无 `source` 列、`dataset_versions`（§3.15）无 `name`/`note` 列。此为表结构已定、尚未加列+迁移前的已知限制；后续需落库时加列 + 迁移 + 两端同步。
@@ -302,6 +304,7 @@ getReadiness(id: string): Promise<ReadinessCheck>
 listDatasetVersions(id: string): Promise<DatasetVersion[]>
 createDatasetVersion(id: string, body: { name?: string; note?: string }): Promise<DatasetVersion>   // name 可选（后端仅接受不落库，见 §3.5 说明）
 getDatasetVersion(id: string, versionId: string): Promise<DatasetVersion>
+listDatasetVersionItems(datasetId: string, versionId: number, params: DatasetItemQuery): Promise<Page<DatasetItemRow>>
 getLineage(id: string): Promise<LineageNode[]>
 createBuildTask(id: string, versionId: string, source: DatasetSource): Promise<{ job_id: string }>  // POST …/versions/{version_id}/build-tasks，body: source
 
@@ -372,6 +375,7 @@ exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string
 | 特征提取 · 导出 | `analysis.getFeatureExtraction()` | `GET /features/{id}` |
 | 数据集 · 列表/新建/详情 | `datasets.listDatasets()` `createDataset()` `getDataset()` | `GET` / `POST /datasets` |
 | 数据集 · 输入维度/适配检查 | `datasets.getDimensions()` `getReadiness()` | `GET …/dimensions` `…/readiness` |
+| 数据集 · 版本成员 | `datasets.listDatasetVersionItems()` | `GET /datasets/{dataset_id}/versions/{version_id}/items`（服务端分页/筛选） |
 | 数据集 · 版本/血缘/构建 | `datasets.listDatasetVersions()` `getLineage()` `createBuildTask()` | `/versions` `…/lineage` `…/build-tasks` |
 | 模型仓库 · 列表/汇总/详情 | `models.listModels()` `getModel()` | `GET /models(/{id})` |
 | 模型仓库 · 新建/状态流转 | `models.createModel()` `updateModelVersionStatus()` | `POST /models` `PATCH /models/{id}/versions/{vid}` |

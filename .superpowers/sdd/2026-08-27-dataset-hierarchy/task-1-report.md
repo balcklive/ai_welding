@@ -82,3 +82,92 @@ Implemented dataset version member listing:
 ### Concerns
 - The SQL resolution path relies on JSON key extraction from `samples.meta` (`record_id` / `weld_id`) plus split/annotation joins; keep this in mind if the project later needs database-specific JSON tuning.
 - `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.
+
+---
+
+## Fix Report — 2026-08-27 MySQL portability follow-up
+
+### Files
+- `backend/app/services/datasets.py`
+- `backend/app/services/CLAUDE.md`
+- `backend/tests/CLAUDE.md`
+- `backend/tests/test_datasets.py`
+
+### What changed
+- Reworked `list_version_items()` to keep SQL-side filtering/count/pagination on stable scalar joins, while selecting raw `samples.meta` plus direct record columns instead of dialect-sensitive `coalesce()` projections over JSON/datetime fields.
+- Added page-local batched resolution for `meta.record_id` / `meta.weld_id`, so paged rows decode JSON in Python and still avoid per-row lookups.
+- Added regression tests for payload decoding when JSON columns come back as strings, for `modalities` defaulting to `[]`, and for `created_at`/other nullable fields staying normalized to `None`.
+
+### Tests / output
+- `cd backend && uv run pytest tests/test_datasets.py -k "version_items or decode_version_item_payload" -v`
+  - `5 passed, 16 deselected`
+- `cd backend && uv run pytest tests/test_datasets.py -v`
+  - `21 passed`
+- `cd backend && uv run pytest -q`
+  - `283 passed, 2 warnings`
+
+### Concerns
+- `q` / `quality` filtering still uses SQLAlchemy JSON path comparison only to correlate `samples.meta` back to `data_records`; payload materialization itself no longer depends on SQL-side JSON/datetime coalescing.
+- `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.
+
+---
+
+## Fix Report — 2026-08-27 relational portability follow-up
+
+### Files
+- `backend/app/services/datasets.py`
+- `backend/app/services/CLAUDE.md`
+- `backend/tests/CLAUDE.md`
+- `backend/tests/test_datasets.py`
+
+### What changed
+- Refactored `list_version_items()` filtering/counting to use only relational paths for normal dataset rows: `DatasetItem -> Sample -> SplitTask -> DataVersion -> DataRecord`, plus `Sample -> AnnotationTask -> SplitTask -> DataVersion -> DataRecord`.
+- Removed the `samples.meta[...].as_integer()/as_string()` JSON path `exists()` predicate from q/quality filters, so MySQL portability no longer depends on dialect-specific JSON extraction in WHERE/COUNT.
+- Kept SQL-side count, q/quality/split filtering, ordering, offset, and limit for relationally correlated rows; historical manual/imported meta-only rows remain a page-local batched payload fallback and are not matched by q/quality without relational linkage.
+- Added a relational-path endpoint regression test and a source-level guard that fails if the version item SQL filter path reintroduces `samples.meta` JSON operators.
+
+### Tests / output
+- `cd backend && uv run pytest tests/test_datasets.py -k "version_item" -v`
+  - `6 passed, 16 deselected`
+- `cd backend && uv run pytest tests/test_datasets.py -v`
+  - `22 passed`
+- `cd backend && uv run pytest -q`
+  - `284 passed, 2 warnings`
+
+### Commit
+- See final response for commit hash.
+
+### Concerns
+- `q` / `quality` filters intentionally do not match legacy manual/imported samples that only contain `samples.meta` record hints; those rows still render via bounded page-local batch fallback when not excluded by q/quality filters.
+- `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.
+
+---
+
+## Fix Report — 2026-08-27 meta-only filter compatibility follow-up (round 4)
+
+### Files
+- `backend/app/services/datasets.py`
+- `backend/app/services/CLAUDE.md`
+- `backend/tests/test_datasets.py`
+- `backend/tests/CLAUDE.md`
+
+### What changed
+- Added a third, compatibility-only SQL join from `samples.meta` to `data_records` for manual/imported samples that have no split or annotation relationship.
+- The join uses portable `CAST(... AS text)` plus `REPLACE` and complete JSON value-token `LIKE` patterns; it does not use JSON extraction functions. Numeric `record_id` patterns require a comma or object-close boundary, and string `record_id`/`weld_id` patterns require a closing quote, so `12` cannot match `123`.
+- Kept split/annotation relational joins as the primary path. The compatibility relation participates in the existing SQL q/quality filters, count, stable order, offset, and limit; page-local batch fallback remains bounded and preserves payload defaults.
+- Added endpoint regression coverage for a meta-only manual sample matching combined q/quality filters and rejecting a neighboring multi-digit record ID.
+
+### Tests / output
+- `cd backend && uv run pytest tests/test_datasets.py -k "filters_meta_only_manual" -v`
+  - `1 passed, 22 deselected, 1 warning`
+- `cd backend && uv run pytest tests/test_datasets.py -v`
+  - `23 passed, 1 warning`
+- `cd backend && uv run pytest -q`
+  - `285 passed, 2 warnings`
+
+### Commit
+- See final response for commit hash.
+
+### Concerns
+- The compatibility path assumes JSON documents are stored with ordinary spaces only; it removes spaces but not arbitrary pretty-print whitespace. SQLAlchemy/MySQL/SQLite JSON serialization uses the supported forms.
+- `created_at` for member rows still reflects the resolved `DataRecord.created_at` because `samples` has no timestamp field.

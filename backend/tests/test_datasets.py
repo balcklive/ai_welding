@@ -17,8 +17,10 @@
 - 404（数据集/版本/非法来源 400）、401（10 端点全验证）、构建失败 → job failed。
 """
 
+import inspect
 import json
 import time
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -33,7 +35,19 @@ from app.core.db import get_session
 from app.core.seed import seed_all
 from app.jobs.executor import run_job
 from app.main import app
-from app.models import Annotation, DataRecord, Dataset, DatasetItem, DatasetVersion, Sample, User
+from app.models import (
+    Annotation,
+    DataRecord,
+    DataVersion,
+    Dataset,
+    DatasetItem,
+    DatasetVersion,
+    Job,
+    Sample,
+    SplitTask,
+    User,
+)
+from app.services import datasets as datasets_svc
 
 client = TestClient(app)
 
@@ -346,10 +360,38 @@ def test_dataset_version_items_are_scoped_and_filterable(
         weld_0246 = session.exec(
             select(DataRecord).where(DataRecord.weld_id == "WLD-20260814-0246")
         ).one()
+        data_version_0248 = session.exec(
+            select(DataVersion).where(DataVersion.record_id == weld_0248.id)
+        ).first()
+        data_version_0246 = session.exec(
+            select(DataVersion).where(DataVersion.record_id == weld_0246.id)
+        ).first()
+        jobs = [
+            Job(job_uid="job_dataset_items_rel_0248", type="split", status="succeeded", progress=100),
+            Job(job_uid="job_dataset_items_rel_0246", type="split", status="succeeded", progress=100),
+        ]
+        session.add_all(jobs)
+        session.flush()
+        split_0248 = SplitTask(
+            job_id=jobs[0].id,
+            version_id=data_version_0248.id,
+            rules={"fixed_rate": 25},
+            task_format="目标检测",
+            sample_count=2,
+        )
+        split_0246 = SplitTask(
+            job_id=jobs[1].id,
+            version_id=data_version_0246.id,
+            rules={"fixed_rate": 25},
+            task_format="目标检测",
+            sample_count=1,
+        )
+        session.add_all([split_0248, split_0246])
+        session.flush()
         samples = [
-            Sample(object_keys=["processed/page/1.jpg"], frame_no=11, meta={"record_id": weld_0248.id}),
-            Sample(object_keys=["processed/page/2.jpg"], frame_no=12, meta={"record_id": weld_0248.id}),
-            Sample(object_keys=["processed/page/3.jpg"], frame_no=13, meta={"record_id": weld_0246.id}),
+            Sample(split_task_id=split_0248.id, object_keys=["processed/page/1.jpg"], frame_no=11),
+            Sample(split_task_id=split_0248.id, object_keys=["processed/page/2.jpg"], frame_no=12),
+            Sample(split_task_id=split_0246.id, object_keys=["processed/page/3.jpg"], frame_no=13),
         ]
         session.add_all(samples)
         session.commit()
@@ -415,6 +457,79 @@ def test_dataset_version_items_are_scoped_and_filterable(
     assert payload2["items"][0]["frame_no"] == 12
 
 
+def test_dataset_version_items_filters_meta_only_manual_samples_with_json_whitespace(
+    db_engine, override_get_session, override_get_current_user
+) -> None:
+    dataset = _create_dataset(name="元数据成员筛选集", task="目标检测")
+    version = _create_version(dataset["id"])
+    with Session(db_engine) as session:
+        target = DataRecord(
+            id=12,
+            weld_id="META-RECORD-12",
+            weld_name="目标元数据焊缝",
+            registration_no="META-REG-12",
+            source="手工导入",
+            machine="设备-12",
+            modalities=["video"],
+            quality="通过",
+        )
+        neighbor = DataRecord(
+            id=123,
+            weld_id="META-RECORD-123",
+            weld_name="邻居元数据焊缝",
+            registration_no="META-REG-123",
+            source="手工导入",
+            machine="设备-123",
+            modalities=["timeseries"],
+            quality="异常",
+        )
+        session.add_all([target, neighbor])
+        session.flush()
+        samples = [
+            Sample(object_keys=["processed/manual/meta-compact.jpg"], meta={}),
+            Sample(object_keys=["processed/manual/meta-pretty.jpg"], meta={}),
+            Sample(object_keys=["processed/manual/meta-quoted.jpg"], meta={}),
+        ]
+        session.add_all(samples)
+        session.flush()
+        meta_shapes = [
+            '{"record_id":12,"weld_id":"META-RECORD-12"}',
+            '{\n\t"record_id"\r:\t12,\n"weld_id"\t:\r"META-RECORD-12"\n}',
+            '{\r\n "weld_id" : "META-RECORD-12" , \t "record_id" : "12" \n}',
+        ]
+        for sample, meta in zip(samples, meta_shapes, strict=True):
+            session.connection().exec_driver_sql(
+                "UPDATE samples SET meta = ? WHERE id = ?", (meta, sample.id)
+            )
+            session.add(
+                DatasetItem(
+                    dataset_version_id=version["id"], sample_id=sample.id, split="train"
+                )
+            )
+        session.commit()
+
+    matched = client.get(
+        f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
+        params={"q": "目标元数据", "quality": "通过", "page_size": 10},
+    )
+    assert matched.status_code == 200
+    matched_payload = matched.json()["data"]
+    assert matched_payload["total"] == 3
+    assert [item["weld_id"] for item in matched_payload["items"]] == [
+        "META-RECORD-12",
+        "META-RECORD-12",
+        "META-RECORD-12",
+    ]
+    assert [item["quality"] for item in matched_payload["items"]] == ["通过", "通过", "通过"]
+
+    neighbor_match = client.get(
+        f"/api/v1/datasets/{dataset['id']}/versions/{version['id']}/items",
+        params={"q": "邻居元数据", "quality": "异常"},
+    )
+    assert neighbor_match.status_code == 200
+    assert neighbor_match.json()["data"]["total"] == 0
+
+
 def test_dataset_version_items_rejects_cross_dataset_version(
     override_get_session, override_get_current_user
 ) -> None:
@@ -428,6 +543,109 @@ def test_dataset_version_items_requires_auth(unauthenticated_client) -> None:
     response = unauthenticated_client.get("/api/v1/datasets/1/versions/1/items")
     assert response.status_code == 401
     assert response.json()["code"] == 40100
+
+
+def test_dataset_version_item_filter_source_uses_relational_paths_not_json_operators() -> None:
+    source = inspect.getsource(datasets_svc.list_version_items) + inspect.getsource(
+        datasets_svc._version_item_record_filter
+    )
+    assert '.meta[' not in source
+    assert 'as_integer' not in source
+    assert 'as_string' not in source
+
+
+def test_decode_version_item_payload_handles_json_strings_and_defaults() -> None:
+    item = datasets_svc._version_item_payload(
+        row={
+            "id": 9,
+            "sample_id": 7,
+            "frame_no": 21,
+            "split": "val",
+            "meta": '{"record_id": 101, "weld_id": "META-WELD-01"}',
+            "split_weld_id": None,
+            "split_weld_name": None,
+            "split_registration_no": None,
+            "split_source": None,
+            "split_machine": None,
+            "split_modalities": '["video", "audio"]',
+            "split_quality": None,
+            "split_created_at": None,
+            "annotation_weld_id": None,
+            "annotation_weld_name": None,
+            "annotation_registration_no": None,
+            "annotation_source": None,
+            "annotation_machine": None,
+            "annotation_modalities": None,
+            "annotation_quality": None,
+            "annotation_created_at": None,
+        },
+        meta_record_by_id={101: {"weld_name": "元数据焊缝", "registration_no": "REG-101", "source": "产线A"}},
+        meta_record_by_weld_id={},
+    )
+    assert item == {
+        "id": 9,
+        "sample_id": 7,
+        "weld_id": "META-WELD-01",
+        "weld_name": "元数据焊缝",
+        "registration_no": "REG-101",
+        "source": "产线A",
+        "machine": None,
+        "modalities": ["video", "audio"],
+        "quality": None,
+        "split": "val",
+        "frame_no": 21,
+        "created_at": None,
+    }
+
+
+def test_decode_version_item_payload_prefers_meta_record_and_normalizes_created_at() -> None:
+    created_at = datetime(2026, 8, 27, 10, 11, 12, tzinfo=timezone.utc)
+    item = datasets_svc._version_item_payload(
+        row={
+            "id": 3,
+            "sample_id": 2,
+            "frame_no": None,
+            "split": "train",
+            "meta": {"record_id": "55", "weld_id": "META-WELD-55"},
+            "split_weld_id": "SPLIT-WELD",
+            "split_weld_name": "切分焊缝",
+            "split_registration_no": "REG-SPLIT",
+            "split_source": "切分来源",
+            "split_machine": "切分设备",
+            "split_modalities": ["timeseries"],
+            "split_quality": "待复核",
+            "split_created_at": None,
+            "annotation_weld_id": "ANN-WELD",
+            "annotation_weld_name": "标注焊缝",
+            "annotation_registration_no": "REG-ANN",
+            "annotation_source": "标注来源",
+            "annotation_machine": "标注设备",
+            "annotation_modalities": ["video"],
+            "annotation_quality": "异常",
+            "annotation_created_at": None,
+        },
+        meta_record_by_id={
+            55: {
+                "weld_id": "META-REC-55",
+                "weld_name": "元数据记录",
+                "registration_no": "REG-055",
+                "source": "元数据来源",
+                "machine": "元数据设备",
+                "modalities": '["current", "voltage"]',
+                "quality": "通过",
+                "created_at": created_at,
+            }
+        },
+        meta_record_by_weld_id={},
+    )
+    assert item["weld_id"] == "META-REC-55"
+    assert item["weld_name"] == "元数据记录"
+    assert item["registration_no"] == "REG-055"
+    assert item["source"] == "元数据来源"
+    assert item["machine"] == "元数据设备"
+    assert item["modalities"] == ["current", "voltage"]
+    assert item["quality"] == "通过"
+    assert item["created_at"] == "2026-08-27T10:11:12Z"
 
 
 # ---------- 构建任务（空来源 → 兜底合成样本，覆盖多焊缝 8:1:1） ----------

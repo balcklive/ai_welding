@@ -208,6 +208,21 @@ export interface DatasetItem {
   split: string;
 }
 
+/** 数据集固定版本中的单条样本成员（§3.5）。 */
+export interface DatasetItemRow {
+  sample_id: number;
+  weld_id: string | null;
+  weld_name: string | null;
+  registration_no: string | null;
+  source: string | null;
+  machine: string | null;
+  modalities: string[];
+  quality: string | null;
+  split: 'train' | 'val' | 'test';
+  frame_no: number | null;
+  created_at: string | null;
+}
+
 /** 数据项目卡片（总览，由数据集派生）：`{name, status, sample_count, progress, updated_at}`。 */
 export interface Project {
   name: string;
