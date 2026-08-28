@@ -144,12 +144,14 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
 
 function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
+  const [datasetHomeKey, setDatasetHomeKey] = useState(0);
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const workspace = route.split('/')[0];
   const navigate = (r: Route) => {
     setRoute(r);
+    if (r === 'data-center/datasets') setDatasetHomeKey((value) => value + 1);
     setExpandedGroups((prev) => new Set(prev).add(r.split('/')[0]));
   };
   const toggleGroup = (id: string) => setExpandedGroups((prev) => {
@@ -175,7 +177,7 @@ function AppShell() {
     </aside>
     <main className="main-content">
       {route === 'overview' && <Overview navigate={navigate} />}
-      {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} navigate={navigate} />}
+      {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} datasetHomeKey={datasetHomeKey} navigate={navigate} />}
     </main>
   </div>;
 }
@@ -192,14 +194,14 @@ function App() {
   return <AppShell />;
 }
 
-function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; navigate: (r: Route) => void }) {
+function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, datasetHomeKey, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; datasetHomeKey: number; navigate: (r: Route) => void }) {
   const ws = route.split('/')[0];
   const header = workspaceHeaders[ws];
   // 模型仓库刷新计数（「新建模型」成功后自增，触发 ModelRepository 重新拉取）。
   const [repoRefresh, setRepoRefresh] = useState(0);
   const [isDatasetDetail, setIsDatasetDetail] = useState(false);
   useEffect(() => { if (route !== 'data-center/datasets') setIsDatasetDetail(false); }, [route]);
-  const toolbarConfig = ws === 'data-center' ? { action: route === 'data-center/datasets' && isDatasetDetail ? '上传数据' : undefined, secondary: '导出报告' }
+  const toolbarConfig = ws === 'data-center' ? { action: route === 'data-center/datasets' && isDatasetDetail ? '上传数据' : undefined, secondary: undefined }
     : route === 'analysis/annotation' ? { action: '保存标注', secondary: '导出结果' }
     : ws === 'analysis' ? { action: '开始处理', secondary: '导出结果' }
     : route === 'model-center/training' ? { action: '开始训练', secondary: '导出报告' }
@@ -223,7 +225,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   const showDataSwitcher = ws === 'analysis' || route === 'data-center/validation' || route === 'data-center/versions';
 
   let content: React.ReactNode = null;
-  if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} selectedDatasetId={selectedDatasetId} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
+  if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} datasetHomeKey={datasetHomeKey} selectedDatasetId={selectedDatasetId} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
   else if (route === 'data-center/registration') content = <Registration />;
   else if (route === 'data-center/validation') content = selectedDataId ? <Validation embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} />;
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} />;
@@ -1050,7 +1052,7 @@ function mockReadinessChecks(task: string): { name: string; passed: boolean }[] 
 
 type DatasetView = 'list' | 'overview' | 'records' | 'record-detail';
 
-function DatasetWorkspace({ navigate, selectedDatasetId, onDetailChange, setSelectedDataId, setSelectedDatasetId }: { navigate: (route: Route) => void; selectedDatasetId: number | null; onDetailChange?: (isDetail: boolean) => void; setSelectedDataId: (id: string | null) => void; setSelectedDatasetId: (id: number | null) => void }) {
+function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, onDetailChange, setSelectedDataId, setSelectedDatasetId }: { navigate: (route: Route) => void; selectedDatasetId: number | null; datasetHomeKey: number; onDetailChange?: (isDetail: boolean) => void; setSelectedDataId: (id: string | null) => void; setSelectedDatasetId: (id: number | null) => void }) {
   // 初始为空 + 加载中：不得让 mock 数据集行在接口响应到达前闪现，mock 仅作失败兜底
   const [rows, setRows] = useState<DatasetRow[]>([]);
   const [listLoading, setListLoading] = useState(true);
@@ -1062,6 +1064,16 @@ function DatasetWorkspace({ navigate, selectedDatasetId, onDetailChange, setSele
   const [createDialog, setCreateDialog] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
   const dataset = rows.find((item) => item.id === selectedId);
+  useEffect(() => {
+    if (datasetHomeKey === 0) return;
+    selectedIdRef.current = null;
+    setSelectedId(null);
+    setSelectedVersionId(null);
+    setSelectedRecordId(null);
+    setSelectedDataId(null);
+    setSelectedDatasetId(null);
+    setView('list');
+  }, [datasetHomeKey, setSelectedDataId, setSelectedDatasetId]);
   useEffect(() => { onDetailChange?.(view === 'overview'); return () => onDetailChange?.(false); }, [view, onDetailChange]);
   // 顶部 SelectionSwitcher 与本页原有的内部选择必须保持同一数据集。
   // 仅在外部选择确实发生变化时进入该数据集概览，避免首次加载时从列表页意外跳转。
@@ -1517,7 +1529,7 @@ function InferencePanel() {
   return <section className="panel inference-panel"><div className="panel-heading"><div><h2>推理验证</h2><p>选择模型和样本，预览模型输出结果</p></div><StatusPill tone={statusTone}>{statusText}</StatusPill></div><input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={handleFile} /><div className="inference-layout"><div className="inference-drop"><Upload size={23} /><strong>选择测试样本</strong><span>支持图像、视频帧或时序信号</span><button className="outline-button" onClick={() => fileRef.current?.click()}>选择样本</button></div><div className="inference-result"><div className="result-placeholder"><ScanLine size={28} /><span>{inferSummary}</span></div><div className="result-row"><span>模型置信度</span><strong>{confText}</strong></div><div className="result-row"><span>推理耗时</span><strong>{inferRes ? `${inferRes.latency_ms}ms` : '—'}</strong></div></div></div></section>;
 }
 
-function Toolbar({ action, secondary = '导出报告', onAction, onRefresh, actionDisabled = false, exportType, exportRefIds }: { action?: string; secondary?: string; onAction?: () => void; onRefresh?: () => void; actionDisabled?: boolean; exportType?: string; exportRefIds?: unknown[] }) {
+function Toolbar({ action, secondary, onAction, onRefresh, actionDisabled = false, exportType, exportRefIds }: { action?: string; secondary?: string; onAction?: () => void; onRefresh?: () => void; actionDisabled?: boolean; exportType?: string; exportRefIds?: unknown[] }) {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const handleExport = () => {
@@ -1539,7 +1551,7 @@ function Toolbar({ action, secondary = '导出报告', onAction, onRefresh, acti
       })
       .finally(() => setExporting(false));
   };
-  return <div className="page-toolbar"><button className="ghost-button" onClick={onRefresh} disabled={!onRefresh}><RefreshCw size={14} />刷新</button><button className="outline-button" onClick={handleExport} disabled={exporting}><Download size={14} />{exporting ? '导出中…' : secondary}</button>{action && <button className="primary-button" onClick={onAction} disabled={actionDisabled || !onAction}><Plus size={15} />{action}</button>}{exportError && <span className="toolbar-error" role="alert">{exportError}</span>}</div>;
+  return <div className="page-toolbar"><button className="ghost-button" onClick={onRefresh} disabled={!onRefresh}><RefreshCw size={14} />刷新</button>{secondary && <button className="outline-button" onClick={handleExport} disabled={exporting}><Download size={14} />{exporting ? '导出中…' : secondary}</button>}{action && <button className="primary-button" onClick={onAction} disabled={actionDisabled || !onAction}><Plus size={15} />{action}</button>}{exportError && <span className="toolbar-error" role="alert">{exportError}</span>}</div>;
 }
 
 function StatusPill({ children, tone = 'green' }: { children: React.ReactNode; tone?: 'green' | 'orange' | 'red' | 'blue' }) {
