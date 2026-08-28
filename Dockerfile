@@ -3,7 +3,7 @@
 FROM node:24-bookworm-slim AS frontend-builder
 WORKDIR /build
 
-COPY package.json package-lock.json ./
+COPY .npmrc package.json package-lock.json ./
 RUN npm ci
 
 COPY index.html vite.config.ts tsconfig*.json tailwind.config.js postcss.config.js eslint.config.js ./
