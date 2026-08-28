@@ -21,6 +21,8 @@ RUN uv sync --frozen --no-dev \
 FROM python:3.12-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     PATH="/opt/backend/.venv/bin:$PATH"
 WORKDIR /app
 

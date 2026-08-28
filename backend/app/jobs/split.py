@@ -58,10 +58,10 @@ def handle(job_id: int, session: Session) -> None:
         select(SplitTask).where(SplitTask.job_id == job_id)
     ).first()
     if task is None:
-        raise ValueError(f"切分任务不存在: job_id={job_id}")
+        raise ValueError(f"Split task does not exist: job_id={job_id}")
     job = session.get(Job, job_id)
     if job is None:
-        raise ValueError(f"Job 不存在: id={job_id}")
+        raise ValueError(f"Job does not exist: id={job_id}")
     simulate_split(session, task, job)
 
 
@@ -79,16 +79,16 @@ def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
     fixed_rate = rules.get("fixed_rate")
     stride = rules.get("stride", fixed_rate)
     if not isinstance(fixed_rate, int) or fixed_rate < 1:
-        raise ValueError(f"切分规则 fixed_rate 需为 >=1 的整数，当前: {fixed_rate!r}")
+        raise ValueError(f"Split rule fixed_rate must be an integer >= 1; got {fixed_rate!r}")
     if not isinstance(stride, int) or stride < 1:
-        raise ValueError(f"切分规则 stride 需为 >=1 的整数，当前: {stride!r}")
+        raise ValueError(f"Split rule stride must be an integer >= 1; got {stride!r}")
 
     version = session.get(DataVersion, task.version_id)
     if version is None:
-        raise ValueError(f"切分任务引用的版本不存在: version_id={task.version_id}")
+        raise ValueError(f"The split task references a missing version: version_id={task.version_id}")
     record = session.get(DataRecord, version.record_id)
     if record is None:
-        raise ValueError(f"切分任务引用的焊缝不存在: record_id={version.record_id}")
+        raise ValueError(f"The split task references a missing weld: record_id={version.record_id}")
 
     total_frames = int(_REF_DURATION_S * 1000)  # 5.42s × 1000Hz = 5420 帧
     sample_count = max(1, 1 + max(0, total_frames - fixed_rate) // stride)
@@ -179,4 +179,4 @@ def _cleanup_uploaded_objects(uploaded: list[str]) -> None:
         try:
             storage.delete_object(key)
         except Exception:  # noqa: BLE001 - 清理失败只记日志，不覆盖原始异常
-            logger.warning("清理切分产物失败: {}", key)
+            logger.warning("Failed to clean up split artifact: {}", key)

@@ -228,7 +228,7 @@ def import_samples(
     if source == "split_task":
         split = resolve_split_task(session, split_task_id or "")
         if split is None:
-            raise ValueError(f"切分任务不存在: {split_task_id!r}")
+            raise ValueError(f"Split task does not exist: {split_task_id!r}")
         samples = session.exec(
             select(Sample).where(Sample.split_task_id == split.id)
         ).all()
@@ -236,7 +236,7 @@ def import_samples(
             s.annotation_task_id = task.id
             session.add(s)
         return len(samples)
-    raise ValueError(f"未知导入来源: {source!r}")
+    raise ValueError(f"Unknown import source: {source!r}")
 
 
 # ── AI 预标注 / 标注保存（替换语义） ───────────────────────────────────
@@ -394,7 +394,7 @@ def export_annotations(session: Session, task: AnnotationTask, storage) -> dict:
         return _export_video_masks(session, task, storage)
     if task.source == "signal":
         return _export_segment_labels(session, task, storage)
-    raise ValueError(f"来源 {task.source!r} 暂不支持标注导出")
+    raise ValueError(f"Annotation export is not supported for source {task.source!r}")
 
 
 def _task_meta_anchor(
@@ -439,7 +439,7 @@ def _export_video_masks(session: Session, task: AnnotationTask, storage) -> dict
             _meta, keyframes = media_probe.analyze_video(video_bytes, [("frame", float(ts))])
         except Exception as exc:  # noqa: BLE001 - 单帧抽帧失败跳过该帧，不阻塞整体导出
             logger.warning(
-                "[annotation.export] 跳过抽帧失败样本: sample_id={} timestamp={} err={}",
+                "[annotation.export] Skipping sample after frame extraction failure: sample_id={} timestamp={} err={}",
                 sample.id,
                 ts,
                 exc,

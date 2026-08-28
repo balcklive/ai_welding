@@ -535,7 +535,7 @@ def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> Signa
     parsed = _cached_parquet(ingest.parquet_key)
     if parsed is None:
         logger.opt(exception=True).warning(
-            "读取真实信号 Parquet 失败，回退生成信号: {}", ingest.parquet_key
+            "Failed to read real signal Parquet; falling back to generated signals: {}", ingest.parquet_key
         )
         return signals.generate_signals(weld_id)
     return _bundle_from_parsed(parsed, ingest, weld_id)
@@ -558,7 +558,7 @@ def run_ingest(session: Session, ingest: SignalIngest, job) -> None:
         try:
             size = storage.stat_object(ingest.source_object_key)
             if size > MAX_INGEST_BYTES:
-                raise ValueError(f"文件过大（{size} B > {MAX_INGEST_BYTES} B 上限）")
+                raise ValueError(f"File is too large ({size} B > {MAX_INGEST_BYTES} B limit)")
         except ValueError:
             raise
         except Exception:
@@ -566,11 +566,11 @@ def run_ingest(session: Session, ingest: SignalIngest, job) -> None:
 
         data = storage.get_object(ingest.source_object_key)
         if len(data) > MAX_INGEST_BYTES:
-            raise ValueError(f"文件过大（{len(data)} B > {MAX_INGEST_BYTES} B 上限）")
+            raise ValueError(f"File is too large ({len(data)} B > {MAX_INGEST_BYTES} B limit)")
 
         version = session.get(DataVersion, ingest.version_id)
         if version is None:
-            raise ValueError(f"数据版本不存在: {ingest.version_id}")
+            raise ValueError(f"Data version does not exist: {ingest.version_id}")
         record = session.get(DataRecord, version.record_id) if version.record_id else None
 
         df, err = _parse_csv(data)
@@ -586,7 +586,7 @@ def run_ingest(session: Session, ingest: SignalIngest, job) -> None:
             return
 
         if df is None or result["fs"] is None:
-            raise ValueError("校验通过但缺少采样率，无法继续导入")
+            raise ValueError("Validation passed but the sample rate is missing; import cannot continue")
 
         # 校验通过（pass/warn）→ 启发式事件 + 写 Parquet
         events, anomalies = detect_events(df, result["column_map"], result["fs"])
@@ -625,7 +625,7 @@ def run_ingest(session: Session, ingest: SignalIngest, job) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - 自捕获写 failed，勿重抛
         logger.opt(exception=True).warning(
-            "signal_ingest 失败: {} ({})", ingest.source_object_key, exc
+            "signal_ingest failed: {} ({})", ingest.source_object_key, exc
         )
         session.rollback()  # 事务脏则回滚，避免 commit 失败
         ingest = session.get(SignalIngest, ingest.id)

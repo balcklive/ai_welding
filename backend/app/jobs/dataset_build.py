@@ -26,8 +26,8 @@ def handle(job_id: int, session: Session) -> None:
         select(DatasetBuildTask).where(DatasetBuildTask.job_id == job_id)
     ).first()
     if task is None:
-        raise ValueError(f"数据集构建任务不存在: job_id={job_id}")
+        raise ValueError(f"Dataset build task does not exist: job_id={job_id}")
     job = session.get(Job, job_id)
     if job is None:
-        raise ValueError(f"Job 不存在: id={job_id}")
+        raise ValueError(f"Job does not exist: id={job_id}")
     svc.run_build(session, task, job)

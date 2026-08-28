@@ -1062,7 +1062,7 @@ def export_annotation_artifacts(
         # 不支持来源（如 manual）→ 400
         return err(40000, str(exc), status=400)
     except Exception as exc:  # noqa: BLE001 - 导出失败统一 500，不泄漏内部异常
-        logger.warning("[annotation.export] 失败: task_id={} err={}", task_id, exc)
+        logger.warning("[annotation.export] Export failed: task_id={} err={}", task_id, exc)
         return err(50000, "标注导出失败", status=500)
     write_audit(
         session,

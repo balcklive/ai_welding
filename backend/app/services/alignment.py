@@ -86,10 +86,10 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
     """
     version = session.get(DataVersion, task.version_id)
     if version is None:
-        raise ValueError(f"对齐任务引用的版本不存在: version_id={task.version_id}")
+        raise ValueError(f"The alignment task references a missing version: version_id={task.version_id}")
     record = session.get(DataRecord, version.record_id)
     if record is None:
-        raise ValueError(f"对齐任务引用的焊缝不存在: record_id={version.record_id}")
+        raise ValueError(f"The alignment task references a missing weld: record_id={version.record_id}")
 
     modalities = list(task.modalities or record.modalities or ["video", "timeseries"])
 
@@ -111,7 +111,7 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
             )
         except (RuntimeError, ValueError) as exc:
             video_error = str(exc)
-            logger.warning("视频对齐探测失败（转 unavailable）: weld={} err={}", record.weld_id, exc)
+            logger.warning("Video alignment probe failed (marking unavailable): weld={} err={}", record.weld_id, exc)
     _advance(session, job, _PROGRESS_STEPS[1])
 
     # ── 60%：轨道构建 + 产物字节 ─────────────────────────────────────
@@ -457,10 +457,10 @@ def _timeseries_csvs(bundle) -> tuple[bytes, bytes]:
     """
     channels = [bundle.channel(cid) for cid in _TS_CHANNEL_IDS]
     if any(c is None for c in channels):
-        raise ValueError(f"信号缺少时序通道: {[c for c in _TS_CHANNEL_IDS if bundle.channel(c) is None]}")
+        raise ValueError(f"Signal bundle is missing time-series channels: {[c for c in _TS_CHANNEL_IDS if bundle.channel(c) is None]}")
     n = len(channels[0].values)
     if any(len(c.values) != n for c in channels):
-        raise ValueError("时序通道长度不一致，无法生成对齐 CSV")
+        raise ValueError("Time-series channel lengths differ; cannot generate aligned CSV")
     fs = float(bundle.sample_rate)
 
     full_idx = list(range(0, n, max(1, -(-n // _MAX_TS_ROWS))))
@@ -511,5 +511,5 @@ def _write_assets(payloads: list[tuple[str, bytes, str]]) -> None:
             try:
                 storage.delete_object(key)
             except Exception:  # noqa: BLE001 - 清理失败只记日志，不覆盖原始异常
-                logger.warning("清理对齐产物失败: {}", key)
+                logger.warning("Failed to clean up alignment artifact: {}", key)
         raise

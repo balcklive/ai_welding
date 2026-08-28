@@ -55,7 +55,7 @@ def run_media_prep(session: Session, job: Job) -> None:
         data = storage.get_object(object_key)
         if len(data) > media_probe.MAX_VIDEO_PROBE_BYTES:
             raise ValueError(
-                f"视频过大（{len(data)} B > {media_probe.MAX_VIDEO_PROBE_BYTES} B），不转码预览"
+                f"Video is too large ({len(data)} B > {media_probe.MAX_VIDEO_PROBE_BYTES} B); preview transcoding skipped"
             )
         # 探测编码（源不可解析在此抛 ValueError → failed，锚点回退用原始 key）
         codec = _probe_codec(data)
@@ -95,7 +95,7 @@ def run_media_prep(session: Session, job: Job) -> None:
         session.commit()
     except Exception as exc:  # noqa: BLE001 - 自捕获：写 failed 后正常返回
         logger.opt(exception=True).warning(
-            "media_prep 失败: object_key={} err={}", object_key, exc
+            "media_prep failed: object_key={} err={}", object_key, exc
         )
         session.rollback()  # 事务脏则回滚，避免 commit 失败
         fresh = session.get(Job, job.id)
@@ -120,7 +120,7 @@ def _probe_codec(data: bytes) -> str | None:
     stderr = proc.stderr.decode("utf-8", errors="replace")
     info = media_probe.parse_ffmpeg_info(stderr)
     if info["duration"] is None:
-        raise ValueError(f"无法解析视频元数据（ffmpeg 退出码 {proc.returncode}）")
+        raise ValueError(f"Unable to parse video metadata (ffmpeg exit code {proc.returncode})")
     return info["codec"]
 
 

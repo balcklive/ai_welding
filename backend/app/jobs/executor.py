@@ -82,7 +82,7 @@ def _dispatch(session: Session, job_id: int) -> None:
         return
     handler = HANDLERS.get(fresh.type)
     if handler is None:
-        raise ValueError(f"未注册的 job type: {fresh.type!r}")
+        raise ValueError(f"Unregistered job type: {fresh.type!r}")
     handler(fresh.id, session)
     session.commit()
 
@@ -125,7 +125,7 @@ def run_job(job_uid: str) -> None:
     try:
         job = get_job_by_uid(session, job_uid)
         if job is None:
-            logger.warning("run_job 未知 job_uid: {}", job_uid)
+            logger.warning("run_job received an unknown job_uid: {}", job_uid)
             return
         result = session.exec(
             update(Job)
@@ -134,13 +134,13 @@ def run_job(job_uid: str) -> None:
         )
         session.commit()  # 领单先落库
         if result.rowcount != 1:
-            logger.info("run_job 跳过 job {}（已被执行或非 pending）", job_uid)
+            logger.info("run_job skipped job {} (already claimed or not pending)", job_uid)
             return
         try:
             _dispatch(session, job.id)
         except Exception as exc:  # noqa: BLE001 - 执行器兜底，任何异常都写 failed
             logger.opt(exception=True).error(
-                "job({}) 执行失败: {}", job_uid, exc
+                "job({}) execution failed: {}", job_uid, exc
             )
             _mark_failed_in(session, job.id, str(exc))
     finally:
@@ -158,13 +158,13 @@ def _execute_claimed(job_id: int) -> None:
             _dispatch(session, job_id)
         except Exception as exc:  # noqa: BLE001
             logger.opt(exception=True).error(
-                "job(id={}) 执行失败: {}", job_id, exc
+                "job(id={}) execution failed: {}", job_id, exc
             )
             try:
                 _mark_failed_in(session, job_id, str(exc))
             except Exception:  # noqa: BLE001 - 回写 failed 失败仅告警，不阻断线程
                 session.rollback()
-                logger.exception("回写 failed 状态失败: job(id={})", job_id)
+                logger.exception("Failed to write the failed status: job(id={})", job_id)
     finally:
         session.close()
 
@@ -186,7 +186,7 @@ class _ExecutorThread:
     def start(self) -> None:
         # (a) 上一线程还在跑（stop() 超时未退出）时不重复启动——避免双执行者并发领单。
         if self._thread is not None and self._thread.is_alive():
-            logger.warning("Job 执行器线程仍在运行，忽略重复 start()")
+            logger.warning("Job executor thread is still running; ignoring duplicate start()")
             return
         # (c) 只有确认旧线程已死（或从未启动）才清 _stop：还存活的旧线程若观察到 _stop 被
         #     清空会继续轮询 → 双执行者。is_alive() 为 False 即线程已结束，不可能再观察。
@@ -205,7 +205,7 @@ class _ExecutorThread:
             # (b) 只在确认线程真正退出后才丢弃引用；超时仍存活则保留，start() 会拒绝二次启动。
             if thread.is_alive():
                 logger.warning(
-                    "Job 执行器线程未在 {}s 内退出（handler 可能仍在跑），保留引用待其自然退出",
+                    "Job executor thread did not exit within {}s (the handler may still be running); retaining the reference",
                     2 * _POLL_INTERVAL,
                 )
             else:
@@ -218,13 +218,13 @@ class _ExecutorThread:
                 with SessionLocal() as session:
                     claimed = _claim_pending(session)
             except Exception:  # noqa: BLE001 - 轮询异常不退出线程，下轮再试
-                logger.opt(exception=True).warning("job 轮询异常，跳过本轮")
+                logger.opt(exception=True).warning("Job polling failed; skipping this cycle")
             for job in claimed:
                 try:
                     _execute_claimed(job.id)
                 except Exception:  # noqa: BLE001 - 单 job 兜底异常不阻断轮询
                     logger.opt(exception=True).exception(
-                        "job(id={}) 执行兜底异常", job.id
+                        "Fallback job execution failed: job(id={})", job.id
                     )
             self._stop.wait(_POLL_INTERVAL)
 

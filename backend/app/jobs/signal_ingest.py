@@ -28,8 +28,8 @@ def handle(job_id: int, session: Session) -> None:
         select(SignalIngest).where(SignalIngest.job_id == job_id)
     ).first()
     if ingest is None:
-        raise ValueError(f"signal_ingest 任务不存在: job_id={job_id}")
+        raise ValueError(f"signal_ingest task does not exist: job_id={job_id}")
     job = session.get(Job, job_id)
     if job is None:
-        raise ValueError(f"Job 不存在: id={job_id}")
+        raise ValueError(f"Job does not exist: id={job_id}")
     svc.run_ingest(session, ingest, job)

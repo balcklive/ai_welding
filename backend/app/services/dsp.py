@@ -38,16 +38,16 @@ def filter_signal(x, fs: float, kind: str, cutoff: float, cutoff2: float | None 
     """
     x = np.asarray(x, dtype=float)
     if x.ndim != 1 or x.size < 31:
-        raise ValueError("滤波要求一维信号且长度 ≥ 31 点")
+        raise ValueError("Filtering requires a one-dimensional signal with at least 31 samples")
     if kind not in FILTER_KINDS:
-        raise ValueError(f"kind 需为 {'/'.join(FILTER_KINDS)}，got {kind!r}")
+        raise ValueError(f"kind must be one of {'/'.join(FILTER_KINDS)}; got {kind!r}")
     if cutoff is None or not 0 < float(cutoff) < 1:
-        raise ValueError("cutoff 需在 (0,1) 范围内")
+        raise ValueError("cutoff must be in the range (0, 1)")
     if kind == "带通":
         if cutoff2 is None or not 0 < float(cutoff2) < 1:
-            raise ValueError("带通需提供 cutoff2（0<cutoff2<1）")
+            raise ValueError("Band-pass filtering requires cutoff2 in the range (0, 1)")
         if float(cutoff) >= float(cutoff2):
-            raise ValueError("cutoff 需小于 cutoff2")
+            raise ValueError("cutoff must be less than cutoff2")
         sos = butter(4, [float(cutoff), float(cutoff2)], btype="bandpass", output="sos")
     else:
         sos = butter(

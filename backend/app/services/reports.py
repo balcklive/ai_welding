@@ -92,9 +92,9 @@ def export_reports(
     非空则逐标识解析（含 404 语义），产出一份过滤后的列表报告。
     """
     if report_type not in REPORT_TYPES:
-        raise ValueError(f"未知报告类型: {report_type}")
+        raise ValueError(f"Unknown report type: {report_type}")
     if fmt not in FORMATS:
-        raise ValueError(f"未知导出格式: {fmt}")
+        raise ValueError(f"Unknown export format: {fmt}")
 
     if report_type == "data-list":
         return [
@@ -173,7 +173,7 @@ def _render_pdf(report_type: str, data: dict) -> bytes:
     out = io.BytesIO()
     status = pisa.CreatePDF(html, dest=out, encoding="utf-8")
     if status.err:
-        raise RuntimeError(f"PDF 渲染失败: {status.err}")
+        raise RuntimeError(f"PDF rendering failed: {status.err}")
     return out.getvalue()
 
 

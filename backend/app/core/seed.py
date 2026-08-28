@@ -385,7 +385,7 @@ def _seed_welds(session: Session) -> None:
 
         default_dataset = session.exec(select(Dataset).order_by(Dataset.id)).first()
         if default_dataset is None:
-            raise RuntimeError("无法创建演示登记：默认数据集不存在")
+            raise RuntimeError("Unable to create demo registration: the default dataset does not exist")
         record = DataRecord(
             weld_id=cfg["weld_id"],
             weld_name=cfg["weld_name"],

@@ -147,7 +147,7 @@ def vision_features(size: int = 128) -> dict:
     labels = measure.label(mask)
     props = measure.regionprops(labels, intensity_image=img_float)
     if not props:
-        raise RuntimeError("合成熔池掩膜为空，regionprops 无目标")
+        raise RuntimeError("The generated weld-pool mask is empty; regionprops found no objects")
     region = props[0]
 
     area = float(region.area)
@@ -277,7 +277,7 @@ def unify(
     当前仅存 JSON 元数据，导出由 reports 另行实现）。未知归一化抛 ValueError。
     """
     if normalization not in _NORMALIZATIONS:
-        raise ValueError(f"未知归一化方式: {normalization}")
+        raise ValueError(f"Unknown normalization method: {normalization}")
     raw = _concat_vector(ts, vis, audio)
     if len(raw) != TOTAL_DIMS:
         raise ValueError(

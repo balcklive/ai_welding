@@ -235,27 +235,8 @@ class AccessLogMiddleware:
         response_body: bytes,
         response_total: int,
     ) -> None:
-        request_info: Any
-        if is_multipart:
-            request_info = {"multipart_size": request_size}
-        else:
-            parsed = _try_json(request_body)
-            request_info = _mask(parsed) if isinstance(parsed, (dict, list)) else {"raw_size": request_size}
-
-        resp_json = _try_json(response_body)
-        if isinstance(resp_json, (dict, list)):
-            response_info: Any = _mask(resp_json)
-        else:
-            response_info = response_body.decode("utf-8", errors="replace") or None
-
-        truncated = response_total > MAX_BODY_LOG_BYTES
-        if truncated:
-            response_info = {
-                "truncated": True,
-                "bytes_total": response_total,
-                "preview": response_info,
-            }
-
+        # Keep access logs operational and language-neutral. Response bodies can
+        # contain user-facing text or user data in arbitrary languages.
         record = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "correlation_id": correlation_id,
@@ -266,8 +247,6 @@ class AccessLogMiddleware:
             "client_ip": client_ip,
             "status": status,
             "duration_ms": round(duration_ms, 2),
-            "request": request_info,
-            "response": response_info,
         }
         logger.info("API access: {}", json.dumps(record, ensure_ascii=False, default=str))
 

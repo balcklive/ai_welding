@@ -92,7 +92,7 @@ def normalize_key(prefix: str, filename: str) -> str:
     """
     prefix = prefix.strip("/")
     if not prefix:
-        raise ValueError("prefix 不能为空：对象键缺少业务前缀")
+        raise ValueError("prefix cannot be empty: the object key is missing a business prefix")
     return f"{prefix}/{normalize_filename(filename)}"
 
 

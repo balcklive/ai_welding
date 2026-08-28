@@ -39,11 +39,11 @@ def get_ffmpeg_exe() -> str:
     try:
         import imageio_ffmpeg
     except Exception as exc:  # noqa: BLE001 - 调用方转 unavailable
-        raise RuntimeError(f"imageio-ffmpeg 不可用: {exc}") from exc
+        raise RuntimeError(f"imageio-ffmpeg is unavailable: {exc}") from exc
     try:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"ffmpeg 二进制不可用: {exc}") from exc
+        raise RuntimeError(f"ffmpeg binary is unavailable: {exc}") from exc
 
 
 def parse_ffmpeg_info(stderr: str) -> dict:
@@ -81,7 +81,7 @@ def analyze_video(
     - 空数据/时长解析失败抛 ValueError；ffmpeg 不可用抛 RuntimeError。
     """
     if not data:
-        raise ValueError("空视频数据")
+        raise ValueError("Video data is empty")
     ff = get_ffmpeg_exe()
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "probe.mp4"
@@ -119,7 +119,7 @@ def transcode_preview(data: bytes) -> tuple[bytes, dict]:
     `BROWSER_FRIENDLY_CODECS` + faststart 的源无需转码）。
     """
     if not data:
-        raise ValueError("空视频数据")
+        raise ValueError("Video data is empty")
     ff = get_ffmpeg_exe()
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "src.mp4"
@@ -146,13 +146,13 @@ def transcode_preview(data: bytes) -> tuple[bytes, dict]:
             )
             result = out.read_bytes()
         except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"视频转码超时（>{_TRANSCODE_TIMEOUT}s）") from exc
+            raise RuntimeError(f"Video transcoding timed out (>{_TRANSCODE_TIMEOUT}s)") from exc
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
-                f"视频转码失败: {exc.stderr.decode('utf-8', errors='replace')[:300]}"
+                f"Video transcoding failed: {exc.stderr.decode('utf-8', errors='replace')[:300]}"
             ) from exc
     if not result or b"ftyp" not in result[:64]:
-        raise RuntimeError("视频转码输出不是合法 MP4")
+        raise RuntimeError("Video transcoding output is not a valid MP4")
     return result, meta
 
 
@@ -166,7 +166,7 @@ def _probe_file(ff: str, path: Path) -> dict:
     stderr = proc.stderr.decode("utf-8", errors="replace")
     info = parse_ffmpeg_info(stderr)
     if info["duration"] is None:
-        raise ValueError(f"无法解析视频时长（ffmpeg 退出码 {proc.returncode}）")
+        raise ValueError(f"Unable to parse video duration (ffmpeg exit code {proc.returncode})")
     return info
 
 
@@ -184,12 +184,12 @@ def _extract_keyframes(
         try:
             t = float(t)
         except (TypeError, ValueError):
-            logger.warning("关键帧事件时刻非法，跳过: event={} t={}", event, t)
+            logger.warning("Invalid keyframe event timestamp; skipping: event={} t={}", event, t)
             continue
         if t < 0 or t >= duration:
             # 事件超出视频时长：直接跳过（EOF 附近 -ss 抽不到帧，钳制会静默产出
             # 错误时刻的帧），reason 由调用方按 metadata.keyframes 缺失解读。
-            logger.warning("事件时刻超出视频时长，跳过: event={} t={} duration={}", event, t, duration)
+            logger.warning("Event timestamp exceeds video duration; skipping: event={} t={} duration={}", event, t, duration)
             continue
         t_eff = min(t, duration - 0.05)
         out_path = path.with_name(f"frame_{event}.jpg")
@@ -206,10 +206,10 @@ def _extract_keyframes(
             )
             data = out_path.read_bytes()
         except Exception as exc:  # noqa: BLE001 - 单帧失败不中断其余帧
-            logger.warning("关键帧抽取失败: event={} t={} err={}", event, t_eff, exc)
+            logger.warning("Keyframe extraction failed: event={} t={} err={}", event, t_eff, exc)
             continue
         if not data.startswith(_JPEG_SOI):
-            logger.warning("关键帧输出不是 JPEG，跳过: event={}", event)
+            logger.warning("Keyframe output is not JPEG; skipping: event={}", event)
             continue
         out.append({"event": event, "t": round(t_eff, 4), "bytes": data})
     return out

@@ -161,7 +161,7 @@ def create_dataset(
 ) -> Dataset:
     """新建数据集（status=标注中、sample_count=0）。同名 → 抛 `ValueError`（路由转 409）。"""
     if session.exec(select(Dataset).where(Dataset.name == name)).first() is not None:
-        raise ValueError("数据集名称已存在")
+        raise ValueError("Dataset name already exists")
     now = datetime.now(timezone.utc)
     dataset = Dataset(
         dataset_no=next_dataset_no(session, task),
@@ -762,10 +762,10 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
 
     version = session.get(DatasetVersion, build_task.dataset_version_id)
     if version is None:
-        raise ValueError(f"数据集版本不存在: id={build_task.dataset_version_id}")
+        raise ValueError(f"Dataset version does not exist: id={build_task.dataset_version_id}")
     dataset = session.get(Dataset, version.dataset_id)
     if dataset is None:
-        raise ValueError(f"数据集不存在: id={version.dataset_id}")
+        raise ValueError(f"Dataset does not exist: id={version.dataset_id}")
 
     source = _build_source(build_task, job)
     samples = _gather_samples(session, source, dataset)
@@ -1064,7 +1064,7 @@ def _build_snapshot(
         )
     except Exception:  # noqa: BLE001 - 存储不可达不阻断构建（demo 容错）
         logger.opt(exception=True).warning(
-            "数据集快照写 MinIO 失败（跳过）: {}", snapshot_id
+            "Failed to write dataset snapshot to MinIO; skipping: {}", snapshot_id
         )
     return snapshot_id, snapshot
 

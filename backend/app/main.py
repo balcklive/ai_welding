@@ -37,7 +37,7 @@ setup_logging()
 
 if settings.secret_key in ("change-me", "") or settings.admin_password in ("admin123", ""):
     logger.warning(
-        "检测到弱默认凭据：SECRET_KEY 或 ADMIN_PASSWORD 仍为默认值，生产环境务必在 .env 中修改"
+        "Weak default credentials detected: SECRET_KEY or ADMIN_PASSWORD is still using a default value; change it in .env before production"
     )
 
 @asynccontextmanager
@@ -53,20 +53,20 @@ async def lifespan(app: FastAPI):
         with Session(engine) as session:
             seed_all(session, demo=settings.seed_demo)
         if settings.seed_demo:
-            logger.info("启动 seed 完成：管理员 + 演示数据已就绪")
+            logger.info("Startup seeding completed: administrator and demo data are ready")
         else:
-            logger.info("启动 seed 完成：仅管理员（SEED_DEMO=false，未灌演示数据）")
+            logger.info("Startup seeding completed: administrator only (SEED_DEMO=false; demo data was not loaded)")
     except Exception:  # noqa: BLE001 - 启动期数据库不可达不应阻塞服务启动
         logger.opt(exception=True).warning(
-            "启动 seed 失败（数据库不可达？），跳过 seed，服务继续启动"
+            "Startup seeding failed (database may be unreachable); skipping seeding and continuing startup"
         )
     executor.start()
-    logger.info("Job 执行器已启动（后台 DB 轮询）")
+    logger.info("Job executor started (background database polling)")
     try:
         yield
     finally:
         executor.stop()
-        logger.info("Job 执行器已停止")
+        logger.info("Job executor stopped")
 
 
 app = FastAPI(title="AI Welding Platform API", version="0.1.0", lifespan=lifespan)

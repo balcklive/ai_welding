@@ -210,8 +210,8 @@ def main(out_dir: Path) -> None:
     (out_dir / "MANIFEST.md").write_text("".join(lines), encoding="utf-8")
 
     total = sum(f.stat().st_size for f in out_dir.rglob("*") if f.is_file())
-    print(f"生成完成：{out_dir}，{len(manifest)} 个文件，共 {total / 1024 / 1024:.1f} MB")
-    print(f"清单：{out_dir / 'MANIFEST.md'}")
+    print(f"Generation complete: {out_dir}, {len(manifest)} files, {total / 1024 / 1024:.1f} MB total")
+    print(f"Manifest: {out_dir / 'MANIFEST.md'}")
 
 
 def _corrupt_jpg(path: Path, valid: Path) -> None:

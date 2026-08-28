@@ -70,7 +70,7 @@ def create_model(
 ) -> Model:
     """新建模型仓库条目。同名 → 抛 `ValueError`（路由转 409）。"""
     if session.exec(select(Model).where(Model.name == name)).first() is not None:
-        raise ValueError("模型名称已存在")
+        raise ValueError("Model name already exists")
     model = Model(name=name, type=type_, description=description)
     session.add(model)
     session.flush()
@@ -173,7 +173,7 @@ def update_version_status(
     `note` 无对应列（文档 §3.18 即无），仅接受不落库（同 dataset_versions.name/note）。
     """
     if status is not None and status not in MODEL_VERSION_STATUSES:
-        raise ValueError(f"status 需为 {'/'.join(MODEL_VERSION_STATUSES)}")
+        raise ValueError(f"status must be one of {'/'.join(MODEL_VERSION_STATUSES)}")
     if status is not None:
         version.status = status
     session.add(version)
@@ -281,7 +281,7 @@ def training_logs(task: TrainingTask, job: Job) -> str:
     hyperparams = task.hyperparams or {}
     epochs = max(1, int(hyperparams.get("epochs") or 50))
     lines = [
-        f"[INFO] 训练任务 {job.job_uid} 初始化",
+        f"[INFO] Training job {job.job_uid} initialized",
         f"[INFO] epochs={epochs}, batch_size={hyperparams.get('batch_size', 16)}, "
         f"learning_rate={hyperparams.get('learning_rate', 0.001)}, "
         f"val_ratio={hyperparams.get('val_ratio', 0.2)}",
@@ -297,12 +297,12 @@ def training_logs(task: TrainingTask, job: Job) -> str:
             )
         m = task.metrics
         lines.append(
-            f"[INFO] 训练完成 mAP50={m.get('mAP50')} "
+            f"[INFO] Training completed mAP50={m.get('mAP50')} "
             f"precision={m.get('precision')} recall={m.get('recall')}"
         )
-        lines.append("[INFO] 模型已保存至模型仓库（实验版本）")
+        lines.append("[INFO] Model saved to the model registry (experimental version)")
     else:
-        lines.append("[INFO] 等待后台执行器执行...")
+        lines.append("[INFO] Waiting for the background executor...")
     return "\n".join(lines)
 
 
@@ -441,28 +441,28 @@ def validate_inference_input(input_key: str, input_type: str) -> None:
     from app.storage import get_storage  # 延迟导入，避免启动时触网
 
     if input_type not in {"image", "video"}:
-        raise ValueError("input_type 需为 image 或 video")
+        raise ValueError("input_type must be image or video")
     storage = get_storage()
     size = storage.stat_object(input_key)
     if size > 100 * 1024 * 1024:
-        raise ValueError("推理输入文件过大：需 ≤ 100MB")
+        raise ValueError("Inference input file is too large: maximum size is 100 MB")
     data = storage.get_object(input_key)
     lower = input_key.lower()
     if input_type == "image":
         kind = _detect_image_type(data)
         if kind is None:
-            raise ValueError("推理输入不是有效图片")
+            raise ValueError("Inference input is not a valid image")
         if kind not in _IMAGE_TYPES:
-            raise ValueError(f"不支持的图片格式: {kind}")
+            raise ValueError(f"Unsupported image format: {kind}")
         if not lower.endswith(tuple(f".{ext}" for ext in (["jpg", "jpeg", "png", "webp", "bmp"]))):
-            raise ValueError("推理输入文件扩展名与图片类型不匹配")
+            raise ValueError("Inference input extension does not match the image type")
         if kind == "jpeg" and not lower.endswith((".jpg", ".jpeg")):
-            raise ValueError("推理输入文件扩展名与图片类型不匹配")
+            raise ValueError("Inference input extension does not match the image type")
     else:
         if not lower.endswith(tuple(_VIDEO_EXTS)):
-            raise ValueError("不支持的视频格式")
+            raise ValueError("Unsupported video format")
         if len(data) < 12 or data[4:8] != b"ftyp":
-            raise ValueError("推理输入不是有效视频")
+            raise ValueError("Inference input is not a valid video")
 
 
 def _detect_image_type(data: bytes) -> str | None:
@@ -501,4 +501,4 @@ def _write_weights(file_key: str) -> None:
             "application/octet-stream",
         )
     except Exception:  # noqa: BLE001 - 存储不可达不阻断训练（demo 容错）
-        logger.opt(exception=True).warning("模型权重写 MinIO 失败（跳过）: {}", file_key)
+        logger.opt(exception=True).warning("Failed to write model weights to MinIO; skipping: {}", file_key)

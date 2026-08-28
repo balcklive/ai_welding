@@ -771,7 +771,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (!video || !canvas) return;
-    if (video.readyState < 2) { console.warn('[annotation.video] 视频尚未可解码'); return; }
+    if (video.readyState < 2) { console.warn('[annotation.video] Video is not ready for decoding'); return; }
     const w = video.videoWidth || 1280;
     const h = video.videoHeight || 720;
     canvas.width = w; canvas.height = h;
@@ -1464,7 +1464,7 @@ function InferencePanel() {
   const handleFile = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (modelVersionId == null) { console.warn('[inference] 模型版本未就绪，请稍后再试'); return; }
+    if (modelVersionId == null) { console.warn('[inference] Model version is not ready; please try again later'); return; }
     const upload = file.size < 100 * 1024 * 1024
       ? uploadFile(file).then((r) => r.object_key)
       : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'inference' }).then(async (r) => {
@@ -1478,7 +1478,7 @@ function InferencePanel() {
         return createInferenceTask({ model_version_id: modelVersionId, input: objectKey, input_type: inputType });
       })
       .then((res) => setJobId(res.job_id))
-      .catch((err) => console.warn('[inference] 推理提交失败', err));
+      .catch((err) => console.warn('[inference] Inference submission failed', err));
   };
   const statusText = jobStatus === 'running' ? '运行中' : jobStatus === 'failed' ? '失败' : jobStatus === 'succeeded' ? '已完成' : '就绪';
   const statusTone = (jobStatus === 'running' ? 'orange' : jobStatus === 'failed' ? 'red' : 'green') as 'green' | 'orange' | 'red';
@@ -2315,11 +2315,11 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
     return () => { cancelled = true; };
   }, [alignRes]);
   const handleRun = () => {
-    if (!dataId || versionId == null) { console.warn('[alignment] 尚未解析版本，请稍后再试'); return; }
+    if (!dataId || versionId == null) { console.warn('[alignment] Version has not been resolved; please try again later'); return; }
     const run = splitOnly
       ? createSplitTask(dataId, String(versionId), { fixed_rate: fixedRate, stride, keep_event_buffer: keepEventBuffer ? bufferSeconds : 0, task_format: taskFormat })
       : createAlignmentTask(dataId, String(versionId), record?.modalities?.length ? record.modalities : ['video', 'timeseries']);
-    run.then((res) => setJobId(res.job_id)).catch((err) => console.warn('[alignment] 任务创建失败', err));
+    run.then((res) => setJobId(res.job_id)).catch((err) => console.warn('[alignment] Job creation failed', err));
   };
   const tone = jobStatus === 'running' ? 'orange' : jobStatus === 'failed' ? 'red' : 'green';
   const statusText = jobStatus === 'succeeded' ? '已完成' : jobStatus === 'running' ? `处理中 ${progress}%` : jobStatus === 'failed' ? '失败' : (splitOnly ? '待切分' : '已对齐');
@@ -2487,7 +2487,7 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
     return () => { cancelled = true; };
   }, [dataId]);
   const handleExtract = () => {
-    if (!dataId || versionId == null) { console.warn('[features] 尚未解析版本，请稍后再试'); return; }
+    if (!dataId || versionId == null) { console.warn('[features] Version has not been resolved; please try again later'); return; }
     extractFeatures({ weld_id: dataId, version_id: versionId, normalization: normMethod === 'L2 范数' ? 'L2' : normMethod, format: exportFmt })
       .then((res) => {
         setExtractionId(res.id);
@@ -2602,7 +2602,7 @@ function Training() {
   const selectedDatasets = datasets.filter((dataset) => selectedDatasetIds.includes(dataset.id));
   const availableModels = models.filter((model) => !modelType || model.type === modelType);
   const handleStart = () => {
-    if (!selectedDatasetIds.length || !modelType) { console.warn('[training] 请选择模型类型和至少一个数据集版本'); return; }
+    if (!selectedDatasetIds.length || !modelType) { console.warn('[training] Select a model type and at least one dataset version'); return; }
     createTrainingTask({
       dataset_version_ids: selectedDatasetIds,
       model_type: modelType,

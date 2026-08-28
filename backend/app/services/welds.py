@@ -102,7 +102,7 @@ def _is_mysql_session(session: Session) -> bool:
 def _mysql_lock_connection(session: Session):
     bind = session.get_bind()
     if bind is None:
-        raise RuntimeError("数据库连接不可用")
+        raise RuntimeError("Database connection is unavailable")
     return bind.raw_connection()
 
 
@@ -127,7 +127,7 @@ def _acquire_registration_lock(session: Session, day: date) -> _MySQLAdvisoryLoc
     try:
         acquired = _mysql_lock_scalar(connection, "SELECT GET_LOCK(%s, %s)", (lock_name, 1))
         if acquired != 1:
-            raise RuntimeError("获取登记编号锁失败")
+            raise RuntimeError("Failed to acquire the registration number lock")
         return _MySQLAdvisoryLock(lock_name, connection)
     except Exception:
         if acquired != 1:
@@ -213,7 +213,7 @@ def _acquire_registration_payload_lock(
         try:
             acquired = _mysql_lock_scalar(connection, "SELECT GET_LOCK(%s, %s)", (lock_name, 0))
             if acquired != 1:
-                raise RuntimeError("重复登记请求：相同表单正在提交")
+                raise RuntimeError("Duplicate registration request: the same form is already being submitted")
             return _MySQLAdvisoryLock(lock_name, connection)
         except Exception:
             if acquired != 1:
@@ -221,7 +221,7 @@ def _acquire_registration_payload_lock(
             raise
     with _REGISTRATION_PAYLOAD_LOCK:
         if request_key in _ACTIVE_REGISTRATION_KEYS:
-            raise RuntimeError("重复登记请求：相同表单正在提交")
+                raise RuntimeError("Duplicate registration request: the same form is already being submitted")
         _ACTIVE_REGISTRATION_KEYS.add(request_key)
     return request_key
 
@@ -264,7 +264,7 @@ def _acquire_raw_files_payload_lock(
         try:
             acquired = _mysql_lock_scalar(connection, "SELECT GET_LOCK(%s, %s)", (lock_name, 0))
             if acquired != 1:
-                raise RuntimeError("CSV 已存在导入任务")
+                raise RuntimeError("A CSV import task already exists")
             return _MySQLAdvisoryLock(lock_name, connection)
         except Exception:
             if acquired != 1:
@@ -272,7 +272,7 @@ def _acquire_raw_files_payload_lock(
             raise
     with _RAW_FILES_PAYLOAD_LOCK:
         if request_key in _ACTIVE_RAW_FILES_KEYS:
-            raise RuntimeError("CSV 已存在导入任务")
+            raise RuntimeError("A CSV import task already exists")
         _ACTIVE_RAW_FILES_KEYS.add(request_key)
     return request_key
 

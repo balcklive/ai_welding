@@ -101,7 +101,7 @@ def main(dry_run: bool) -> None:
         print(f"total rows: {total}")
         if dry_run:
             session.rollback()
-            print("[dry-run] 已回滚，去掉 --dry-run 执行删除")
+            print("[dry-run] Rolled back; remove --dry-run to execute deletion")
         else:
             session.commit()
             print("committed.")
