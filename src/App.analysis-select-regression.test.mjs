@@ -21,7 +21,7 @@ test('analysis select lists all welds in the dataset and greys out unvalidated o
   assert.match(select, /disabled=\{row\.quality !== '通过'\}/);
   assert.match(select, /selection-card \$\{row\.quality !== '通过' \? 'disabled' : ''\}/);
   assert.doesNotMatch(select, /rows\.slice\(0, 3\)/);
-  assert.match(select, /该数据集暂无登记数据/);
+  assert.match(select, /该数据集暂无数据，请先在数据中心上传数据。/);
 });
 
 test('analysis select no longer consumes the flat candidates endpoint', () => {
