@@ -24,6 +24,7 @@ import {
   runValidation,
 } from './api/welds';
 import {
+  createBuildTask,
   createDataset,
   createDatasetVersion,
   getDataset,
@@ -990,6 +991,9 @@ function DatasetDetail({ dataset, navigate, versionId, onShowRecords, onVersionC
   const [selectedVersion, setSelectedVersion] = useState<DatasetVersion | null>(null);
   const [lineage, setLineage] = useState<LineageNode[]>(mockLineage);
   const [versionDialog, setVersionDialog] = useState(false);
+  const [buildJobId, setBuildJobId] = useState<string | null>(null);
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const { status: buildStatus } = useJob<unknown>(buildJobId);
   useEffect(() => {
     let cancelled = false;
     setDetail(null);
@@ -1007,11 +1011,30 @@ function DatasetDetail({ dataset, navigate, versionId, onShowRecords, onVersionC
   }, [dataset.id]);
   const handleNewVersion = (name: string) => {
     setVersionDialog(false);
+    setBuildError(null);
+    // 建版本即自动构建快照：manual 来源不指定样本 → 后端兜底按登记焊缝生成成员，
+    // 免去单独的"构建快照"入口（createBuildTask 此前无 UI 消费，版本会是空断头路）
     createDatasetVersion(dataset.id, { name: name || undefined })
-      .then(() => { onDatasetChanged(); return listDatasetVersions(dataset.id); })
-      .then((list) => setVersions(list))
-      .catch((err) => console.warn('[datasets] createDatasetVersion failed', err));
+      .then((version) => {
+        onDatasetChanged();
+        return createBuildTask(dataset.id, String(version.id), { type: 'manual' });
+      })
+      .then((res) => setBuildJobId(res.job_id))
+      .catch((err) => {
+        setBuildError(err instanceof Error ? err.message : '创建版本/构建快照失败');
+        console.warn('[datasets] createDatasetVersion/createBuildTask failed', err);
+      });
   };
+  useEffect(() => {
+    if (buildStatus === 'succeeded') {
+      setBuildJobId(null);
+      onDatasetChanged();
+      listDatasetVersions(dataset.id).then(setVersions).catch((err) => console.warn('[datasets] listDatasetVersions failed', err));
+    } else if (buildStatus === 'failed') {
+      setBuildJobId(null);
+      setBuildError('版本快照构建失败，请重试或检查登记焊缝数据');
+    }
+  }, [buildStatus, dataset.id, onDatasetChanged]);
   const quality = detail?.quality;
   const qualityPct = quality ? `${((1 - quality.repeat_rate - quality.empty_label_rate - quality.dimension_missing_rate) * 100).toFixed(1)}%` : '98.4%';
   const updated = detail?.updated_at ? fmtDT(detail.updated_at) : '今天 10:06';
@@ -1020,7 +1043,7 @@ function DatasetDetail({ dataset, navigate, versionId, onShowRecords, onVersionC
   const visibleVersions = currentVersionId == null ? [] : versions;
   const lineageIcon: Record<string, typeof Database> = { records: Database, annotation_tasks: Tag, dataset_versions: Box, training_tasks: TrainFront };
   const lineageSuffix: Record<string, string> = { records: '条', training_tasks: '次', annotation_tasks: '个', dataset_versions: '个' };
-  return <><div className="dataset-detail"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 数据集概览</div><button className="ghost-button" onClick={onBack}><ChevronLeft size={14} />返回数据集列表</button><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button dataset-primary-entry" onClick={currentVersionId != null ? onShowRecords : () => setVersionDialog(true)}>{currentVersionId != null ? `查看当前版本数据 · ${currentVersion?.item_count ?? detail?.sample_count ?? dataset.samples} 条` : '创建数据集版本'}</button><button className="outline-button" disabled={dataset.status !== '可训练'} onClick={() => navigate('model-center/training')}><Play size={14} />进入模型训练</button></div></div>{currentVersionId == null && <div className="dataset-empty-state">当前数据集尚未创建版本。请先创建数据集版本，再构建固定成员快照。</div>}<div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>样本总数</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>已生成切分样本</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按焊缝 ID 固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集版本</h2><p>每个版本对应一份固定样本清单</p></div><button className="outline-button" onClick={() => setVersionDialog(true)}><GitBranch size={14} />新建版本</button></div><div className="dataset-version-list">{visibleVersions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no} onClick={() => onVersionChange(v.id)}><span>{v.version_no}</span><div><strong>数据快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前版本</StatusPill> : <button className="ghost-button" onClick={() => setSelectedVersion(v)}>查看详情</button>}</div>)}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从原始数据到训练任务的关联</p></div></div><div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div></section></div></div>{versionDialog && <TextDialog title="新建数据集版本" label="版本名称（可选）" onCancel={() => setVersionDialog(false)} onConfirm={handleNewVersion} />}{selectedVersion && <VersionDetailDrawer mode="dataset" datasetId={dataset.id} version={selectedVersion} onClose={() => setSelectedVersion(null)} />}</>;
+  return <><div className="dataset-detail"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 数据集概览</div><button className="ghost-button" onClick={onBack}><ChevronLeft size={14} />返回数据集列表</button><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button dataset-primary-entry" onClick={currentVersionId != null ? onShowRecords : () => setVersionDialog(true)}>{currentVersionId != null ? `查看当前版本数据 · ${currentVersion?.item_count ?? detail?.sample_count ?? dataset.samples} 条` : '创建数据集版本'}</button><button className="outline-button" disabled={dataset.status !== '可训练'} onClick={() => navigate('model-center/training')}><Play size={14} />进入模型训练</button></div></div>{currentVersionId == null && <div className="dataset-empty-state">当前数据集尚未创建版本。请先创建数据集版本，再构建固定成员快照。</div>}{buildJobId != null && <p className="dataset-empty-state" role="status">版本快照构建中，完成后可查看当前版本数据…</p>}{buildError && <p className="dataset-empty-state" role="alert">{buildError}</p>}<div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>样本总数</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>已生成切分样本</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按焊缝 ID 固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集版本</h2><p>每个版本对应一份固定样本清单</p></div><button className="outline-button" onClick={() => setVersionDialog(true)}><GitBranch size={14} />新建版本</button></div><div className="dataset-version-list">{visibleVersions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no} onClick={() => onVersionChange(v.id)}><span>{v.version_no}</span><div><strong>数据快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前版本</StatusPill> : <button className="ghost-button" onClick={() => setSelectedVersion(v)}>查看详情</button>}</div>)}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从原始数据到训练任务的关联</p></div></div><div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div></section></div></div>{versionDialog && <TextDialog title="新建数据集版本" label="版本名称（可选）" onCancel={() => setVersionDialog(false)} onConfirm={handleNewVersion} />}{selectedVersion && <VersionDetailDrawer mode="dataset" datasetId={dataset.id} version={selectedVersion} onClose={() => setSelectedVersion(null)} />}</>;
 }
 
 const mockDatasetItemRows: DatasetItemRow[] = [
