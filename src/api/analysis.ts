@@ -139,7 +139,7 @@ export async function listLabelCategories(): Promise<LabelCategory[]> {
 
 /** 创建标注任务（异步：切分样本 / 手动选样 / 时序信号锚点）。signal 来源需带 version_id。 */
 export async function createAnnotationTask(body: {
-  source: 'split_task' | 'manual' | 'signal';
+  source: 'split_task' | 'manual' | 'signal' | 'video';
   split_task_id?: string;
   version_id?: number;
   name?: string;
@@ -147,6 +147,19 @@ export async function createAnnotationTask(body: {
   return request<{ job_id: string }>('/annotation-tasks', {
     method: 'POST',
     body,
+  });
+}
+
+/** 为视频标注任务创建帧样本锚点（meta.mode='frame' + timestamp + 帧尺寸），返回 `{ sample_id }`。 */
+export async function createAnnotationFrame(
+  taskId: string,
+  timestamp: number,
+  frameWidth?: number,
+  frameHeight?: number,
+): Promise<{ sample_id: number }> {
+  return request<{ sample_id: number }>(`/annotation-tasks/${taskId}/frames`, {
+    method: 'POST',
+    body: { timestamp, frame_width: frameWidth, frame_height: frameHeight },
   });
 }
 

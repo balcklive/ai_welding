@@ -597,9 +597,9 @@ def test_import_validation(
 
 def test_label_categories(override_get_session, override_get_current_user) -> None:
     data = client.get("/api/v1/label-categories").json()["data"]
-    assert len(data) == 5
+    assert len(data) == 6
     names = {c["name"] for c in data}
-    assert names == {"焊瘤", "气孔", "未熔合", "咬边", "正常"}
+    assert names == {"焊瘤", "气孔", "未熔合", "咬边", "正常", "熔池"}
 
 
 def test_ai_pretag_deterministic(
@@ -845,6 +845,200 @@ def test_annotation_signal_source_creates_anchor_sample(
     assert resp.status_code == 404 and resp.json()["code"] == 40402
 
 
+def test_annotation_video_source_creates_anchor_and_frames(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    resp = client.post("/api/v1/annotation-tasks", json={"source": "video", "version_id": vid})
+    assert resp.status_code == 200, resp.text[:300]
+    job_id = resp.json()["data"]["job_id"]
+
+    run_job(job_id)
+    done = client.get(f"/api/v1/annotation-tasks/{job_id}").json()["data"]
+    assert done["status"] == "succeeded"
+    assert done["result"]["source"] == "video"
+    assert done["result"]["samples_count"] == 1
+
+    # 视频锚点样本：mode='video' + video_key 指向版本里的 mp4
+    samples = client.get(f"/api/v1/annotation-tasks/{job_id}/samples").json()["data"]
+    assert samples["total"] == 1
+    anchor = samples["items"][0]
+    assert anchor["meta"]["mode"] == "video"
+    assert anchor["meta"]["version_id"] == vid
+    assert anchor["meta"]["weld_id"] == WELD_0248
+    assert anchor["meta"]["video_key"].endswith(".mp4")
+
+    # 帧锚点：POST /frames 建 meta.mode='frame' + timestamp 样本，weld/version 从视频锚点继承
+    resp = client.post(f"/api/v1/annotation-tasks/{job_id}/frames", json={"timestamp": 2.5})
+    assert resp.status_code == 200, resp.text[:300]
+    frame_sample_id = resp.json()["data"]["sample_id"]
+    assert isinstance(frame_sample_id, int)
+
+    samples = client.get(f"/api/v1/annotation-tasks/{job_id}/samples").json()["data"]
+    assert samples["total"] == 2
+    frame = next(s for s in samples["items"] if s["meta"].get("mode") == "frame")
+    assert frame["meta"]["timestamp"] == 2.5
+    assert frame["meta"]["weld_id"] == WELD_0248
+    assert frame["meta"]["version_id"] == vid
+
+    # 熔池多边形标注保存（kind='polygon'，category='熔池' 属于 label_categories）
+    resp = client.post(
+        f"/api/v1/annotation-tasks/{job_id}/samples/{frame_sample_id}/labels",
+        json={"labels": [{"category": "熔池", "kind": "polygon", "points": [[10, 10], [120, 10], [80, 90], [20, 60]]}]},
+    )
+    assert resp.status_code == 200, resp.text[:300]
+    saved = resp.json()["data"]
+    assert len(saved) == 1
+    assert saved[0]["kind"] == "polygon"
+    assert saved[0]["category"] == "熔池"
+    assert saved[0]["points"] == [[10, 10], [120, 10], [80, 90], [20, 60]]
+
+    # 非法：timestamp 负数 / 未知任务 / 缺 version_id
+    resp = client.post(f"/api/v1/annotation-tasks/{job_id}/frames", json={"timestamp": -1})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    resp = client.post("/api/v1/annotation-tasks/job_deadbeef/frames", json={"timestamp": 1.0})
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+    resp = client.post("/api/v1/annotation-tasks", json={"source": "video"})
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+
+# ---------- 标注产物导出（P3：video 掩膜 / signal segment JSON） ----------
+
+
+class FakeStorageExport:
+    """导出测试用假存储：get_object 返回假视频字节，upload_stream 记录，presign_get 返回假 URL。"""
+
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, bytes, str]] = []
+
+    def get_object(self, object_key):
+        return b"fake-video-bytes"
+
+    def upload_stream(self, object_key, fileobj, size, content_type):
+        data = fileobj.read()
+        self.uploads.append((object_key, data, content_type))
+        return object_key
+
+    def presign_get(self, object_key, expires=3600):
+        return f"https://minio/{object_key}"
+
+    def delete_object(self, object_key):
+        pass
+
+
+#: 1x1 白色 JPEG（base64，Pillow 可打开）——掩膜导出测试的假抽帧产物。
+_JPEG_1X1_B64 = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
+    "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAA"
+    "AAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=="
+)
+
+
+def test_export_signal_segment_labels(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    job_id = client.post(
+        "/api/v1/annotation-tasks", json={"source": "signal", "version_id": vid}
+    ).json()["data"]["job_id"]
+    run_job(job_id)
+    sample_id = client.get(f"/api/v1/annotation-tasks/{job_id}/samples").json()["data"]["items"][0]["id"]
+    client.post(
+        f"/api/v1/annotation-tasks/{job_id}/samples/{sample_id}/labels",
+        json={"labels": [{"category": "焊瘤", "kind": "segment", "start_time": 1.2, "end_time": 2.8, "confidence": 0.9}]},
+    )
+
+    storage = FakeStorageExport()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    resp = client.post(f"/api/v1/annotation-tasks/{job_id}/export")
+    assert resp.status_code == 200, resp.text[:300]
+    data = resp.json()["data"]
+    assert data["type"] == "signal"
+    assert data["count"] == 1
+    assert data["labels"][0]["category"] == "焊瘤"
+    assert data["labels"][0]["start_time"] == 1.2
+    assert data["labels"][0]["end_time"] == 2.8
+    assert data["labels_url"].startswith("https://minio/")
+    keys = {k for k, _d, _t in storage.uploads}
+    assert any(k.endswith("segments_") and k.endswith(".json") for k in keys)
+
+
+def test_export_video_masks(
+    db_engine,
+    override_get_session,
+    override_get_current_user,
+    executor_sessionlocal,
+    monkeypatch,
+) -> None:
+    import base64
+    import io
+
+    from PIL import Image
+
+    vid = _version_id_by_no(WELD_0248)
+    job_id = client.post(
+        "/api/v1/annotation-tasks", json={"source": "video", "version_id": vid}
+    ).json()["data"]["job_id"]
+    run_job(job_id)
+    frame_id = client.post(
+        f"/api/v1/annotation-tasks/{job_id}/frames",
+        json={"timestamp": 2.5, "frame_width": 1280, "frame_height": 720},
+    ).json()["data"]["sample_id"]
+    client.post(
+        f"/api/v1/annotation-tasks/{job_id}/samples/{frame_id}/labels",
+        json={"labels": [{"category": "熔池", "kind": "polygon", "points": [[100, 100], [200, 100], [150, 200]]}]},
+    )
+
+    def _fake_analyze(data, events):
+        # 防回归：event_points 必须是 [(event, t)] 元组列表（media_probe 逐事件解包）
+        assert isinstance(events, list) and events and isinstance(events[0], tuple) and events[0][1] == 2.5
+        return (
+            {"duration": 5.42, "width": 1, "height": 1},
+            [{"event": "frame", "t": 2.5, "bytes": base64.b64decode(_JPEG_1X1_B64)}],
+        )
+
+    storage = FakeStorageExport()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    monkeypatch.setattr("app.services.media_probe.analyze_video", _fake_analyze)
+
+    resp = client.post(f"/api/v1/annotation-tasks/{job_id}/export")
+    assert resp.status_code == 200, resp.text[:300]
+    data = resp.json()["data"]
+    assert data["type"] == "video"
+    assert data["count"] == 1
+    item = data["items"][0]
+    assert item["timestamp"] == 2.5
+    assert item["category"] == "熔池"
+    assert item["frame_url"].startswith("https://minio/")
+    assert item["mask_url"].startswith("https://minio/")
+
+    keys = {k for k, _d, _t in storage.uploads}
+    assert any(k.endswith(".jpg") for k in keys)
+    assert any(k.endswith(".png") for k in keys)
+    png = [d for k, d, _t in storage.uploads if k.endswith(".png")][0]
+    assert Image.open(io.BytesIO(png)).size == (1, 1)
+
+
+def test_export_manual_source_returns_400(
+    override_get_session, override_get_current_user, monkeypatch
+) -> None:
+    job_id = _create_annotation_task("manual")
+    storage = FakeStorageExport()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    resp = client.post(f"/api/v1/annotation-tasks/{job_id}/export")
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
+    resp = client.post("/api/v1/annotation-tasks/job_deadbeef/export")
+    assert resp.status_code == 404 and resp.json()["code"] == 40401
+
+
 # ---------- 样本分页 ----------
 
 
@@ -958,6 +1152,8 @@ def test_split_annotation_endpoints_require_login(db_engine, override_get_sessio
         ("post", "/api/v1/annotation-tasks/job_any/samples/1/ai-pretag", None),
         ("post", "/api/v1/annotation-tasks/job_any/samples/1/labels", {"labels": []}),
         ("get", "/api/v1/annotation-tasks/job_any", None),
+        ("post", "/api/v1/annotation-tasks/job_any/frames", {"timestamp": 1.0}),
+        ("post", "/api/v1/annotation-tasks/job_any/export", None),
     ]
     for method, path, body in cases:
         resp = client.request(method, path, json=body)

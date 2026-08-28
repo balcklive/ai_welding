@@ -36,6 +36,7 @@ Task 14：切分/标注（实施边界 §3.1 = 真实异步编排 + 模拟结果
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
@@ -74,9 +75,16 @@ _NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
 _FORMATS = {"NPY", "CSV", "JSON", "PT"}
 #: 切分任务格式 / 标注来源 / 导入来源白名单（契约 §3.4）。
 _SPLIT_FORMATS = {"目标检测", "图像分类", "语义分割", "时序分类"}
-#: 标注来源：split_task=切分样本 / manual=手动 / signal=时序信号（信号锚点样本，供波形区间标注）。
-_ANNOTATION_SOURCES = {"split_task", "manual", "signal"}
+#: 标注来源：split_task=切分样本 / manual=手动 / signal=时序信号（信号锚点样本，供波形区间标注）/
+#: video=熔池视频（视频锚点样本 + 帧样本，供多边形区域标注）。
+_ANNOTATION_SOURCES = {"split_task", "manual", "signal", "video"}
 _IMPORT_SOURCES = {"files", "split_task"}
+#: 视频扩展名（识别版本 object_keys 里的可标注视频）。
+_VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".webm")
+
+
+def _is_video_key(key: str) -> bool:
+    return key.lower().endswith(_VIDEO_EXTENSIONS)
 
 
 class ExtractFeaturesRequest(BaseModel):
@@ -605,7 +613,7 @@ def get_split_task(task_id: str, session: Session = Depends(get_session)) -> dic
 
 @router.get("/label-categories")
 def list_label_categories(session: Session = Depends(get_session)) -> dict:
-    """缺陷标签类别（模型口径 5 类，契约 §3.4）：焊瘤/气孔/未熔合/咬边/正常。"""
+    """缺陷标签类别（模型口径 6 类，契约 §3.4）：焊瘤/气孔/未熔合/咬边/正常 + 熔池（视频语义分割单类）。"""
     return ok(annotation.list_label_categories(session))
 
 
@@ -619,7 +627,9 @@ def create_annotation_task(
 
     同事务 commit，返回 `{job_id}`。成功后（后台执行器）若来源为 split_task，
     把该切分任务的样本 `annotation_task_id` 指向本任务；`signal` 来源在创建时同步
-    生成 1 个信号锚点样本（`meta.mode='signal'`，波形区间标注的挂载点）。
+    生成 1 个信号锚点样本（`meta.mode='signal'`，波形区间标注的挂载点）；`video`
+    来源同步生成 1 个视频锚点样本（`meta.mode='video'` + `video_key`，多边形区域标注
+    的视频播放挂载点，帧样本经 `POST …/frames` 追加）。
     """
     if body.source not in _ANNOTATION_SOURCES:
         return err(
@@ -634,6 +644,7 @@ def create_annotation_task(
             return err(40401, "切分任务不存在", status=404)
         split_id = split.id
     signal_anchor: dict | None = None
+    video_anchor: dict | None = None
     if body.source == "signal":
         if body.version_id is None:
             return err(40000, "signal 来源需提供 version_id", status=400)
@@ -644,6 +655,21 @@ def create_annotation_task(
         signal_anchor = {
             "weld_id": record.weld_id if record is not None else None,
             "version_id": body.version_id,
+        }
+    elif body.source == "video":
+        if body.version_id is None:
+            return err(40000, "video 来源需提供 version_id", status=400)
+        version = session.get(DataVersion, body.version_id)
+        if version is None:
+            return err(40402, "版本不存在", status=404)
+        record = session.get(DataRecord, version.record_id)
+        video_key = next(
+            (k for k in (version.object_keys or []) if _is_video_key(k)), None
+        )
+        video_anchor = {
+            "weld_id": record.weld_id if record is not None else None,
+            "version_id": body.version_id,
+            "video_key": video_key,
         }
 
     job = create_job(session, type="annotation")
@@ -661,6 +687,14 @@ def create_annotation_task(
             Sample(
                 annotation_task_id=task.id,
                 meta={"mode": "signal", "source": "signal-anchor", **signal_anchor},
+            )
+        )
+    if video_anchor is not None:
+        session.flush()  # 分配 task.id
+        session.add(
+            Sample(
+                annotation_task_id=task.id,
+                meta={"mode": "video", "source": "video-anchor", **video_anchor},
             )
         )
     write_audit(
@@ -868,6 +902,111 @@ def save_annotation_labels(
     )
     session.commit()
     return ok([annotation.annotation_payload(a) for a in new_annotations])
+
+
+class AnnotationFrameCreate(BaseModel):
+    """POST /annotation-tasks/{task_id}/frames 请求体（视频标注帧锚点）。
+
+    `frame_width`/`frame_height` 为捕获帧的像素尺寸（视频自然分辨率），导出掩膜时据此
+    把多边形像素坐标缩放到 ffmpeg 抽帧实际尺寸。
+    """
+
+    timestamp: float
+    frame_width: int | None = None
+    frame_height: int | None = None
+
+
+@router.post("/annotation-tasks/{task_id}/frames")
+def create_annotation_frame(
+    task_id: str,
+    body: AnnotationFrameCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """为视频标注任务创建帧样本锚点（`meta.mode='frame'` + `timestamp`），**同步**。
+
+    weld_id/version_id/video_key 从任务的视频锚点样本（`meta.mode='video'`）继承；
+    之后前端用既有 `POST …/samples/{sample_id}/labels`（kind='polygon'）给该帧保存多边形。
+    写审计（`create`）后提交，返回 `{sample_id}`。
+    """
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    ts = body.timestamp
+    if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts < 0:
+        return err(40000, "timestamp 需为非负数值（秒）", status=400)
+    fw, fh = body.frame_width, body.frame_height
+    if (fw is not None and (not isinstance(fw, int) or fw <= 0)) or (
+        fh is not None and (not isinstance(fh, int) or fh <= 0)
+    ):
+        return err(40000, "frame_width/frame_height 需为正整数", status=400)
+    anchors = session.exec(
+        select(Sample).where(Sample.annotation_task_id == task.id)
+    ).all()
+    video_meta = next(
+        ((s.meta or {}) for s in anchors if (s.meta or {}).get("mode") == "video"), {}
+    )
+    sample = Sample(
+        annotation_task_id=task.id,
+        meta={
+            "mode": "frame",
+            "timestamp": ts,
+            "weld_id": video_meta.get("weld_id"),
+            "version_id": video_meta.get("version_id"),
+            "video_key": video_meta.get("video_key"),
+            "frame_width": fw,
+            "frame_height": fh,
+        },
+    )
+    session.add(sample)
+    session.flush()
+    write_audit(
+        session,
+        current_user.id,
+        "create",
+        "annotation_sample",
+        f"{task_id}/frame",
+        {"timestamp": ts},
+    )
+    session.commit()
+    return ok({"sample_id": sample.id})
+
+
+@router.post("/annotation-tasks/{task_id}/export")
+def export_annotation_artifacts(
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """导出标注产物（**同步**）：video → 帧图+掩膜 PNG；signal → segment JSON 标签。
+
+    写 MinIO `processed/{weld_id}/annotate/...`，返回 `{type, count, items}`。
+    写审计（`export`）后提交。
+    """
+    task = annotation.resolve_annotation_task(session, task_id)
+    if task is None:
+        return err(40401, "标注任务不存在", status=404)
+    from app.storage import get_storage  # noqa: PLC0415 - 延迟导入便于测试 monkeypatch
+
+    storage = get_storage()
+    try:
+        result = annotation.export_annotations(session, task, storage)
+    except ValueError as exc:
+        # 不支持来源（如 manual）→ 400
+        return err(40000, str(exc), status=400)
+    except Exception as exc:  # noqa: BLE001 - 导出失败统一 500，不泄漏内部异常
+        logger.warning("[annotation.export] 失败: task_id={} err={}", task_id, exc)
+        return err(50000, "标注导出失败", status=500)
+    write_audit(
+        session,
+        current_user.id,
+        "export",
+        "annotation",
+        task_id,
+        {"type": result.get("type"), "count": result.get("count")},
+    )
+    session.commit()
+    return ok(result)
 
 
 # ── 内部助手 ──────────────────────────────────────────────────────────

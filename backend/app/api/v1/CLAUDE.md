@@ -57,7 +57,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     sample_count 以 split_tasks 行为准合并）。
   - **Task 14 标注**（`app.services.annotation` 领域逻辑）：
     `GET /label-categories`（模型口径 5 类）；`POST /annotation-tasks`（body
-    `{source(split_task|manual|signal), split_task_id?, version_id?, name?}`（`signal` 需 `version_id`，创建时同步生成 1 个 `meta.mode='signal'` 信号锚点样本供波形区间标注），异步 Job type=annotation +
+    `{source(split_task|manual|signal|video), split_task_id?, version_id?, name?}`（`signal`/`video` 需 `version_id`：signal 同步生成 1 个 `meta.mode='signal'` 信号锚点样本供波形区间标注；video 同步生成 1 个 `meta.mode='video'` 视频锚点样本含 `video_key` 供多边形区域标注），异步 Job type=annotation +
     `annotation_tasks` 行 → `{job_id}`，成功后 handler 把来源切分样本归属到本任务）；
     `GET /annotation-tasks/{task_id}`（Job 信封）；`POST /annotation-tasks/{task_id}/import`
     （`{source(files|split_task), object_keys[]?, split_task_id?}` → `{imported}`）；
@@ -65,6 +65,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     每样本含 annotations[] + 样本级 confidence）；`GET …/samples/{sample_id}`（样本 + 最新
     标注 + confidence = 当前标注置信度均值）；`POST …/samples/{sample_id}/ai-pretag`（同步
     确定性 2 区域，seed=sample_id，**替换**现有标注，annotator=AI预标注）；
+    `POST …/frames`（body `{timestamp, frame_width?, frame_height?}`，视频标注帧锚点样本，
+    weld/version/video_key 从任务视频锚点样本继承）；`POST …/export`（P3 标注产物导出：
+    video → 帧图+掩膜 PNG，signal → segment JSON，写 `processed/{weld_id}/annotate/`；
+    不支持来源 400 / 失败 500，审计 export）；
     `POST …/samples/{sample_id}/labels`（body `{labels[]}`，**覆盖写**，annotator=当前用户，
     confidence 缺省沿用先前同类别值，类别须在 label_categories，**按 `kind` 分支校验几何**：
     `box`→[x,y,w,h] 四元组 / `segment`→`start_time`/`end_time` 且 0<=start<end / `polygon`→

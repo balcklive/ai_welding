@@ -129,7 +129,12 @@
   **confidence 语义（契约 §3.4）**：每条 `Annotation` 自带 confidence；样本级
   `_sample_confidence` = 当前标注置信度均值（无标注 → None）。写操作（import/pretag/
   save_labels）**不 commit**（路由提交）；`simulate_annotation` 内的 commit 是执行器专用
-  session 场景。
+  session 场景。**P2/P3 扩展**：`simulate_annotation` 对 signal/video 来源统计任务样本数
+  （信号/视频锚点样本在创建路由同步生成）；`export_annotations`（P3 导出，按来源分发：
+  video → `_export_video_masks` 用 `media_probe.analyze_video` 按帧 timestamp 抽帧 JPEG +
+  Pillow 多边形填充掩膜 PNG，写 `processed/{weld_id}/annotate/{sample_id}.jpg|.png`，
+  坐标按 `frame_width/frame_height` 缩放到抽帧实际尺寸；signal → `_export_segment_labels`
+  落 `segments_{task.id}.json` 区间标签）。存储/ffmpeg/Pillow 延迟导入（测试 monkeypatch）。
 - `datasets.py`：**Task 15**。数据集服务，供 `app/api/v1/datasets.py` 路由调用（契约 §3.5）：
   - `next_dataset_no` = `DS-{类别}-{全局序号}`（类别 DEFECT/POOL/QUALITY 对齐 seed，序号 =
     全库数据集数 + 1，避免与 seed 的全局序号 001/002/003 撞号）；`get_dataset_by_identifier`

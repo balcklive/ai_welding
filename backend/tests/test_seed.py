@@ -1,7 +1,7 @@
 """Task 6：启动 seed 幂等性与演示数据对齐断言（内存 SQLite）。
 
 覆盖：
-1. `seed_all` 执行两次 → 各表数量不翻倍（幂等）；label_categories==5、welds==4、models==3、datasets==3。
+1. `seed_all` 执行两次 → 各表数量不翻倍（幂等）；label_categories==6（5 缺陷 + 熔池）、welds==4、models==3、datasets==3。
 2. 管理员（林工/admin）存在，`verify_password(admin_password)` 为 True。
 3. 0248 有 4 个版本（v1.0..v1.3），`latest_version_id` 指向 v1.3。
 4. 0248 有 1 条核验报告（93.3/14/1/0/2.8）+ 15 条规则明细，第 9 项「视频帧率稳定性」= warning。
@@ -74,7 +74,7 @@ def test_seed_all_idempotent(engine: Engine) -> None:
         for model, n in counts.items():
             assert _count(session, model) == n, f"{model.__name__} 翻倍: {n}"
 
-        assert counts[LabelCategory] == 5
+        assert counts[LabelCategory] == 6
         assert counts[DataRecord] == 4
         assert counts[Model] == 3
         assert counts[Dataset] == 3

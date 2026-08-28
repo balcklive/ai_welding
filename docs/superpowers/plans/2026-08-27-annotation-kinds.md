@@ -89,8 +89,8 @@
 - Modify: `backend/app/services/annotation.py` / `backend/app/api/v1/analysis.py`（polygon 校验已在 Task 3，这里补视频锚点 Sample 来源）
 - Modify: `backend/app/core/seed.py`（可选：新增"熔池"标签类别）
 
-- [ ] Step 1: `label_categories` 新增"熔池"类别（语义分割单类）。
-- [ ] Step 2: 视频帧锚点：`Sample(meta.mode='frame', meta.timestamp)` 的导入/创建路径（复用 `import` source=files 或新增 source=video）。
+- [x] Step 1: `label_categories` 新增"熔池"类别（语义分割单类，seed 6 类）。
+- [x] Step 2: `source='video'`（需 version_id，同步建 `meta.mode='video'` 视频锚点样本含 video_key）+ `POST /annotation-tasks/{id}/frames` 建 `meta.mode='frame'`+timestamp+帧尺寸 的帧锚点样本。
 
 ### Task 6: 前端视频标注模式（react-image-annotate）
 
@@ -98,10 +98,11 @@
 - Modify: `src/App.tsx`（标注页新增视频模式）
 - Modify: `package.json`（新增 `react-image-annotate`）
 
-- [ ] Step 1: 自建 `<video>` 播放器 + 帧导航（播放/暂停/上一帧/下一帧/时间轴）。
-- [ ] Step 2: 暂停时 `canvas.drawImage` 取当前帧 `toDataURL` → 喂 `react-image-annotate` 画多边形。
-- [ ] Step 3: 保存 `{timestamp: video.currentTime, points, category:'熔池'}` → `POST …/labels`（kind='polygon'）。
-- [ ] Step 4: 已标注帧在时间轴做标记点，可跳回编辑。
+- [x] Step 1: 自建 `<video>` 播放器 + 帧导航（播放/暂停/上一帧/下一帧）。
+- [x] Step 2: 暂停/捕获时 `canvas.drawImage` 按视频自然分辨率取帧 `toDataURL` → 喂 `react-image-annotate`（`images`+`enabledTools=['create-polygon']`，`key` 重挂载重置每帧）画多边形。
+- [x] Step 3: 保存——`onExit` 取归一化多边形 × 帧宽高转像素 → `createAnnotationFrame` 建帧样本 → `saveAnnotation`（kind='polygon'，category='熔池'）。
+- [x] Step 4: 已标注帧侧栏列表展示（按 timestamp 去重，重复保存复用样本）。
+- [x] 注：`react-image-annotate@1.8.0` peer 仅 React 16 → `--legacy-peer-deps` 安装；非受控组件，取结果走 `onExit`。
 
 ## Phase 3：标注数据消费（训练导出）
 
@@ -111,8 +112,9 @@
 - Modify: `backend/app/services/datasets.py` / 新增导出 helper
 - Modify: `Dockerfile`（新增 ffmpeg，仅本阶段）
 
-- [ ] Step 1: 建数据集/导出时，按 `Annotation(kind='polygon')` 的 `timestamp` 用 ffmpeg 抽帧 + 多边形填充生成掩膜 PNG 写 MinIO。
-- [ ] Step 2: 时序 segment 标注导出为 JSON 标签文件（与信号样本对齐）。
+- [x] Step 1: `POST /annotation-tasks/{id}/export`（video 来源）——`media_probe.analyze_video` 按 timestamp 抽帧 JPEG + Pillow 多边形填充掩膜 PNG，写 `processed/{weld_id}/annotate/{sample_id}.jpg|.png`，返回 URL 清单。
+- [x] Step 2: 时序 segment 标注导出为 JSON 标签文件（`segments_{task.id}.json`，含 start/end/category/confidence/annotator）。
+- [x] Step 3: 依赖新增 `pillow`（`uv add`）；ffmpeg 复用 main 已引入的 `imageio-ffmpeg` 与 `media_probe`。
 
 ## Task 8: 验证与收尾
 
