@@ -281,7 +281,7 @@ def detect_events(
     阈值按信号自身幅度（p95-p10）推导，不写死绝对值，也不依赖 CHANNEL_SPECS
     量程 span——量程按真实物理范围放宽后 span 不再与信号幅度成正比，量程派生会让
     低幅信号（如 TIG 小电流）误判整个焊接段失活。主用电流，缺电流用电压。
-    返回形状与生成器一致：`events={arc, weld_segment:[s,e], tail}`、
+    返回真实数据推导的 `events={arc, weld_segment:[s,e], tail}`、
     `anomalies=[{start,end,type}]`。确定性：全部基于数据本身，无随机。
     """
     n = len(df)
@@ -292,7 +292,7 @@ def detect_events(
     )
     primary = column_map.get("cur") or column_map.get("vol")
     if primary is None:
-        return signals.EVENTS, []
+        return {}, []
     x = pd.to_numeric(df[primary], errors="coerce").to_numpy(dtype=float)
 
     baseline = float(np.percentile(x, 10))
@@ -502,7 +502,7 @@ def _bundle_from_parsed(
         duration=duration,
         sample_rate=fs,
         channels=channels,
-        events=ingest.events or dict(signals.EVENTS),
+        events=ingest.events or {},
         anomalies=ingest.anomalies or [],
         source="real",
     )
@@ -517,11 +517,7 @@ def bundle_from_parquet(data: bytes, ingest: SignalIngest, weld_id: str) -> Sign
 
 
 def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> SignalBundle:
-    """优先读真实信号 Parquet；无成功导入则回退确定性生成（source="generated"）。
-
-    供 `analysis.py` 的 signals/result/mode/features 与 `reports.py` 分析报告调用，
-    返回形状与 `signals.generate_signals` 完全一致，前端零改动。
-    """
+    """读取成功导入的真实信号；缺失或损坏时阻断业务，不生成替代信号。"""
     ingest = session.exec(
         select(SignalIngest)
         .where(
@@ -531,13 +527,30 @@ def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> Signa
         .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
     ).first()
     if ingest is None or not ingest.parquet_key:
-        return signals.generate_signals(weld_id)
+        raise ValueError("当前版本没有成功导入的真实时序信号")
     parsed = _cached_parquet(ingest.parquet_key)
     if parsed is None:
-        logger.opt(exception=True).warning(
-            "Failed to read real signal Parquet; falling back to generated signals: {}", ingest.parquet_key
+        raise ValueError("真实时序信号文件读取失败，请重新导入并核验")
+    return _bundle_from_parsed(parsed, ingest, weld_id)
+
+
+def load_real_signal_bundle(
+    session: Session, weld_id: str, version_id: int
+) -> SignalBundle | None:
+    """只读取真实 Parquet；生产任务不得回退到合成信号。"""
+    ingest = session.exec(
+        select(SignalIngest)
+        .where(
+            SignalIngest.version_id == version_id,
+            SignalIngest.status == "succeeded",
         )
-        return signals.generate_signals(weld_id)
+        .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
+    ).first()
+    if ingest is None or not ingest.parquet_key:
+        return None
+    parsed = _cached_parquet(ingest.parquet_key)
+    if parsed is None:
+        return None
     return _bundle_from_parsed(parsed, ingest, weld_id)
 
 

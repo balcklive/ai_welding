@@ -111,10 +111,6 @@ _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 _AUDIO_EXTS = (".wav", ".mp3", ".flac", ".m4a")
 _TS_EXTS = (".csv", ".dat", ".txt")
 
-#: 兜底合成样本：每焊缝生成的样本数（4 焊缝 → 12 样本，按焊缝分组划分仍覆盖 train/val/test）。
-_SYNTH_PER_RECORD = 3
-
-
 # ── 业务号 / 解析 ─────────────────────────────────────────────────────
 
 
@@ -770,7 +766,7 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     source = _build_source(build_task, job)
     samples = _gather_samples(session, source, dataset)
     if not samples:
-        samples = _fallback_samples(session)
+        raise ValueError("没有可用于构建数据集的真实样本，请先完成样本分段或标注")
 
     # 按焊缝（record_id）分组，避免同焊缝样本跨分片泄漏。
     record_ids: dict[int, int | None] = {}
@@ -900,57 +896,7 @@ def _record_matches(record: DataRecord, filters: dict) -> bool:
             return False  # 未知筛选键：严格不匹配
     return True
 
-
-def _fallback_samples(session: Session) -> list[Sample]:
-    """确定性兜底样本集：覆盖全部登记焊缝的合成样本，保证按焊缝划分的 demo 非空。
-
-    - 已有覆盖 ≥2 条焊缝的演示样本 → 直接用（seed 演示场景，非空且不新增样本）；
-    - 否则逐登记焊缝生成 `_SYNTH_PER_RECORD` 个合成 `Sample`（对象键按焊缝 modalities 推导）。
-    """
-    existing = list(session.exec(select(Sample)).all())
-    record_ids = {_sample_record_id(session, s) for s in existing}
-    record_ids.discard(None)
-    if len(record_ids) >= 2:
-        return existing
-
-    records = session.exec(select(DataRecord).order_by(DataRecord.id)).all()
-    samples: list[Sample] = []
-    for i, record in enumerate(records):
-        for j in range(_SYNTH_PER_RECORD):
-            idx = i * _SYNTH_PER_RECORD + j
-            sample = Sample(
-                frame_no=j,
-                object_keys=_synthetic_keys(record, idx),
-                meta={
-                    "weld_id": record.weld_id,
-                    "record_id": record.id,
-                    "synthetic": True,
-                },
-            )
-            session.add(sample)
-            session.flush()
-            samples.append(sample)
-    return samples
-
-
-def _synthetic_keys(record: DataRecord, idx: int) -> list[str]:
-    """按登记 modalities 推导合成样本对象键（决定维度可用性）。"""
-    weld_id = record.weld_id
-    mods = record.modalities or []
-    keys: list[str] = []
-    if "video" in mods:
-        keys.append(f"processed/{weld_id}/split/synthetic_{idx}.mp4")
-    if "timeseries" in mods:
-        keys.append(f"processed/{weld_id}/split/synthetic_{idx}.csv")
-    if "audio" in mods:
-        keys.append(f"processed/{weld_id}/split/synthetic_{idx}.wav")
-    if "infrared" in mods:
-        keys.append(f"processed/{weld_id}/split/synthetic_{idx}_infrared.png")
-    if not keys:
-        keys.append(f"processed/{weld_id}/split/synthetic_{idx}.json")
-    return keys
-
-
+
 def _assign_splits(group_keys: list) -> dict[object, str]:
     """按焊缝分组稳定划分 8:1:1。组数 <3 时退化为 train / train+test（不泄漏）。
 

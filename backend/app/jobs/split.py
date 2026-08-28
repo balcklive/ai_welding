@@ -1,182 +1,114 @@
-"""split job handler（Task 14）：数据切分（模拟）。
+"""生产样本分段任务。
 
-编排为真实异步：Job 状态/进度/结果回填与 MinIO 产物对象键为真，计算内核为演示
-（`docs/开发规范.md` §3.1）。按切分规则 `{fixed_rate, keep_event_buffer, task_format}`
-生成 `sample_count` 个样本（`samples` 表），`object_keys` 用
-`processed/{weld_id}/split/...`，回填 `SplitTask.sample_count` 与 `job.result`。
-
-领域逻辑直接放本模块（任务清单只规划了 `jobs/split.py`，无独立 service）：
-- `simulate_split(session, task, job)`：进度逐步 → 建样本 → 回填 sample_count + result。
-- `@register_handler("split")` 注册到执行器注册表。
-
-坑/边界：
-- `sample_count = max(1, total_frames // fixed_rate)`，`total_frames = int(DURATION*1000)`，
-  `DURATION` 取自 `services/signals.py`（5.42s → 5420 帧，确定性）。fixed_rate 为「帧/样本」。
-- 样本对象键需要 `sample.id`（flush 后才有），故逐样本 add + flush 后回填 object_keys。
-- 进度逐次 `session.commit()`（轮询可见）；最终事务（样本 + task.sample_count +
-  job.result）由执行器在 handler 返回后统一 commit。
+任务只消费成功导入的真实时序信号；目标检测额外消费真实视频并抽取窗口中点帧。
+预览和执行共用 ``app.services.splitting`` 的窗口规则，避免数量和边界漂移。
 """
 
 from __future__ import annotations
 
 import io
 import json
-import time
 
 from loguru import logger
-
 from sqlmodel import Session, select
 
 from app.jobs.executor import register_handler
 from app.models.analysis import Sample, SplitTask
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
+from app.services import media_probe, splitting
 from app.services.jobs import mark_succeeded
-from app.services.signals import DURATION
-
-#: 参考时长（s）= 信号生成器时长（signals.DURATION=5.42，1000Hz → 5420 帧），与前端一致。
-_REF_DURATION_S = DURATION
-
-#: 结果 JSON 内 `samples[]` 的展示上限。切分样本可上千（fixed_rate=1 → 5420），全量塞进
-#: `job.result` 会让 `GET /split-tasks/{id}` 与 `GET /jobs/{id}` 每次轮询回传 ~500KB；
-#: 前端只消费 `sample_count`（App.tsx Alignment splitOnly），故 `samples` 只保留前 N 条作预览，
-#: 全量样本以 `samples` 表（split_task_id）为准，不落结果。
-_MAX_RESULT_SAMPLES = 50
-
-#: 进度逐步递增点（0→100）。步间 commit + 小睡，让轮询/前端能看到 progress 变化。
-_PROGRESS_STEPS: tuple[int, ...] = (20, 40, 60, 80, 100)
-_PROGRESS_SLEEP: float = 0.005
+from app.storage import get_storage
 
 
 @register_handler("split")
 def handle(job_id: int, session: Session) -> None:
-    """数据切分（模拟）：按规则生成样本并回填任务/Job 结果。
-
-    由执行器在独立 `Session`（`SessionLocal`）内调用；失败时执行器兜底 `mark_failed`。
-    """
-    task = session.exec(
-        select(SplitTask).where(SplitTask.job_id == job_id)
-    ).first()
-    if task is None:
-        raise ValueError(f"Split task does not exist: job_id={job_id}")
+    task = session.exec(select(SplitTask).where(SplitTask.job_id == job_id)).first()
     job = session.get(Job, job_id)
-    if job is None:
-        raise ValueError(f"Job does not exist: id={job_id}")
-    simulate_split(session, task, job)
-
-
-def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
-    """模拟执行一次切分任务，返回写入 `job.result` 的 dict。
-
-    步骤：
-    1. 解析规则 `fixed_rate`（帧/样本，>=1）与版本 → 推导 `sample_count`；
-    2. 进度逐步 0→100（逐次 commit + 小睡，轮询可见）；
-    3. 逐样本建 `Sample` 行（frame_no 0..n，object_keys 用 `processed/{weld_id}/split/...`）；
-    4. 回填 `task.sample_count`；`mark_succeeded(job, result)`。
-    commit 由调用方（执行器）在返回后统一提交。
-    """
-    rules = dict(task.rules or {})
-    fixed_rate = rules.get("fixed_rate")
-    stride = rules.get("stride", fixed_rate)
-    if not isinstance(fixed_rate, int) or fixed_rate < 1:
-        raise ValueError(f"Split rule fixed_rate must be an integer >= 1; got {fixed_rate!r}")
-    if not isinstance(stride, int) or stride < 1:
-        raise ValueError(f"Split rule stride must be an integer >= 1; got {stride!r}")
-
+    if task is None or job is None:
+        raise ValueError(f"Split task does not exist: job_id={job_id}")
+    record = session.exec(
+        select(DataRecord).join(DataVersion, DataVersion.record_id == DataRecord.id)
+        .where(DataVersion.id == task.version_id)
+    ).first()
     version = session.get(DataVersion, task.version_id)
-    if version is None:
-        raise ValueError(f"The split task references a missing version: version_id={task.version_id}")
-    record = session.get(DataRecord, version.record_id)
-    if record is None:
-        raise ValueError(f"The split task references a missing weld: record_id={version.record_id}")
+    if record is None or version is None:
+        raise ValueError("Split task input version does not exist")
 
-    total_frames = int(_REF_DURATION_S * 1000)  # 5.42s × 1000Hz = 5420 帧
-    sample_count = max(1, 1 + max(0, total_frames - fixed_rate) // stride)
-
-    for progress in _PROGRESS_STEPS:
-        job.progress = progress
-        session.commit()
-        time.sleep(_PROGRESS_SLEEP)
-
-    weld_id = record.weld_id
-    samples: list[Sample] = []
+    bundle = splitting.load_input(session, record, version)
+    rules = dict(task.rules or {})
+    bounds = splitting.event_bounds(
+        bundle,
+        rules.get("event_start"),
+        rules.get("event_end"),
+        float(rules.get("keep_event_buffer") or 0),
+    )
+    windows = splitting.build_windows(
+        duration=bundle.duration,
+        sample_rate=bundle.sample_rate,
+        window_frames=int(rules["fixed_rate"]),
+        stride_frames=int(rules["stride"]),
+        event_bounds=bounds,
+    )
+    storage = get_storage()
+    video_key = next((key for key in version.object_keys or [] if key.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".webm"))), None)
+    video_bytes = storage.get_object(video_key) if task.task_format == "目标检测" and video_key else None
     uploaded: list[str] = []
     try:
-        for i in range(sample_count):
-            sample = Sample(
-                split_task_id=task.id,
-                frame_no=i,
-                meta={"weld_id": weld_id, "frame_no": i, "source": "split"},
-            )
-            session.add(sample)
-            session.flush()  # 分配 id，object_keys 需用 sample.id
-            sample.object_keys = [
-                f"processed/{weld_id}/split/{sample.id}.jpg",
-                f"processed/{weld_id}/split/{sample.id}.json",
-            ]
-            _write_sample_assets(sample, rules, task.task_format, uploaded)
-            samples.append(sample)
+        for index, window in enumerate(windows, start=1):
+            metadata = {
+                "sample_index": index,
+                "window_start": window.start,
+                "window_end": window.end,
+                "frame_start": window.frame_start,
+                "frame_end": window.frame_end,
+                "source_version_id": version.id,
+                "task_format": task.task_format,
+            }
+            if task.task_format == "目标检测":
+                if not video_bytes:
+                    raise splitting.SplitInputError("目标检测需要真实视频输入")
+                _, frames = media_probe.analyze_video(video_bytes, [(f"sample_{index}", (window.start + window.end) / 2)])
+                if not frames:
+                    raise splitting.SplitInputError(f"无法抽取第 {index} 个窗口的视频帧")
+                image_key = f"processed/{record.weld_id}/split/{task.id}/{index:06d}.jpg"
+                image_bytes = frames[0]["bytes"]
+                storage.upload_stream(image_key, io.BytesIO(image_bytes), len(image_bytes), "image/jpeg")
+                uploaded.append(image_key)
+                metadata["image_key"] = image_key
+                object_keys = [image_key]
+            else:
+                csv_key = f"processed/{record.weld_id}/split/{task.id}/{index:06d}.csv"
+                csv_bytes = splitting.signal_window_csv(bundle, window)
+                storage.upload_stream(csv_key, io.BytesIO(csv_bytes), len(csv_bytes), "text/csv")
+                uploaded.append(csv_key)
+                object_keys = [csv_key]
+            json_key = f"processed/{record.weld_id}/split/{task.id}/{index:06d}.json"
+            json_bytes = json.dumps(metadata, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            storage.upload_stream(json_key, io.BytesIO(json_bytes), len(json_bytes), "application/json")
+            uploaded.append(json_key)
+            session.add(Sample(split_task_id=task.id, frame_no=index, object_keys=[*object_keys, json_key], meta=metadata))
+            if index % 20 == 0 or index == len(windows):
+                job.progress = round(index / len(windows) * 100)
+                session.commit()
     except Exception:
-        _cleanup_uploaded_objects(uploaded)
+        for key in reversed(uploaded):
+            try:
+                storage.delete_object(key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to clean split artifact {}: {}", key, exc)
         raise
 
-    task.sample_count = sample_count
+    task.sample_count = len(windows)
+    task.rules = {**rules, "event_bounds": list(bounds)}
     session.add(task)
-
     result = {
-        "sample_count": sample_count,
-        "rules": rules,
+        "sample_count": len(windows),
         "task_format": task.task_format,
+        "rules": task.rules,
         "samples": [
-            {
-                "id": s.id,
-                "frame_no": s.frame_no,
-                "object_keys": s.object_keys,
-                "annotation_task_id": s.annotation_task_id,
-            }
-            for s in samples[:_MAX_RESULT_SAMPLES]
+            {"id": sample.id, "frame_no": sample.frame_no, "object_keys": sample.object_keys}
+            for sample in session.exec(select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)).all()[:100]
         ],
     }
     mark_succeeded(session, job, result)
-    return result
-
-
-
-def _write_sample_assets(
-    sample: Sample,
-    rules: dict,
-    task_format: str,
-    uploaded: list[str],
-) -> None:
-    from app.storage import get_storage
-
-    storage = get_storage()
-    jpg_key, json_key = sample.object_keys
-    jpg_bytes = b"\xff\xd8\xff\xd9"
-    json_bytes = json.dumps(
-        {
-            "sample_id": sample.id,
-            "frame_no": sample.frame_no,
-            "task_format": task_format,
-            "rules": rules,
-            "meta": sample.meta,
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-    ).encode("utf-8")
-    storage.upload_stream(jpg_key, io.BytesIO(jpg_bytes), len(jpg_bytes), "image/jpeg")
-    uploaded.append(jpg_key)
-    storage.upload_stream(json_key, io.BytesIO(json_bytes), len(json_bytes), "application/json")
-    uploaded.append(json_key)
-
-
-
-def _cleanup_uploaded_objects(uploaded: list[str]) -> None:
-    from app.storage import get_storage
-
-    storage = get_storage()
-    for key in reversed(uploaded):
-        try:
-            storage.delete_object(key)
-        except Exception:  # noqa: BLE001 - 清理失败只记日志，不覆盖原始异常
-            logger.warning("Failed to clean up split artifact: {}", key)

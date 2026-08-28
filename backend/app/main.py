@@ -3,8 +3,7 @@
 - Task 1：日志中间件（`AccessLogMiddleware`）+ 健康检查。
 - Task 3：挂载 v1 路由聚合（`/api/v1` 前缀在此添加）+ 全局异常处理器
   （统一返回 `{code,message,detail?}` 信封，见 `schemas/common.py`）。
-- Task 6：lifespan 启动时执行 `seed_all`（管理员必 seed；演示数据由 `SEED_DEMO`
-  控制，默认 false 不灌入，见 `core/seed.py`）；MySQL 不可达时仅告警不阻塞启动。
+- 启动时仅初始化管理员和系统标签字典；业务数据必须通过正式流程进入。
 - Task 13：lifespan 启动 `executor.start()`（后台 DB 轮询执行器，处理对齐等异步 Job）、
   关闭 `executor.stop()`（见 `app/jobs/`）。
 
@@ -44,18 +43,14 @@ if settings.secret_key in ("change-me", "") or settings.admin_password in ("admi
 async def lifespan(app: FastAPI):
     """启动时 seed + 启动 Job 执行器；关闭时停止执行器。
 
-    1. seed（管理员 + 按 `SEED_DEMO` 决定是否灌演示数据，幂等）：MySQL 不可达时仅
-       `logger.warning` 后跳过，避免启动直接崩溃（本地演示可容忍）。
+    1. seed（仅管理员和系统标签字典，幂等）：MySQL 不可达时记录告警并继续启动。
     2. `executor.start()`：后台线程每 ~1s 轮询 pending 的 Job 并 dispatch 到对应 handler
        （Task 13，见 `app/jobs/executor.py`）。
     """
     try:
         with Session(engine) as session:
-            seed_all(session, demo=settings.seed_demo)
-        if settings.seed_demo:
-            logger.info("Startup seeding completed: administrator and demo data are ready")
-        else:
-            logger.info("Startup seeding completed: administrator only (SEED_DEMO=false; demo data was not loaded)")
+            seed_all(session)
+        logger.info("Startup initialization completed")
     except Exception:  # noqa: BLE001 - 启动期数据库不可达不应阻塞服务启动
         logger.opt(exception=True).warning(
             "Startup seeding failed (database may be unreachable); skipping seeding and continuing startup"
@@ -112,6 +107,10 @@ def register_exception_handlers(app: FastAPI) -> None:
         status = exc.status_code if exc.status_code in mapping else 500
         detail = exc.detail if exc.detail is not None else None
         return err(code, message, detail=detail, status=status)
+
+    @app.exception_handler(ValueError)
+    async def _business_value_error(request: Request, exc: ValueError) -> object:
+        return err(40000, str(exc), status=400)
 
     @app.exception_handler(Exception)
     async def _unhandled_error(request: Request, exc: Exception) -> object:
