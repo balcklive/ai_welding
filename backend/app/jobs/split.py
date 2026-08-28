@@ -77,8 +77,11 @@ def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
     """
     rules = dict(task.rules or {})
     fixed_rate = rules.get("fixed_rate")
+    stride = rules.get("stride", fixed_rate)
     if not isinstance(fixed_rate, int) or fixed_rate < 1:
         raise ValueError(f"切分规则 fixed_rate 需为 >=1 的整数，当前: {fixed_rate!r}")
+    if not isinstance(stride, int) or stride < 1:
+        raise ValueError(f"切分规则 stride 需为 >=1 的整数，当前: {stride!r}")
 
     version = session.get(DataVersion, task.version_id)
     if version is None:
@@ -88,7 +91,7 @@ def simulate_split(session: Session, task: SplitTask, job: Job) -> dict:
         raise ValueError(f"切分任务引用的焊缝不存在: record_id={version.record_id}")
 
     total_frames = int(_REF_DURATION_S * 1000)  # 5.42s × 1000Hz = 5420 帧
-    sample_count = max(1, total_frames // fixed_rate)
+    sample_count = max(1, 1 + max(0, total_frames - fixed_rate) // stride)
 
     for progress in _PROGRESS_STEPS:
         job.progress = progress

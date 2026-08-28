@@ -134,6 +134,7 @@ class SplitTaskCreate(BaseModel):
     """
 
     fixed_rate: int
+    stride: int | None = None
     keep_event_buffer: float = 0.0
     task_format: str = "目标检测"
 
@@ -580,6 +581,9 @@ def create_split_task(
     """
     if body.fixed_rate < 1:
         return err(40000, "fixed_rate 需为 >=1 的整数（帧/样本）", status=400)
+    stride = body.stride or body.fixed_rate
+    if stride < 1:
+        return err(40000, "stride 需为 >=1 的整数（帧）", status=400)
     if body.task_format not in _SPLIT_FORMATS:
         return err(
             40000,
@@ -599,6 +603,7 @@ def create_split_task(
 
     rules = {
         "fixed_rate": body.fixed_rate,
+        "stride": stride,
         "keep_event_buffer": body.keep_event_buffer,
     }
     request_key = _split_request_key(version_id, rules, body.task_format)
