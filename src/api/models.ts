@@ -31,6 +31,18 @@ export async function getModel(id: string): Promise<Model> {
   return request<Model>(`/models/${id}`);
 }
 
+/** 将指定模型版本转换为边缘部署格式并返回下载地址。 */
+export async function exportModelVersion(
+  modelId: number,
+  versionId: number,
+  format = 'onnx',
+): Promise<{ job_id: string }> {
+  return request<{ job_id: string }>(`/models/${modelId}/versions/${versionId}/export`, {
+    method: 'POST',
+    body: { format },
+  });
+}
+
 /** 新建模型（登记模型仓库条目，同名 → 409）。 */
 export async function createModel(body: {
   name: string;

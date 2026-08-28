@@ -54,11 +54,16 @@ class ModelVersionUpdate(BaseModel):
     note: str | None = None
 
 
+class ModelExportRequest(BaseModel):
+    format: str = "onnx"
+
+
 class TrainingTaskCreate(BaseModel):
     """POST /training-tasks 请求体（契约 §3.6）。`base_model_id` 可选；`extra=allow`
     接收高级参数（epochs/batch_size/learning_rate/val_ratio 之外的任意键进 hyperparams）。"""
 
-    dataset_version_id: int
+    dataset_version_id: int | None = None
+    dataset_version_ids: list[int] = []
     base_model_id: int | None = None
     epochs: int | None = None
     batch_size: int | None = None
@@ -161,6 +166,27 @@ def update_model_version_status(
     return ok(svc.version_payload(version))
 
 
+@router.post("/models/{model_id}/versions/{model_version_id}/export")
+def export_model_version(
+    model_id: int,
+    model_version_id: int,
+    body: ModelExportRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """模型边缘格式导出入口。
+
+    当前环境尚未安装真实训练/转换引擎，明确返回不可用状态，禁止把占位
+    PyTorch 权重伪装为 ONNX 文件；接入 exporter 后由此接口创建异步任务。
+    """
+    model = session.get(Model, model_id)
+    version = session.get(ModelVersion, model_version_id)
+    if model is None or version is None or version.model_id != model_id:
+        return err(40401, "模型版本不存在", status=404)
+    if body.format.lower() != "onnx":
+        return err(40000, "当前仅支持 ONNX 导出", status=400)
+    return err(50100, "ONNX 导出引擎尚未配置", status=501)
+
+
 # ── 训练任务（异步 Job，状态经 GET /jobs/{job_id} 或 /training-tasks/{id} 轮询） ──
 
 
@@ -175,17 +201,27 @@ def create_training_task(
     同事务建 pending Job(type=training) + `training_tasks` 行（hyperparams 含高级参数），
     返回 `{job_id}`。成功后 handler 自动生成 `model_versions`（实验版本）+ 权重写 MinIO。
     """
-    dataset_version = session.get(DatasetVersion, body.dataset_version_id)
+    dataset_version_ids = body.dataset_version_ids or ([body.dataset_version_id] if body.dataset_version_id is not None else [])
+    if not dataset_version_ids:
+        return err(40000, "至少选择一个数据集版本", status=400)
+    dataset_version = session.get(DatasetVersion, dataset_version_ids[0])
     if dataset_version is None:
+        return err(40401, "数据集版本不存在", status=404)
+    dataset_versions = [session.get(DatasetVersion, version_id) for version_id in dataset_version_ids]
+    if any(version is None for version in dataset_versions):
         return err(40401, "数据集版本不存在", status=404)
     if body.base_model_id is not None and session.get(ModelVersion, body.base_model_id) is None:
         return err(40401, "基础模型版本不存在", status=404)
     dataset = session.get(Dataset, dataset_version.dataset_id)
     if dataset is None:
         return err(40401, "数据集不存在", status=404)
-    readiness = dataset_svc.readiness_for_version(session, dataset, dataset_version)
-    if readiness["readiness"] != "可训练":
-        return err(40000, f"当前数据集版本{readiness['readiness']}，拒绝创建训练任务", status=400)
+    for version in dataset_versions:
+        version_dataset = session.get(Dataset, version.dataset_id)
+        if version_dataset is None:
+            return err(40401, "数据集不存在", status=404)
+        readiness = dataset_svc.readiness_for_version(session, version_dataset, version)
+        if readiness["readiness"] != "可训练":
+            return err(40000, f"数据集版本 {version.id}{readiness['readiness']}，拒绝创建训练任务", status=400)
     existing_job_id = svc.active_training_job_uid(session, dataset_version.id)
     if existing_job_id is not None:
         return ok({"job_id": existing_job_id})
@@ -194,7 +230,7 @@ def create_training_task(
     job = create_job(session, type="training")
     task = TrainingTask(
         job_id=job.id,
-        dataset_version_id=body.dataset_version_id,
+        dataset_version_id=dataset_version.id,
         base_model_id=body.base_model_id,
         hyperparams=hyperparams,
     )
@@ -206,7 +242,7 @@ def create_training_task(
         "training_task",
         job.job_uid,
         {
-            "dataset_version_id": body.dataset_version_id,
+            "dataset_version_ids": dataset_version_ids,
             "base_model_id": body.base_model_id,
             "hyperparams": hyperparams,
         },
@@ -394,6 +430,8 @@ def get_inference_task(task_id: str, session: Session = Depends(get_session)) ->
 def _training_hyperparams(body: TrainingTaskCreate) -> dict:
     """训练超参：已知字段 + 高级参数（extra）合并为 `hyperparams` JSON。"""
     hyperparams: dict = {}
+    if body.dataset_version_ids:
+        hyperparams["dataset_version_ids"] = body.dataset_version_ids
     for key in ("epochs", "batch_size", "learning_rate", "val_ratio"):
         value = getattr(body, key)
         if value is not None:

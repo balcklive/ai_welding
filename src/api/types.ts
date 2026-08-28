@@ -484,8 +484,11 @@ export interface FeatureExtractRequest {
 }
 
 export interface TrainingConfig {
-  dataset_version_id: number;
+  /** 新接口支持多个固定数据集版本；保留单数键兼容旧后端。 */
+  dataset_version_ids?: number[];
+  dataset_version_id?: number;
   base_model_id?: number;
+  model_type?: string;
   epochs?: number;
   batch_size?: number;
   learning_rate?: number;
