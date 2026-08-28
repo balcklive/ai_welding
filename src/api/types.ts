@@ -612,7 +612,7 @@ export interface LoginResult {
 }
 
 export interface DatasetSource {
-  type: 'annotation_task' | 'split_task' | 'manual' | 'filter';
+  type: 'annotation_task' | 'split_task' | 'manual' | 'filter' | 'dataset_records';
   annotation_task_id?: string;
   split_task_id?: string;
   sample_ids?: string[];

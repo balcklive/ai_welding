@@ -24,6 +24,7 @@ from app.models.datasets import Dataset
 from app.models.jobs import Job
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
+from app.services import datasets as dataset_svc
 from app.services.jobs import create_job
 from app.storage import get_storage
 
@@ -408,6 +409,12 @@ def attach_raw_files(
                             "object_key": key,
                         },
                     )
+            # 原始文件真正挂载成功后，数据才算进入数据集；此时自动生成新的数据集快照。
+            # 仅在本次确实挂载了新文件时触发，避免重复上传产生空版本。
+            if new_object_keys:
+                dataset = session.get(Dataset, record.dataset_id)
+                if dataset is not None:
+                    dataset_svc.create_auto_build_task(session, dataset)
             session.commit()
             return ok(svc.version_payload(version))
         except RuntimeError as exc:

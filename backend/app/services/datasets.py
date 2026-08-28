@@ -104,7 +104,7 @@ _TASK_CATEGORY: dict[str, str] = {
 }
 
 #: 构建任务来源类型白名单（契约 §3.5 DatasetSource.type）。
-BUILD_SOURCES: tuple[str, ...] = ("annotation_task", "split_task", "manual", "filter")
+BUILD_SOURCES: tuple[str, ...] = ("annotation_task", "split_task", "manual", "filter", "dataset_records")
 
 _VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
@@ -403,6 +403,28 @@ def create_version(
     session.flush()
     dataset.updated_at = datetime.now(timezone.utc)
     return version
+
+
+def create_auto_build_task(session: Session, dataset: Dataset) -> tuple[DatasetVersion, Job]:
+    """为新进入数据集的数据创建快照版本和异步构建任务。
+
+    数据集版本是固定快照；原始数据上传完成后由登记流程调用，而不是由用户在
+    数据集详情页手动点击创建。构建任务使用 dataset_records 收集该数据集的真实样本。
+    """
+    version = create_version(session, dataset)
+    job = create_job(
+        session,
+        type="dataset_build",
+        result={"source": {"type": "dataset_records", "dataset_id": dataset.id}},
+    )
+    session.add(
+        DatasetBuildTask(
+            job_id=job.id,
+            dataset_version_id=version.id,
+            source="dataset_records",
+        )
+    )
+    return version, job
 
 
 def next_dataset_version_no(session: Session, dataset_id: int) -> str:
@@ -859,13 +881,51 @@ def _gather_samples(
             return list(
                 session.exec(select(Sample).where(Sample.split_task_id == split.id)).all()
             )
-    if stype == "manual" and sample_ids:
-        ids = [int(s) for s in sample_ids if str(s).lstrip("-").isdigit()]
-        if ids:
-            return list(session.exec(select(Sample).where(Sample.id.in_(ids))).all())
+    if stype == "manual":
+        if sample_ids:
+            ids = [int(s) for s in sample_ids if str(s).lstrip("-").isdigit()]
+            if ids:
+                return list(session.exec(select(Sample).where(Sample.id.in_(ids))).all())
+        # 兼容旧客户端：未指定样本时按数据集真实登记数据构建，不再生成演示样本。
+        return _samples_for_dataset_records(session, dataset)
+    if stype == "dataset_records":
+        return _samples_for_dataset_records(session, dataset)
     if stype == "filter":
         return _filter_samples(session, filters or {})
     return []
+
+
+def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sample]:
+    """返回数据集下全部真实样本；没有切分样本时为登记数据建立一条基础样本。"""
+    records = list(
+        session.exec(select(DataRecord).where(DataRecord.dataset_id == dataset.id)).all()
+    )
+    if not records:
+        return []
+
+    record_ids = {record.id for record in records if record.id is not None}
+    existing = [sample for sample in session.exec(select(Sample)).all()
+                if _sample_record_id(session, sample) in record_ids]
+    by_record: dict[int, list[Sample]] = defaultdict(list)
+    for sample in existing:
+        record_id = _sample_record_id(session, sample)
+        if record_id is not None:
+            by_record.setdefault(record_id, []).append(sample)
+
+    for record in records:
+        if record.id is None or by_record.get(record.id):
+            continue
+        latest = session.get(DataVersion, record.latest_version_id) if record.latest_version_id else None
+        sample = Sample(
+            frame_no=0,
+            object_keys=list(latest.object_keys or []) if latest else [],
+            meta={"record_id": record.id, "weld_id": record.weld_id, "source": "dataset_record"},
+        )
+        session.add(sample)
+        session.flush()
+        by_record[record.id] = [sample]
+
+    return [sample for samples in by_record.values() for sample in samples]
 
 
 def _filter_samples(session: Session, filters: dict) -> list[Sample]:
