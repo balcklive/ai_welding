@@ -50,7 +50,7 @@ import {
   listLabelCategories,
   saveAnnotation,
 } from './api/analysis';
-import { getFileUrl, presignUpload, uploadFile } from './api/files';
+import { getFileUrl, presignUpload, putFileDirect, uploadFile } from './api/files';
 import {
   createInferenceTask,
   createModel,
@@ -1352,8 +1352,12 @@ function Registration() {
   const [registered, setRegistered] = useState(false);
   const [regNo, setRegNo] = useState('REG-20260815-00249');
   const [regError, setRegError] = useState<string | null>(null);
-  const [uploads, setUploads] = useState<Partial<Record<UploadZoneKey, { status: 'uploading' | 'done' | 'error'; fileName: string; errorMsg?: string } | null>>>({});
-  const [hasFile, setHasFile] = useState(false);
+  // 提交中（登记 + 逐文件直传 + 挂载）标志：期间按钮呈禁用态且忽略点击。
+  const [submitting, setSubmitting] = useState(false);
+  // 各上传区锚定的 File（选择即锚定，不发起网络请求；点"上传数据"才统一直传）。
+  const [files, setFiles] = useState<Partial<Record<UploadZoneKey, File>>>({});
+  // 各上传区状态：pending（已锚定待上传）/ uploading（带进度%）/ done / error。
+  const [uploads, setUploads] = useState<Partial<Record<UploadZoneKey, { status: 'pending' | 'uploading' | 'done' | 'error'; fileName: string; progress?: number; errorMsg?: string } | null>>>({});
   // 缺失必填项提示：点禁用态按钮时列出缺失项（missingHint）并让对应区域红色闪烁（flash）。
   const [missingHint, setMissingHint] = useState<string | null>(null);
   const [flash, setFlash] = useState<Record<string, boolean>>({});
@@ -1363,11 +1367,10 @@ function Registration() {
   const [form, setForm] = useState<RegistrationForm>({ dataset_id: 0, source: '', collected_at: '2026-08-15 09:42', weld_name: '', product: '', machine: 'Fronius CMT', weld_method: 'MAG焊', material: '', thickness: '', current_voltage: '', sample_rate: '' });
   // 各上传区的 file input 引用（ref 回调写进同一对象）。
   const fileRefs = useRef<Partial<Record<UploadZoneKey, HTMLInputElement | null>>>({});
-  // 登记 id 与待补挂文件键的"实时"来源：上传/登记的异步回调可能读到旧渲染闭包里的
-  // regId/uploads（stale closure），用 ref 保证跨渲染读到最新值——
-  // 修复"上传在途时提交上传"导致文件永远补挂不上的竞态（每个文件键恰好补挂一次）。
-  const regIdRef = useRef<number | null>(null);
-  const pendingKeysRef = useRef<Partial<Record<UploadZoneKey, string>>>({});
+  // 部分失败重试时复用已生成的登记，避免重复登记：登记成功即记入 regRef。
+  const regRef = useRef<{ id: number | string; registration_no: string } | null>(null);
+  // 是否已锚定至少一个文件（派生值，驱动按钮启用）。
+  const hasFile = Object.values(files).some(Boolean);
   const setField = (key: keyof RegistrationForm) => (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((prev) => ({ ...prev, [key]: event.target.value }));
   useEffect(() => {
     let cancelled = false;
@@ -1379,30 +1382,52 @@ function Registration() {
     }).catch((err) => { if (!cancelled) console.warn('[registration] registration context failed', err); });
     return () => { cancelled = true; };
   }, []);
-  const handleSubmit = () => {
-    if (registered) return;
-    if (!form.dataset_id || !form.source.trim() || !form.weld_name?.trim()) return;
-    if (!hasFile) return;
+  // 提交：登记（部分失败重试时复用 regRef）→ 逐文件预签名直传 MinIO（进度按区回显）→ 统一挂载。
+  const handleSubmit = async () => {
+    if (registered || submitting) return;
     setRegError(null);
-    createRegistration(form).then((reg) => {
-      setRegNo(reg.registration_no); setRegistered(true);
-      regIdRef.current = reg.id;
-      // 提交完成时统一补挂各上传区暂存的 object_key（读 ref 而非闭包，
-      // 覆盖"上传在 createRegistration 执行期间才完成"的竞态）。
-      const pending = Object.values(pendingKeysRef.current).filter(Boolean) as string[];
-      if (pending.length) {
-        pendingKeysRef.current = {};
-        attachRawFiles(String(reg.id), pending)
-          .catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联失败，请重新选择文件'); });
+    setSubmitting(true);
+    try {
+      const reg = regRef.current ?? await createRegistration(form);
+      regRef.current = reg;
+      const keys: string[] = [];
+      for (const zone of UPLOAD_ZONES) {
+        const file = files[zone.key];
+        if (!file) continue;
+        setUploads((prev) => ({ ...prev, [zone.key]: { status: 'uploading', fileName: file.name, progress: 0 } }));
+        try {
+          // 统一预签名直传（跳过后端代理：实测吞吐 ~2×，XHR 可回显进度）。
+          // prefix 用 raw/（业务原始文件区）——不要用 uploads/（有 30 天生命周期清理）。
+          const { object_key, upload_url } = await presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' });
+          await putFileDirect(upload_url, file, (percent) => setUploads((prev) => ({ ...prev, [zone.key]: { status: 'uploading', fileName: file.name, progress: percent } })));
+          keys.push(object_key);
+          setUploads((prev) => ({ ...prev, [zone.key]: { status: 'done', fileName: file.name } }));
+        } catch (err) {
+          console.warn('[registration] file upload failed', err);
+          setUploads((prev) => ({ ...prev, [zone.key]: { status: 'error', fileName: file.name } }));
+          throw new Error(`文件 ${file.name} 上传失败，请重试`);
+        }
       }
-    }).catch((err) => { console.warn('[registration] createRegistration failed', err); setRegError('上传失败，请检查必填项后重试'); });
+      try {
+        await attachRawFiles(String(reg.id), keys);
+      } catch (err) {
+        console.warn('[registration] attachRawFiles failed', err);
+        throw new Error('文件已上传但关联失败，请重新提交');
+      }
+      setRegNo(reg.registration_no);
+      setRegistered(true);
+    } catch (err) {
+      setRegError(err instanceof Error && err.message ? err.message : '上传失败，请检查必填项后重试');
+    } finally {
+      setSubmitting(false);
+    }
   };
-  // 缺失必填项清单（顺序即表单顺序）：dataset/source/weld_name 对应必填输入，file 要求至少上传一个文件。
+  // 缺失必填项清单（顺序即表单顺序）：dataset/source/weld_name 对应必填输入，file 要求至少选择一个文件。
   const missingFields = [
     { key: 'dataset', label: '所属数据集', ok: !!form.dataset_id },
     { key: 'source', label: '数据来源', ok: !!form.source.trim() },
     { key: 'weld_name', label: '焊缝 / 批次名称', ok: !!form.weld_name?.trim() },
-    { key: 'file', label: '数据文件（至少上传一个）', ok: hasFile },
+    { key: 'file', label: '数据文件（至少选择一个）', ok: hasFile },
   ].filter((item) => !item.ok);
   // 按钮禁用态被点击：提示缺失项 + 对应输入区域红色闪烁约 1.2s。
   const handleMissingClick = () => {
@@ -1430,28 +1455,12 @@ function Registration() {
       setUploads((prev) => ({ ...prev, [key]: { status: 'error', fileName: file.name, errorMsg: `仅支持 ${zone?.label ?? '该区'}格式` } }));
       return;
     }
-    setUploads((prev) => ({ ...prev, [key]: { status: 'uploading', fileName: file.name } }));
-    const upload = file.size < 100 * 1024 * 1024
-      ? uploadFile(file).then((r) => r.object_key)
-      : presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' }).then(async (r) => {
-          const res = await fetch(r.upload_url, { method: 'PUT', body: file });
-          if (!res.ok) throw new Error(`[registration] presign PUT failed: ${res.status}`);
-          return r.object_key;
-        });
-    upload
-      .then((objectKey) => {
-        setHasFile(true);
-        // 读 ref 而非闭包 regId：上传完成时若登记已生成（哪怕 handleSubmit 在上传
-        // 在途时先跑），直接补挂；否则暂存 pendingKeys 交给 handleSubmit 统一补挂。
-        const id = regIdRef.current;
-        if (id == null) { pendingKeysRef.current[key] = objectKey; }
-        else { attachRawFiles(String(id), [objectKey]).catch((err) => { console.warn('[registration] attachRawFiles failed', err); setRegError('文件已上传但关联失败，请重新选择文件'); }); }
-        setUploads((prev) => ({ ...prev, [key]: { status: 'done', fileName: file.name } }));
-      })
-      .catch((err) => { console.warn('[registration] upload failed', err); setUploads((prev) => ({ ...prev, [key]: { status: 'error', fileName: file.name } })); });
+    // 选择即锚定：不发起上传，等点"上传数据"统一提交（避免选错文件已白白占用带宽）。
+    setFiles((prev) => ({ ...prev, [key]: file }));
+    setUploads((prev) => ({ ...prev, [key]: { status: 'pending', fileName: file.name } }));
   };
 
-  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据上传" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />上传数据即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>上传数据</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">上传草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label className={flash.dataset ? 'field-flash' : undefined}><span>所属数据集<span className="required-mark"> *</span></span><select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span></span><input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label><span>采集时间<span className="required-mark"> *</span></span><input value={form.collected_at ?? ''} onChange={setField('collected_at')} readOnly /></label><label className={flash.weld_name ? 'field-flash' : undefined}><span>焊缝 / 批次名称<span className="required-mark"> *</span></span><input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="form-section-title"><span>上传数据文件</span><i /></div><div className={`upload-zones${flash.file ? ' field-flash' : ''}`}>{UPLOAD_ZONES.map((zone) => { const st = uploads[zone.key]; return <div className="upload-zone" key={zone.key}><Upload size={16} /><strong>{zone.label}</strong><span>{zone.hint}</span>{st && <span className={st.status === 'error' ? 'toolbar-error' : 'accent-text'} role={st.status === 'error' ? 'alert' : undefined}>{st.status === 'uploading' ? `上传中：${st.fileName}…` : st.status === 'error' ? (st.errorMsg ?? `${st.fileName} 上传失败，请重试`) : `${st.fileName} 已上传`}</span>}<button className="outline-button" onClick={() => fileRefs.current[zone.key]?.click()}>{st?.status === 'done' ? '更换文件' : '选择文件'}</button><input ref={(el) => { fileRefs.current[zone.key] = el; }} type="file" accept={zone.accept} style={{ display: 'none' }} onChange={(event) => handleFile(zone.key, event)} onClick={(e) => { e.currentTarget.value = ''; }} /></div>; })}</div><button className={`full-button${missingFields.length ? ' full-button--disabled' : ''}`} aria-disabled={missingFields.length > 0} onClick={() => (missingFields.length ? handleMissingClick() : handleSubmit())}>{registered ? <><CheckCircle2 size={16} />上传成功：{regNo}</> : <><FileCheck2 size={16} />上传数据</>}</button>{(missingHint || regError) && <span className="toolbar-error" role="alert">{missingHint ?? regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>上传规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一编号', '原始文件与后续版本自动关联', '上传后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近上传</h2><p>最近 24 小时新增数据</p></div></div>{recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已上传</StatusPill></div>)}</section></aside></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据上传" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />上传数据即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>上传数据</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">上传草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label className={flash.dataset ? 'field-flash' : undefined}><span>所属数据集<span className="required-mark"> *</span></span><select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span></span><input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label><span>采集时间<span className="required-mark"> *</span></span><input value={form.collected_at ?? ''} onChange={setField('collected_at')} readOnly /></label><label className={flash.weld_name ? 'field-flash' : undefined}><span>焊缝 / 批次名称<span className="required-mark"> *</span></span><input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="form-section-title"><span>上传数据文件</span><i /></div><div className={`upload-zones${flash.file ? ' field-flash' : ''}`}>{UPLOAD_ZONES.map((zone) => { const st = uploads[zone.key]; return <div className="upload-zone" key={zone.key}><Upload size={16} /><strong>{zone.label}</strong><span>{zone.hint}</span>{st && <span className={st.status === 'error' ? 'toolbar-error' : 'accent-text'} role={st.status === 'error' ? 'alert' : undefined}>{st.status === 'uploading' ? `上传中：${st.fileName} ${st.progress ?? 0}%` : st.status === 'pending' ? `已选择：${st.fileName}（待上传）` : st.status === 'error' ? (st.errorMsg ?? `${st.fileName} 上传失败，请重试`) : `${st.fileName} 已上传`}</span>}<button className="outline-button" onClick={() => fileRefs.current[zone.key]?.click()}>{st?.status === 'pending' || st?.status === 'done' ? '更换文件' : '选择文件'}</button><input ref={(el) => { fileRefs.current[zone.key] = el; }} type="file" accept={zone.accept} style={{ display: 'none' }} onChange={(event) => handleFile(zone.key, event)} onClick={(e) => { e.currentTarget.value = ''; }} /></div>; })}</div><button className={`full-button${missingFields.length || submitting ? ' full-button--disabled' : ''}`} aria-disabled={missingFields.length > 0 || submitting} onClick={() => { if (submitting) return; if (missingFields.length) handleMissingClick(); else handleSubmit(); }}>{registered ? <><CheckCircle2 size={16} />上传成功：{regNo}</> : submitting ? <><FileCheck2 size={16} />上传中…</> : <><FileCheck2 size={16} />上传数据</>}</button>{(missingHint || regError) && <span className="toolbar-error" role="alert">{missingHint ?? regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>上传规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一编号', '原始文件与后续版本自动关联', '上传后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近上传</h2><p>最近 24 小时新增数据</p></div></div>{recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已上传</StatusPill></div>)}</section></aside></div></div>;
 }
 
 const CH = 720; const CW = 220; const AXIS_L = 44; const AXIS_B = 22; const PLOT_W = CH - AXIS_L; const PLOT_H = CW - AXIS_B;

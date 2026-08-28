@@ -141,8 +141,9 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 - `files.py`：**Task 9 已实现**。router `prefix="/files"`（完整路径 `/api/v1/files/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点：
   - `POST /upload`（multipart `file`，小文件 <100MB 后端代理）：object_key 前缀
-    固定 `uploads/{uuid}`，流式读取 + 字节计数封顶（`MAX_PROXY_UPLOAD_SIZE`，
-    Content-Length 有则先快速拒绝），`upload_stream` 后 `presign_get` 返回
+    固定 `uploads/{uuid}`，Starlette 已把部件落盘 spool——直接 `seek(0,2)/tell()`
+    取实际大小封顶校验（`MAX_PROXY_UPLOAD_SIZE`，Content-Length 有则先快速拒绝）
+    后原样 `upload_stream` 转发 MinIO（**不再二次落盘**），`presign_get` 返回
     `ok({object_key, url, lifecycle})`。`lifecycle={policy:temporary,retention_days:30,prefix:'uploads/'}` 对齐 OSS `uploads/` 30 天清理策略（**不承诺立即删除**）；超限 → `err(40000, ..., status=400)`。**Task 5 P2 修复**：CSV 代理上传新增 5MB 默认门槛（`MAX_PROXY_CSV_UPLOAD_SIZE`），超限直接 `40000` 提示改走 `presign-upload` + 挂载异步导入，避免 60s+ 静默超时；长文件名/长 object key 的审计写入不再 500。
   - `POST /presign-upload`（body `{size, content_type, prefix, filename?}`）：
     校验 `0 < size ≤ 2GB`（`MAX_PRESIGN_UPLOAD_SIZE`），调 `presign_put` 返回

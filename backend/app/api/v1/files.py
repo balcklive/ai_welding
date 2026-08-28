@@ -3,8 +3,9 @@
 三个端点均需登录（router 级 `Depends(get_current_user)`）；`/api/v1` 前缀由
 main.py 挂载时统一添加。对象键契约见 `docs/OSS存储设计.md` §2/§3：
 
-- 小文件（<100MB）走 `POST /files/upload` 后端代理——流式读取 + 字节计数封顶，
-  不整文件载入内存；返回 `{object_key, url}`（url = 预签名 GET）。
+- 小文件（<100MB）走 `POST /files/upload` 后端代理——Starlette 已把部件落盘
+  spool，直接取实际大小封顶校验后转发 MinIO，不再二次落盘；返回
+  `{object_key, url}`（url = 预签名 GET）。
 - 大文件（≥100MB 且 ≤2GB）走 `POST /files/presign-upload` 预签名直传——返回
   `{object_key, upload_url}`，前端直接 PUT 到 MinIO。
 - 播放/下载一律 `GET /files/{object_key}/url` 签发预签名 GET URL（支持 Range）。
@@ -15,7 +16,6 @@ main.py 挂载时统一添加。对象键契约见 `docs/OSS存储设计.md` §2
 调用方无需自行拼文件名，仅需提供包含业务标识的 prefix（如 `raw/REG-...`）。
 """
 
-import tempfile
 from typing import Annotated
 from urllib.parse import unquote
 from uuid import uuid4
@@ -39,8 +39,6 @@ MAX_PROXY_CSV_UPLOAD_SIZE = 5 * 1024 * 1024
 MAX_PRESIGN_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
 #: 预签名 GET URL 有效期上限（OSS §4：长视频 24h）
 MAX_PRESIGN_GET_EXPIRES = 86400
-#: 流式转发分块大小（1MB，SpooledTemporaryFile 以此阈值落盘）
-_CHUNK = 1024 * 1024
 _UPLOADS_LIFECYCLE = {"policy": "temporary", "retention_days": 30, "prefix": "uploads/"}
 
 
@@ -108,10 +106,10 @@ def upload_file(
     current_user=Depends(get_current_user),
     session=Depends(get_session),
 ) -> object:
-    """小文件（<100MB）后端代理上传：流式转发到 MinIO，返回 `{object_key, url}`。
+    """小文件（<100MB）后端代理上传：spool 直接转发 MinIO，返回 `{object_key, url}`。
 
     - object_key 前缀固定 `uploads/{uuid}`（临时上传区，OSS §2）。
-    - 有 Content-Length 时先快速拒绝超限；否则读取过程中字节计数封顶。
+    - 有 Content-Length 时先快速拒绝超限；再按 spool 实际大小精确封顶。
     """
     storage = get_storage()
     object_key = storage.normalize_key(f"uploads/{uuid4().hex}", file.filename or "")
@@ -123,25 +121,17 @@ def upload_file(
     if declared is not None and _is_csv_upload(file) and declared > MAX_PROXY_CSV_UPLOAD_SIZE:
         return err(40000, _csv_size_msg(), status=400)
 
-    spool = tempfile.SpooledTemporaryFile(max_size=_CHUNK)
-    try:
-        src = file.file
-        src.seek(0)
-        total = 0
-        while True:
-            chunk = src.read(_CHUNK)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total >= MAX_PROXY_UPLOAD_SIZE:
-                return err(40000, _size_msg(), status=400)
-            if _is_csv_upload(file) and total > MAX_PROXY_CSV_UPLOAD_SIZE:
-                return err(40000, _csv_size_msg(), status=400)
-            spool.write(chunk)
-        spool.seek(0)
-        storage.upload_stream(object_key, spool, total, content_type)
-    finally:
-        spool.close()
+    spool = file.file
+    # Starlette 已把 multipart 部件完整落盘 spool：直接取实际大小做封顶校验后
+    # 原样转发 MinIO，避免再经过一次临时文件的写+读（大文件 I/O 减半）。
+    spool.seek(0, 2)  # SEEK_END
+    total = spool.tell()
+    spool.seek(0)
+    if total >= MAX_PROXY_UPLOAD_SIZE:
+        return err(40000, _size_msg(), status=400)
+    if _is_csv_upload(file) and total > MAX_PROXY_CSV_UPLOAD_SIZE:
+        return err(40000, _csv_size_msg(), status=400)
+    storage.upload_stream(object_key, spool, total, content_type)
 
     url = storage.presign_get(object_key)
     if session is not None:
