@@ -113,6 +113,24 @@ def _rule(name: str, status: str, message: str) -> dict:
     return {"name": name, "status": status, "message": message}
 
 
+def _time_column_to_seconds(col: pd.Series) -> pd.Series:
+    """时间列 → 数值秒（供 R6 采样率推导 / R8 重复判断）。
+
+    数值时间戳（epoch 秒/相对秒，旧用法）直接可用；否则按 ISO 8601
+    时间戳（如 `2026-06-17T14:22:23.000164Z`）解析并转**相对秒**——
+    R6 只用差分推 fs、R9 只用 row_count/fs 算 duration，绝对偏移无所谓，
+    故 `(t - t.min()).total_seconds()` 即可，无需保留绝对时刻。
+    解析不出的行保留 NaN，由调用方规则判定。
+    """
+    numeric = pd.to_numeric(col, errors="coerce")
+    if numeric.notna().mean() > 0.8:
+        return numeric
+    t = pd.to_datetime(col, errors="coerce", utc=True)
+    if t.notna().any():
+        return (t - t.min()).dt.total_seconds()
+    return numeric
+
+
 def validate_signal(
     df: pd.DataFrame | None,
     record: DataRecord | None = None,
@@ -180,7 +198,7 @@ def validate_signal(
     fs: int | None = None
     time_col = column_map.get("time")
     if time_col:
-        t = pd.to_numeric(df[time_col], errors="coerce").to_numpy()
+        t = _time_column_to_seconds(df[time_col]).to_numpy()
         dt = np.diff(t)
         med = float(np.median(dt)) if len(dt) > 0 else 0.0
         if med > 0:
@@ -267,7 +285,7 @@ def detect_events(
     """
     n = len(df)
     t = (
-        pd.to_numeric(df[column_map["time"]], errors="coerce").to_numpy()
+        _time_column_to_seconds(df[column_map["time"]]).to_numpy()
         if "time" in column_map
         else np.arange(n) / fs
     )
@@ -361,7 +379,7 @@ def _channel_values(
     df: pd.DataFrame, column_map: dict[str, str], n: int, fs: int
 ) -> dict[str, np.ndarray]:
     t = (
-        pd.to_numeric(df[column_map["time"]], errors="coerce").to_numpy()
+        _time_column_to_seconds(df[column_map["time"]]).to_numpy()
         if "time" in column_map
         else np.arange(n) / fs
     )

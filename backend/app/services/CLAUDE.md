@@ -218,7 +218,10 @@
     **10 条 pass/warn/fail 规则**（文件读取/表头识别/通道覆盖/数值类型/量程/采样一致性/空值/重复
     时间戳/最小数据量），overall=fail>0?fail:warn>0?warn:pass；`fs` 优先从时间列推导，无时间列用
     `record.sample_rate` 兜底（`_parse_fs` 支持 "10 kHz"）。**不并入 welds 的 15 条 VALIDATION_RULES**
-    （seed/测试/前端逐字一致勿动）。
+    （seed/测试/前端逐字一致勿动）。**时间列解析**：`_time_column_to_seconds(col)` 兼容数值
+    时间戳（epoch/相对秒）与 ISO 8601 字符串（`YYYY-MM-DDTHH:MM:SS.ffffffZ` → 相对秒），
+    `validate_signal` 的 R6/R8 与 `detect_events`/`_channel_values`/`to_parquet_bytes` 均复用该
+    helper，避免 ISO 时间戳全 NaN 导致 fs 推导失败/events 坐标 NaN。
   - `detect_events(df, column_map, fs) -> (events, anomalies)`：**启发式**（on/off 阈值按信号自身
     幅度 p95-p10 推导，**不依赖 CHANNEL_SPECS 量程 span**——量程按真实物理范围放宽后 span 不再与
     信号幅度成正比，量程派生会让低幅信号误判焊接段失活；主用电流缺则电压；5ms 滚动均值 + active
