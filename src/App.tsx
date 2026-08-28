@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Archive, ArrowUpRight, BarChart3, Box, Check, ChevronDown,
   CircleHelp, Database, Factory, FileCheck2, Filter, Gauge, Layers3,
-  MoreHorizontal, Play, Plus, Search, Settings2, SlidersHorizontal, Sparkles,
+  MoreHorizontal, Play, Plus, Minus, Search, Settings2, SlidersHorizontal, Sparkles,
   Tag, Terminal, TrainFront, Upload, WandSparkles, Waves, Zap,
   ClipboardCheck, FileText, GitBranch, ScanLine, Download, CheckCircle2,
   AlertTriangle, RefreshCw, ChevronLeft, Cpu,
@@ -1798,7 +1798,10 @@ function toPath(values: number[], lo: number, hi: number): string {
 
 function PhasePlot({ cursor, onCursor, data }: { cursor: number; onCursor: (s: number) => void; data?: PhaseData }) {
   const w = 260; const h = 230; const pad = 26; const pw = w - pad * 2; const ph = h - pad * 2;
-  const cxLo = 140; const cxHi = 230; const cvLo = 15; const cvHi = 30;
+  const fullX = { lo: 140, hi: 230 }; const fullY = { lo: 15, hi: 30 };
+  const [xRange, setXRange] = useState(fullX);
+  const [yRange, setYRange] = useState(fullY);
+  const cxLo = xRange.lo; const cxHi = xRange.hi; const cvLo = yRange.lo; const cvHi = yRange.hi;
   const toX = (c: number) => pad + ((c - cxLo) / (cxHi - cxLo)) * pw;
   const toY = (v: number) => pad + (1 - (v - cvLo) / (cvHi - cvLo)) * ph;
   const curArr = data && data.current.length ? data.current : sigCur;
@@ -1819,15 +1822,44 @@ function PhasePlot({ cursor, onCursor, data }: { cursor: number; onCursor: (s: n
     for (let i = 0; i < points.length; i++) { const d = Math.abs(curArr[i] - c); if (d < bd) { bd = d; best = i; } }
     onCursor(points[best].ts);
   };
-  return <svg viewBox={`0 0 ${w} ${h}`} className="phase-svg" onMouseMove={x} onMouseLeave={() => {}}>
+  const zoomAt = (factor: number, focalX = (cxLo + cxHi) / 2, focalY = (cvLo + cvHi) / 2) => {
+    const nextXSpan = Math.max(8, Math.min(90, (cxHi - cxLo) * factor));
+    const nextYSpan = Math.max(2, Math.min(15, (cvHi - cvLo) * factor));
+    const xRatio = (focalX - cxLo) / Math.max(cxHi - cxLo, 1);
+    const yRatio = (focalY - cvLo) / Math.max(cvHi - cvLo, 1);
+    const nextXLo = Math.max(fullX.lo, Math.min(fullX.hi - nextXSpan, focalX - xRatio * nextXSpan));
+    const nextYLo = Math.max(fullY.lo, Math.min(fullY.hi - nextYSpan, focalY - yRatio * nextYSpan));
+    setXRange({ lo: nextXLo, hi: nextXLo + nextXSpan });
+    setYRange({ lo: nextYLo, hi: nextYLo + nextYSpan });
+  };
+  const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const relX = (e.clientX - rect.left) / rect.width * w;
+    const relY = (e.clientY - rect.top) / rect.height * h;
+    const focalX = cxLo + ((relX - pad) / pw) * (cxHi - cxLo);
+    const focalY = cvLo + (1 - (relY - pad) / ph) * (cvHi - cvLo);
+    zoomAt(e.deltaY > 0 ? 1.15 : 1 / 1.15, focalX, focalY);
+  };
+  const reset = () => { setXRange(fullX); setYRange(fullY); };
+  return <div className="phase-plot-wrap">
+    <div className="phase-zoom-tools" role="group" aria-label="相图缩放控制">
+      <button type="button" onClick={() => zoomAt(1 / 1.15)} aria-label="放大相图" title="放大"><Plus size={13} /></button>
+      <button type="button" onClick={() => zoomAt(1.15)} aria-label="缩小相图" title="缩小"><Minus size={13} /></button>
+      <button type="button" onClick={reset} aria-label="重置相图缩放" title="重置">1:1</button>
+    </div>
+    <svg viewBox={`0 0 ${w} ${h}`} className="phase-svg" onMouseMove={x} onWheel={onWheel} onMouseLeave={() => {}}>
+    <defs><clipPath id="phase-plot-clip"><rect x={pad} y={pad} width={pw} height={ph} /></clipPath></defs>
     <line x1={pad} y1={pad} x2={pad} y2={pad + ph} stroke="#e8efef" />
     <line x1={pad} y1={pad + ph} x2={pad + pw} y2={pad + ph} stroke="#e8efef" />
-    <text x={pad + pw / 2} y={h - 6} textAnchor="middle" className="phase-axis-label">电流 (A)</text>
-    <text x={8} y={pad + ph / 2} textAnchor="middle" className="phase-axis-label" transform={`rotate(-90 8 ${pad + ph / 2})`}>电压 (V)</text>
-    <path d={path} fill="none" stroke="#2c9caf" strokeWidth="1.4" opacity="0.55" />
+    <text x={pad + pw / 2} y={h - 6} textAnchor="middle" className="phase-axis-label">电流 (A) · {cxLo.toFixed(0)}–{cxHi.toFixed(0)}</text>
+    <text x={8} y={pad + ph / 2} textAnchor="middle" className="phase-axis-label" transform={`rotate(-90 8 ${pad + ph / 2})`}>电压 (V) · {cvLo.toFixed(0)}–{cvHi.toFixed(0)}</text>
+    <g clipPath="url(#phase-plot-clip)"><path d={path} fill="none" stroke="#2c9caf" strokeWidth="1.4" opacity="0.55" />
     {points.filter((p) => p.anom).map((p) => <circle key={p.i} cx={p.x} cy={p.y} r="2.4" fill="#e88d6c" opacity="0.7" />)}
+    </g>
     <circle cx={cp.x} cy={cp.y} r="5" fill="#fff" stroke="#e88d6c" strokeWidth="2.5" />
-  </svg>;
+    </svg><span className="phase-zoom-hint">滚轮缩放 · 指针定位</span>
+  </div>;
 }
 
 function PddChart({ chanId, channels, data }: { chanId: string; channels: Chan[]; data?: PddData }) {
