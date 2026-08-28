@@ -141,9 +141,9 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
   ] },
 ];
 
-const routesRequiringData: Route[] = ['data-center/validation', 'data-center/versions', 'analysis/alignment', 'analysis/analysis', 'analysis/split', 'analysis/annotation', 'analysis/features'];
 function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
+  const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const workspace = route.split('/')[0];
@@ -156,8 +156,6 @@ function AppShell() {
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
-  const isRouteDisabled = (r: Route) => routesRequiringData.includes(r) && !selectedDataId;
-
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand-mark"><Sparkles size={18} strokeWidth={2.5} /></div><div className="brand-copy"><strong>ForgeLab</strong><span>工业智能实验室</span></div>
@@ -169,14 +167,14 @@ function AppShell() {
         const isExpanded = expandedGroups.has(group.id) || workspace === group.id;
         return <div key={group.id} className="nav-group">
           <button className={`nav-item ${workspace === group.id ? 'active' : ''}`} onClick={() => { if (group.id === 'data-center') navigate('data-center/datasets'); else if (group.route) navigate(group.route); else toggleGroup(group.id); }}><Icon size={18} /><span>{group.label}</span><ChevronDown size={15} className={`nav-chevron ${isExpanded ? 'expanded' : ''}`} /></button>
-          {isExpanded && <div className="nav-submenu">{group.children!.map((child) => <button key={child.route} className={`nav-subitem ${route === child.route ? 'active' : ''}`} disabled={isRouteDisabled(child.route)} onClick={() => navigate(child.route)}><span className="nav-sub-dot" />{child.label}</button>)}</div>}
+          {isExpanded && <div className="nav-submenu">{group.children!.map((child) => <button key={child.route} className={`nav-subitem ${route === child.route ? 'active' : ''}`} onClick={() => navigate(child.route)}><span className="nav-sub-dot" />{child.label}</button>)}</div>}
         </div>;
       })}</nav>
       <div className="sidebar-bottom"><button className="nav-item"><Settings2 size={18} /><span>系统设置</span></button><div className="user-card"><div className="avatar">林</div><div><strong>林工</strong><span>管理员</span></div><MoreHorizontal size={16} /></div></div>
     </aside>
     <main className="main-content">
       {route === 'overview' && <Overview navigate={navigate} />}
-      {route !== 'overview' && <WorkspaceFrame route={route} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} navigate={navigate} />}
+      {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} navigate={navigate} />}
     </main>
   </div>;
 }
@@ -193,7 +191,7 @@ function App() {
   return <AppShell />;
 }
 
-function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: { route: Route; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; navigate: (r: Route) => void }) {
+function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; navigate: (r: Route) => void }) {
   const ws = route.split('/')[0];
   const header = workspaceHeaders[ws];
   // 模型仓库刷新计数（「新建模型」成功后自增，触发 ModelRepository 重新拉取）。
@@ -220,22 +218,22 @@ function WorkspaceFrame({ route, selectedDataId, setSelectedDataId, navigate }: 
   const showContext = selectedDataId && (ws === 'analysis' || (ws === 'data-center' && route !== 'data-center/datasets'));
 
   let content: React.ReactNode = null;
-  if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} setSelectedDataId={setSelectedDataId} />;
+  if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
   else if (route === 'data-center/registration') content = <Registration />;
   else if (route === 'data-center/validation') content = selectedDataId ? <Validation embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} />;
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} />;
-  else if (route === 'analysis/select') content = <AnalysisSelect onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
-  else if (route === 'analysis/alignment') content = selectedDataId ? <Alignment embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/analysis') content = selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/split') content = selectedDataId ? <Alignment embedded splitOnly dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/annotation') content = selectedDataId ? <Annotation embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/features') content = selectedDataId ? <FeatureExtraction embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/select') content = <AnalysisSelect selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
+  else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <Alignment embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <Alignment embedded splitOnly dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <Annotation embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtraction embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} />;
   else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training /></>;
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showContext && <SelectionContext dataId={selectedDataId!} />}{content}</div>;
+  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div><SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />{showContext && <SelectionContext dataId={selectedDataId!} />}{content}</div>;
 }
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-intro"><div><div className="eyebrow"><span />{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>; }
@@ -814,6 +812,38 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
     </div>
   );
 }
+function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void }) {
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [welds, setWelds] = useState<DataRecord[]>([]);
+  const [loadingWelds, setLoadingWelds] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    listDatasets().then((list) => {
+      if (cancelled) return;
+      setDatasets(list);
+      if (selectedDatasetId == null && list.length) setSelectedDatasetId(list[0].id);
+    }).catch((err) => console.warn('[selection-switcher] datasets failed', err));
+    return () => { cancelled = true; };
+  }, [selectedDatasetId, setSelectedDatasetId]);
+  useEffect(() => {
+    if (selectedDatasetId == null) { setWelds([]); return; }
+    let cancelled = false;
+    setLoadingWelds(true);
+    listWelds({ dataset_id: selectedDatasetId, page_size: 100 }).then((page) => {
+      if (!cancelled) setWelds(page.items);
+    }).catch((err) => console.warn('[selection-switcher] welds failed', err)).finally(() => {
+      if (!cancelled) setLoadingWelds(false);
+    });
+    return () => { cancelled = true; };
+  }, [selectedDatasetId]);
+  return <div className="selection-switcher" role="region" aria-label="当前数据上下文">
+    <div className="selection-switcher-title"><Database size={15} /><span>当前处理数据</span></div>
+    <label className="filter-field">数据集<select value={selectedDatasetId ?? ''} onChange={(event) => { const id = event.target.value ? Number(event.target.value) : null; setSelectedDatasetId(id); setSelectedDataId(null); }}><option value="">请选择数据集</option>{datasets.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
+    <label className="filter-field">焊缝数据<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || loadingWelds} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{loadingWelds ? '数据加载中…' : '请选择一条焊缝数据'}</option>{welds.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
+    <span className="selection-switcher-hint">{selectedDatasetId == null || !selectedDataId ? '选择数据集和焊缝后，分析与标注功能可用' : `已选：${selectedDataId}`}</span>
+  </div>;
+}
+
 function SelectionContext({ dataId }: { dataId: string }) {
   // 初始为空：getWeld 返回前不得闪现 mock 行，mock 仅作失败兜底（见下方 catch）
   const [row, setRow] = useState<WeldRow | null>(null);
@@ -828,7 +858,7 @@ function SelectionContext({ dataId }: { dataId: string }) {
 }
 
 function SelectionRequired({ onBack }: { onBack: () => void }) {
-  return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择一条数据</h2><p>该功能需要基于具体焊缝数据执行，请返回数据列表选择后继续。</p><button className="outline-button" onClick={onBack}><ChevronLeft size={14} />返回数据列表</button></div>;
+  return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择数据集和焊缝数据</h2><p>当前功能必须绑定真实数据后才能执行，请在页面上方选择数据集和一条焊缝。</p><button className="outline-button" onClick={onBack}><ChevronLeft size={14} />前往选择数据</button></div>;
 }
 
 type VersionDetailDrawerProps =
@@ -889,6 +919,7 @@ function VersionDetailDrawer(props: VersionDetailDrawerProps) {
 /** 数据集列表/详情行展示形状（table/detail 期望的字段）。 */
 interface DatasetRow {
   id: string;
+  numericId?: number;
   name: string;
   task: string;
   samples: string;
@@ -910,6 +941,7 @@ function toDatasetRow(d: Dataset): DatasetRow {
     : '—';
   return {
     id: d.dataset_no || String(d.id),
+    numericId: d.id,
     name: d.name,
     task: d.task,
     samples: d.sample_count.toLocaleString(),
@@ -947,7 +979,7 @@ function mockReadinessChecks(task: string): { name: string; passed: boolean }[] 
 
 type DatasetView = 'list' | 'overview' | 'records' | 'record-detail';
 
-function DatasetWorkspace({ navigate, onDetailChange, setSelectedDataId }: { navigate: (route: Route) => void; onDetailChange?: (isDetail: boolean) => void; setSelectedDataId: (id: string | null) => void }) {
+function DatasetWorkspace({ navigate, onDetailChange, setSelectedDataId, setSelectedDatasetId }: { navigate: (route: Route) => void; onDetailChange?: (isDetail: boolean) => void; setSelectedDataId: (id: string | null) => void; setSelectedDatasetId: (id: number | null) => void }) {
   // 初始为空 + 加载中：不得让 mock 数据集行在接口响应到达前闪现，mock 仅作失败兜底
   const [rows, setRows] = useState<DatasetRow[]>([]);
   const [listLoading, setListLoading] = useState(true);
@@ -982,6 +1014,7 @@ function DatasetWorkspace({ navigate, onDetailChange, setSelectedDataId }: { nav
   const selectDataset = (item: DatasetRow) => {
     selectedIdRef.current = item.id;
     setSelectedId(item.id);
+    setSelectedDatasetId(item.numericId ?? null);
     setSelectedVersionId(item.currentVersionId);
     setSelectedRecordId(null);
     setSelectedDataId(null);
@@ -1208,9 +1241,8 @@ interface SelectCard { id: string; machine: string | null; types: string; qualit
 function toSelectCard(r: DataRecord): SelectCard {
   return { id: r.weld_id, machine: r.machine, types: (r.modalities ?? []).join(' / ') || '多模态', quality: r.quality, title: r.weld_name };
 }
-function AnalysisSelect({ onContinue }: { onContinue: (id: string) => void }) {
+function AnalysisSelect({ onContinue, selectedDatasetId, setSelectedDatasetId }: { onContinue: (id: string) => void; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void }) {
   const [datasetOptions, setDatasetOptions] = useState<{ id: number; label: string }[]>([]);
-  const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [weldRows, setWeldRows] = useState<SelectCard[]>([]);
   const [loadingWeld, setLoadingWeld] = useState(false);
   // 第一级：数据集下拉（数据集为登记时的归属容器，分析以其为入口）。
@@ -1222,17 +1254,17 @@ function AnalysisSelect({ onContinue }: { onContinue: (id: string) => void }) {
         if (cancelled) return;
         const options = list.map((d) => ({ id: d.id, label: d.name }));
         setDatasetOptions(options.length ? options : fallback());
-        setSelectedDatasetId((prev) => prev ?? options[0]?.id ?? fallback()[0]?.id ?? null);
+        setSelectedDatasetId(selectedDatasetId ?? options[0]?.id ?? fallback()[0]?.id ?? null);
       })
       .catch((err) => {
         if (cancelled) return;
         console.warn('[analysis] listDatasets failed', err);
         const options = fallback();
         setDatasetOptions(options);
-        setSelectedDatasetId((prev) => prev ?? options[0]?.id ?? null);
+        setSelectedDatasetId(selectedDatasetId ?? options[0]?.id ?? null);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [selectedDatasetId, setSelectedDatasetId]);
   // 第二级：选定数据集后拉该数据集下全部焊缝，未核验通过置灰不可选。
   useEffect(() => {
     if (selectedDatasetId == null) { setWeldRows([]); return; }
