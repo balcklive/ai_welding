@@ -43,6 +43,7 @@ import {
   createAnnotationTask,
   createSplitTask,
   extractFeatures,
+  getLatestFeatureExtraction,
   getAnalysisMode,
   getAnalysisResult,
   getAnnotationSample,
@@ -114,7 +115,7 @@ type Route = 'overview' | 'data-center/datasets' | 'data-center/registration' | 
 const workspaceHeaders: Record<string, { eyebrow: string; title: string; description: string }> = {
   'data-center': { eyebrow: '数据资产中心', title: '数据中心', description: '以单条焊缝数据为单位，管理数据上传、质量核验和版本链路。' },
   'analysis': { eyebrow: '多模态数据生产线', title: '分析与标注', description: '选择一条焊缝后，完成对齐、信号分析、切分与标注。' },
-  'model-center': { eyebrow: '模型研发中心', title: '模型中心', description: '从数据到模型：构建训练数据集，统一管理模型版本、训练任务、测试评估与推理验证。' },
+  'model-center': { eyebrow: '模型研发中心', title: '模型中心', description: '从数据到模型：准备训练数据，统一管理模型版本、训练任务、测试评估与推理验证。' },
 };
 
 const navStructure: { id: string; label: string; icon: typeof BarChart3; route?: Route; children?: { route: Route; label: string }[] }[] = [
@@ -1121,10 +1122,10 @@ function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, onDetai
     setView('overview');
   };
   const selectVersion = (versionId: number) => { setSelectedVersionId(versionId); setSelectedRecordId(null); setSelectedDataId(null); };
-  return <div className="dataset-workspace">{view === 'list' && <><div className="dataset-list-heading"><div><div className="dataset-breadcrumb">数据中心 / 数据集列表</div><h2>数据集列表</h2><p>管理和浏览平台中的全部数据集，查看版本、成员数据与训练状态。</p></div><button className="primary-button" onClick={() => setCreateDialog(true)}><Plus size={15} />新建数据集</button></div><div className="dataset-rule"><GitBranch size={14} /><span>数据集以版本快照形式保存，不直接读取会持续变化的原始数据。</span><span className="dataset-rule-count">可训练 {rows.filter((item) => item.status === '可训练').length} 个</span></div>{listLoading ? <p className="dataset-empty-state" role="status">数据集列表加载中…</p> : <div className="dataset-table">{rows.map((item) => <button className="dataset-list-row" onClick={() => selectDataset(item)} key={item.id}><span className="dataset-row-icon"><Box size={17} /></span><span className="dataset-row-main"><strong>{item.name}</strong><small>{item.id} · {item.task}</small></span><span><small>样本数</small><strong className="mono">{item.samples}</strong></span><span><small>标注完成度</small><strong className="mono">{item.progress}</strong></span><span><small>当前版本</small><strong className="mono">{item.version}</strong></span><StatusPill tone={item.tone}>{item.status}</StatusPill><ArrowUpRight size={15} className="muted-icon" /></button>)}</div>}{createDialog && <TextDialog title="新建数据集" label="数据集名称" initialValue="新建数据集" onCancel={() => setCreateDialog(false)} onConfirm={handleCreate} />}</>}{view === 'overview' && dataset && <DatasetDetail dataset={dataset} navigate={navigate} versionId={selectedVersionId} onShowRecords={() => setView('records')} onVersionChange={selectVersion} onDatasetChanged={reload} onBack={() => setView('list')} />}{view === 'records' && dataset && selectedVersionId != null && <DatasetRecords dataset={dataset} versionId={selectedVersionId} onBack={() => setView('overview')} onVersionChange={(versionId) => { selectVersion(versionId); setView('records'); }} onSelectRecord={(row) => { if (!row.weld_id) return; setSelectedRecordId(row.weld_id); setSelectedRecordSplit(row.split); setSelectedDataId(row.weld_id); setView('record-detail'); }} />}{view === 'record-detail' && dataset && selectedVersionId != null && selectedRecordId && <DatasetRecordDetail weldId={selectedRecordId} dataset={dataset} versionId={selectedVersionId} split={selectedRecordSplit} onBack={() => setView('records')} setSelectedDataId={setSelectedDataId} navigate={navigate} />}</div>;
+  return <div className="dataset-workspace">{view === 'list' && <><div className="dataset-list-heading"><div><div className="dataset-breadcrumb">数据中心 / 数据集列表</div><h2>数据集列表</h2><p>管理和浏览平台中的全部数据集，查看版本、成员数据与训练状态。</p></div><button className="primary-button" onClick={() => setCreateDialog(true)}><Plus size={15} />新建数据集</button></div><div className="dataset-rule"><GitBranch size={14} /><span>数据集以版本快照形式保存，不直接读取会持续变化的原始数据。</span><span className="dataset-rule-count">可训练 {rows.filter((item) => item.status === '可训练').length} 个</span></div>{listLoading ? <p className="dataset-empty-state" role="status">数据集列表加载中…</p> : <div className="dataset-table">{rows.map((item) => <button className="dataset-list-row" onClick={() => selectDataset(item)} key={item.id}><span className="dataset-row-icon"><Box size={17} /></span><span className="dataset-row-main"><strong>{item.name}</strong><small>{item.id} · {item.task}</small></span><span><small>样本数</small><strong className="mono">{item.samples}</strong></span><span><small>标注完成度</small><strong className="mono">{item.progress}</strong></span><span><small>当前版本</small><strong className="mono">{item.version}</strong></span><StatusPill tone={item.tone}>{item.status}</StatusPill><ArrowUpRight size={15} className="muted-icon" /></button>)}</div>}{createDialog && <TextDialog title="新建数据集" label="数据集名称" initialValue="新建数据集" onCancel={() => setCreateDialog(false)} onConfirm={handleCreate} />}</>}{view === 'overview' && dataset && <DatasetDetail dataset={dataset} versionId={selectedVersionId} onShowRecords={() => setView('records')} onVersionChange={selectVersion} onDatasetChanged={reload} />}{view === 'records' && dataset && selectedVersionId != null && <DatasetRecords dataset={dataset} versionId={selectedVersionId} onBack={() => setView('overview')} onVersionChange={(versionId) => { selectVersion(versionId); setView('records'); }} onSelectRecord={(row) => { if (!row.weld_id) return; setSelectedRecordId(row.weld_id); setSelectedRecordSplit(row.split); setSelectedDataId(row.weld_id); setView('record-detail'); }} />}{view === 'record-detail' && dataset && selectedVersionId != null && selectedRecordId && <DatasetRecordDetail weldId={selectedRecordId} dataset={dataset} versionId={selectedVersionId} split={selectedRecordSplit} onBack={() => setView('records')} setSelectedDataId={setSelectedDataId} navigate={navigate} />}</div>;
 }
 
-function DatasetDetail({ dataset, navigate, versionId, onShowRecords, onVersionChange, onDatasetChanged, onBack }: { dataset: DatasetRow; navigate: (route: Route) => void; versionId: number | null; onShowRecords: () => void; onVersionChange: (versionId: number) => void; onDatasetChanged: () => void; onBack: () => void }) {
+function DatasetDetail({ dataset, versionId, onShowRecords, onVersionChange, onDatasetChanged }: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onVersionChange: (versionId: number) => void; onDatasetChanged: () => void }) {
   const [detail, setDetail] = useState<Dataset | null>(null);
   // 初始为空：mock 仅作接口失败兜底（见下方 catch），不得在加载期闪现演示维度/血缘
   const [dims, setDims] = useState<DimensionStatus[]>([]);
@@ -1187,7 +1188,7 @@ function DatasetDetail({ dataset, navigate, versionId, onShowRecords, onVersionC
   const visibleVersions = currentVersionId == null ? [] : versions;
   const lineageIcon: Record<string, typeof Database> = { records: Database, annotation_tasks: Tag, dataset_versions: Box, training_tasks: TrainFront };
   const lineageSuffix: Record<string, string> = { records: '条', training_tasks: '次', annotation_tasks: '个', dataset_versions: '个' };
-  return <><div className="dataset-detail"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 数据集概览</div><button className="ghost-button" onClick={onBack}><ChevronLeft size={14} />返回数据集列表</button><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button dataset-primary-entry" onClick={currentVersionId != null ? onShowRecords : () => setVersionDialog(true)}>{currentVersionId != null ? `查看当前版本数据 · ${currentVersion?.item_count ?? detail?.sample_count ?? dataset.samples} 条` : '创建数据集版本'}</button><button className="outline-button" disabled={dataset.status !== '可训练'} onClick={() => navigate('model-center/training')}><Play size={14} />进入模型训练</button></div></div>{currentVersionId == null && <div className="dataset-empty-state">当前数据集尚未创建版本。请先创建数据集版本，再构建固定成员快照。</div>}{buildJobId != null && <p className="dataset-empty-state" role="status">版本快照构建中，完成后可查看当前版本数据…</p>}{buildError && <p className="dataset-empty-state" role="alert">{buildError}</p>}<div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>样本总数</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>已生成切分样本</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按焊缝 ID 固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} loading={readinessLoading} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集版本</h2><p>每个版本对应一份固定样本清单</p></div><button className="outline-button" onClick={() => setVersionDialog(true)}><GitBranch size={14} />新建版本</button></div><div className="dataset-version-list">{visibleVersions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no} onClick={() => onVersionChange(v.id)}><span>{v.version_no}</span><div><strong>数据快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前版本</StatusPill> : <button className="ghost-button" onClick={() => setSelectedVersion(v)}>查看详情</button>}</div>)}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从原始数据到训练任务的关联</p></div></div>{lineage.length ? <div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div> : <p className="dataset-empty-state" role="status">数据血缘加载中…</p>}</section></div></div>{versionDialog && <TextDialog title="新建数据集版本" label="版本名称（可选）" onCancel={() => setVersionDialog(false)} onConfirm={handleNewVersion} />}{selectedVersion && <VersionDetailDrawer mode="dataset" datasetId={dataset.id} version={selectedVersion} onClose={() => setSelectedVersion(null)} />}</>;
+  return <><div className="dataset-detail"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 数据集概览</div><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button dataset-primary-entry" onClick={currentVersionId != null ? onShowRecords : () => setVersionDialog(true)}>{currentVersionId != null ? `查看当前版本数据 · ${currentVersion?.item_count ?? detail?.sample_count ?? dataset.samples} 条` : '创建数据集版本'}</button></div></div>{currentVersionId == null && <div className="dataset-empty-state">当前数据集尚未创建版本。请先创建数据集版本，再构建固定成员快照。</div>}{buildJobId != null && <p className="dataset-empty-state" role="status">版本快照构建中，完成后可查看当前版本数据…</p>}{buildError && <p className="dataset-empty-state" role="alert">{buildError}</p>}<div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>样本总数</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>已生成切分样本</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按焊缝 ID 固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} loading={readinessLoading} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集版本</h2><p>每个版本对应一份固定样本清单</p></div><button className="outline-button" onClick={() => setVersionDialog(true)}><GitBranch size={14} />新建版本</button></div><div className="dataset-version-list">{visibleVersions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no} onClick={() => onVersionChange(v.id)}><span>{v.version_no}</span><div><strong>数据快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前版本</StatusPill> : <button className="ghost-button" onClick={() => setSelectedVersion(v)}>查看详情</button>}</div>)}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从原始数据到训练任务的关联</p></div></div>{lineage.length ? <div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div> : <p className="dataset-empty-state" role="status">数据血缘加载中…</p>}</section></div></div>{versionDialog && <TextDialog title="新建数据集版本" label="版本名称（可选）" onCancel={() => setVersionDialog(false)} onConfirm={handleNewVersion} />}{selectedVersion && <VersionDetailDrawer mode="dataset" datasetId={dataset.id} version={selectedVersion} onClose={() => setSelectedVersion(null)} />}</>;
 }
 
 const mockDatasetItemRows: DatasetItemRow[] = [
@@ -2416,6 +2417,7 @@ function DatasetBuild() {
     return () => { cancelled = true; };
   }, []);
   const dataset = datasets.find((d) => d.id === datasetId) ?? null;
+  void dataset;
   const handleBuild = () => {
     if (datasetId == null) return;
     setBuildError(null);
@@ -2439,6 +2441,9 @@ function DatasetBuild() {
   };
   return <div className="page-wrap"><PageIntro eyebrow="模型研发中心" title="训练数据准备" description="基于数据中心的数据集，筛选可用于模型训练的样本并生成固定版本。" action={<Toolbar secondary="导出报告" />} /><div className="build-steps" aria-label="训练数据准备流程"><span className="current"><b>1</b>选择数据集</span><i /> <span><b>2</b>设定样本范围</span><i /> <span><b>3</b>生成训练数据集</span></div><div className="build-layout"><section className="panel build-config"><div className="panel-heading"><div><h2>准备条件</h2><p>配置完成后生成一份新的训练数据版本</p></div><Box size={17} /></div>{loading ? <p className="dataset-empty-state" role="status">正在读取数据中心的数据集…</p> : <><div className="form-block"><label className="form-label">1. 选择数据集</label><p className="form-help build-form-intro">选择数据中心中已有的数据集，准备动作不会修改原始数据。</p><select className="native-select" value={datasetId ?? ''} onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择数据集</option>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.version ?? '未建版本'}</option>)}</select></div><div className="form-block"><label className="form-label">2. 选择样本范围</label><div className="build-source">{(['manual', 'split_task', 'annotation_task'] as const).map((key) => <label className={source === key ? 'chosen' : ''} key={key}><input type="radio" name="build-source" checked={source === key} onChange={() => setSource(key)} /><span><strong>{sourceMeta[key].label}</strong><small>{sourceMeta[key].desc}</small></span>{source === key && <Check size={15} />}</label>)}</div></div></>}<div className="split-ratio-note"><div className="rule-title"><GitBranch size={15} />自动划分规则</div><b>训练 80% <em>/</em> 验证 10% <em>/</em> 测试 10%</b><small>按焊缝 ID 分组，同一焊缝不会同时进入训练集和测试集，避免数据泄漏。</small></div><button className="full-button" onClick={handleBuild} disabled={datasetId == null || buildJobId != null}>{buildJobId != null ? <><Activity size={16} />正在生成 · {progress}%</> : <><GitBranch size={16} />生成训练数据集</>}</button>{buildError && <p className="dataset-empty-state" role="alert">生成失败：{buildError} 请检查样本范围后重试。</p>}</section><section className="panel build-result"><div className="panel-heading"><div><h2>生成结果</h2><p>{buildJobId != null ? '正在生成训练数据版本…' : buildResult ? '最近一次生成结果' : '完成左侧配置后，这里会显示数据划分结果'}</p></div><StatusPill tone={buildStatus === 'failed' ? 'red' : buildStatus === 'running' ? 'orange' : buildResult ? 'green' : 'muted'}>{buildStatus === 'succeeded' ? '已生成' : buildStatus === 'failed' ? '生成失败' : buildStatus === 'running' ? '生成中' : '未开始'}</StatusPill></div>{buildResult && split ? <><div className="result-context"><CheckCircle2 size={16} /><span>训练数据集已生成，可在“新建训练”中使用</span></div><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>样本总数</span><strong>{buildResult.item_count.toLocaleString()}</strong></div><div><span>质量评分</span><strong>{qualityPct ?? '—'}</strong></div><div><span>版本快照</span><strong>{buildResult.snapshot_id ? buildResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><div className="empty-steps"><span><Database size={17} />选择数据集</span><span><SlidersHorizontal size={17} />选择样本范围</span><span><GitBranch size={17} />生成版本</span></div><strong>{buildJobId != null ? '正在生成训练数据版本' : '还没有训练数据版本'}</strong><p>{buildJobId != null ? `系统正在按焊缝分组生成，当前进度 ${progress}%` : '配置左侧两项条件后，点击“生成训练数据集”即可开始。'}</p></div>}</section></div></div>;
 }
+
+// 保留旧名称以兼容外部链接；当前路由使用 TrainingDataPreparation。
+void DatasetBuild;
 
 function TrainingDataPreparation() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -2706,7 +2711,21 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
-    getWeld(dataId).then((r) => { if (!cancelled) setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); }).catch((err) => { if (!cancelled) console.warn('[features] getWeld failed', err); });
+    setExtractionId(null); setModalityStatus(null); setTsRows([]); setVisionRows([]); setAudioRows([]); setUnified([]); setTotalDims(0);
+    getWeld(dataId).then(async (r) => {
+      if (cancelled) return;
+      const resolved = r.latest_version_id ?? r.latest_version?.id ?? null;
+      setVersionId(resolved);
+      if (resolved == null) return;
+      const latest = await getLatestFeatureExtraction(resolved);
+      if (!cancelled && latest) {
+        setExtractionId(latest.id); setTsRows(mapTsRows(latest)); setVisionRows(mapVisionRows(latest)); setAudioRows(mapAudioRows(latest));
+        setModalityStatus(latest.modality_status ?? null);
+        const mapped = mapUnifiedGroups(latest.unified_vector);
+        setUnified(mapped); setTotalDims(latest.unified_vector?.total_dims ?? 0);
+        setNormMethod(latest.normalization === 'L2' ? 'L2 范数' : latest.normalization);
+      }
+    }).catch((err) => { if (!cancelled) { setExtractError('无法加载当前数据或历史提取结果'); console.warn('[features] load failed', err); } });
     return () => { cancelled = true; };
   }, [dataId]);
   const handleExtract = () => {
@@ -2727,32 +2746,41 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
       .catch((err) => { setExtractError('特征提取失败，未显示演示值。请检查数据版本和模态文件后重试。'); console.warn('[features] extractFeatures failed', err); })
       .finally(() => setExtracting(false));
   };
-  const fallbackModalities = modalityStatus ? Object.entries(modalityStatus).filter(([, status]) => status === 'fallback').map(([name]) => ({ timeseries: '时序', vision: '视觉', audio: '声音' } as Record<string, string>)[name] ?? name) : [];
-  return <div className="page-wrap"><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从时序、视觉、声音模态提取代表性特征，输出统一特征向量供融合层使用。" action={<Toolbar action={extracting ? '提取中…' : '执行提取'} secondary="导出特征集" onAction={handleExtract} exportType="features" exportRefIds={extractionId != null ? [extractionId] : undefined} actionDisabled={extracting || !dataId || versionId == null} />} />{extractError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{extractError}</div>}{fallbackModalities.length > 0 && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{fallbackModalities.join('、')}模态未检测到真实文件，本次结果包含回退特征，请勿用于生产判定。</div>}
+  const modalityLabels: Record<string, string> = { timeseries: '时序', vision: '视觉', audio: '声音' };
+  const fallbackModalities = modalityStatus ? Object.entries(modalityStatus).filter(([, status]) => status !== 'real').map(([name, status]) => `${modalityLabels[name] ?? name}（${status === 'generated' ? '模拟' : '缺失'}）`) : [];
+  const exportUnified = () => {
+    if (extractionId == null) return;
+    exportReport({ type: 'features', ref_ids: [extractionId], format: 'json' }).then((res) => {
+      const url = res.urls?.[0]?.url;
+      if (url) window.open(url, '_blank');
+    }).catch(() => setExtractError('统一特征向量导出失败，请稍后重试'));
+  };
+  return <div className="page-wrap"><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从真实输入提取可追溯特征；缺失模态不会被静默当作真实数据。" action={<Toolbar action={extracting ? '提取中…' : '执行提取'} secondary="导出特征集" onAction={handleExtract} exportType="features" exportRefIds={extractionId != null ? [extractionId] : undefined} actionDisabled={extracting || !dataId || versionId == null} />} />{extractError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{extractError}</div>}{fallbackModalities.length > 0 && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{fallbackModalities.join('、')}模态非真实输入，本次结果不可直接用于生产判定。</div>}
+    <div className="feature-context panel"><div><span>当前焊缝</span><strong>{dataId ?? '—'}</strong></div><div><span>数据版本</span><strong>{versionId == null ? '—' : `v${versionId}`}</strong></div><div><span>提取结果</span><strong>{extracting ? '计算中' : extractionId != null ? `#${extractionId}` : '暂无结果'}</strong></div><div><span>数据来源</span><strong>{modalityStatus ? Object.entries(modalityStatus).map(([key, value]) => `${modalityLabels[key] ?? key}·${value === 'real' ? '真实' : value === 'generated' ? '模拟' : '缺失'}`).join(' / ') : '尚未提取'}</strong></div></div>
     <div className="feature-layout">
       <section className="panel feature-modality-panel">
         <div className="panel-heading"><div><h2>时序信号特征</h2><p>电流 / 电压 / 气体流量 / 送丝速度 · 统计 + 频域 + 时频</p></div><Waves size={17} className="accent-text" /></div>
         {extracting && <p className="dataset-empty-state" role="status">正在计算时序、视觉和声音特征…</p>}<div className="feature-table-wrap">
           <div className="feature-table">
             <div className="ft-row ft-head"><span>特征</span><span style={{ color: '#2c9caf' }}>电流</span><span style={{ color: '#67cdb0' }}>电压</span><span style={{ color: '#f0a34a' }}>气体</span><span style={{ color: '#75add1' }}>送丝</span></div>
-            {tsRows.map((f) => <div className="ft-row" key={f.name}><span>{f.name}</span><span className="mono">{f.cur}</span><span className="mono">{f.vol}</span><span className="mono">{f.gas}</span><span className="mono">{f.wir}</span></div>)}
+            {tsRows.length ? tsRows.map((f) => <div className="ft-row" key={f.name}><span>{f.name}</span><span className="mono">{f.cur}</span><span className="mono">{f.vol}</span><span className="mono">{f.gas}</span><span className="mono">{f.wir}</span></div>) : <div className="feature-empty">执行提取后展示结果</div>}
           </div>
         </div>
         <div className="feature-tags"><span>统计特征</span><span>FFT 频域</span><span>小波时频</span><span>28 维 / 通道</span></div>
       </section>
 
       <section className="panel feature-modality-panel">
-        <div className="panel-heading"><div><h2>熔池视觉特征</h2><p>熔池视觉模型提取几何与纹理特征</p></div><ImageIcon size={17} className="accent-text" /></div>
+        <div className="panel-heading"><div><h2>熔池视觉特征</h2><p>从图片或视频关键帧提取几何与纹理特征</p></div><ImageIcon size={17} className="accent-text" /></div>
         <div className="vision-feature-grid">
-          {visionRows.map((f) => <div className="vf-item" key={f.name}><div><strong>{f.name}</strong><small>{f.desc}</small></div><span className="mono">{f.value}</span></div>)}
+          {visionRows.length ? visionRows.map((f) => <div className="vf-item" key={f.name}><div><strong>{f.name}</strong><small>{f.desc}</small></div><span className="mono">{f.value}</span></div>) : <div className="feature-empty">需要真实图片或视频输入</div>}
         </div>
         <div className="feature-tags"><span>几何特征</span><span>GLCM 纹理</span><span>Sobel 边缘</span><span>8 维</span></div>
       </section>
 
       <section className="panel feature-modality-panel">
-        <div className="panel-heading"><div><h2>声音 / 光谱特征</h2><p>频带能量、功率谱密度与声学统计</p></div><AudioWaveform size={17} className="accent-text" /></div>
+        <div className="panel-heading"><div><h2>声音特征</h2><p>读取 WAV 后计算频带能量、功率谱密度与声学统计</p></div><AudioWaveform size={17} className="accent-text" /></div>
         <div className="audio-feature-list">
-          {audioRows.map((f) => <div className="af-item" key={f.name}><Sigma size={13} /><span>{f.name}</span><strong className="mono">{f.value}</strong></div>)}
+          {audioRows.length ? audioRows.map((f) => <div className="af-item" key={f.name}><Sigma size={13} /><span>{f.name}</span><strong className="mono">{f.value}</strong></div>) : <div className="feature-empty">需要真实 WAV 音频输入</div>}
         </div>
         <div className="feature-tags"><span>频带能量</span><span>PSD</span><span>声学统计</span><span>6 维</span></div>
       </section>
@@ -2761,14 +2789,14 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
         <div className="panel-heading"><div><h2>统一特征向量</h2><p>多模态特征拼接后输出，供后续融合层使用</p></div><Boxes size={17} className="accent-text" /></div>
         <div className="unified-summary"><div><span>总维度</span><strong>{totalDims} 维</strong></div><div><span>模态数</span><strong>3</strong></div><div><span>归一化</span><strong>{normMethod}</strong></div><div><span>输出格式</span><strong>.{exportFmt.toLowerCase()}</strong></div></div>
         <div className="unified-vector-bar">
-          {unified.map((seg, i) => <div className="uv-seg" key={i} style={{ flexGrow: seg.dims, background: seg.tone }} title={`${seg.group} · ${seg.dims} 维`}><span>{seg.dims}</span></div>)}
+          {unified.length ? unified.map((seg, i) => <div className="uv-seg" key={i} style={{ flexGrow: seg.dims, background: seg.tone }} title={`${seg.group} · ${seg.dims} 维`}><span>{seg.dims}</span></div>) : <div className="feature-empty">暂无统一向量</div>}
         </div>
         <div className="unified-legend">{unified.map((seg, i) => <span key={i}><i style={{ background: seg.tone }} />{seg.group}<small>{seg.range}</small></span>)}</div>
         <div className="unified-config">
           <div className="form-block"><label>归一化方式</label><div className="pp-chips">{['Z-Score', 'Min-Max', 'L2 范数', '无'].map((m) => <button key={m} className={normMethod === m ? 'on' : ''} onClick={() => setNormMethod(m)}>{m}</button>)}</div></div>
           <div className="form-block"><label>输出格式</label><div className="pp-chips">{['NPY', 'CSV', 'JSON', 'PT'].map((f) => <button key={f} className={exportFmt === f ? 'on' : ''} onClick={() => setExportFmt(f)}>{f}</button>)}</div></div>
         </div>
-        <button className="full-button"><Download size={15} />导出统一特征向量</button>
+        <button className="full-button" disabled={extractionId == null || extracting} onClick={exportUnified}><Download size={15} />{extractionId == null ? '完成提取后可导出' : '导出统一特征向量'}</button>
       </section>
 
       <section className="panel feature-pipeline-panel">

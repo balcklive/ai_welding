@@ -258,6 +258,14 @@ button { border: 0; cursor: pointer; }
 .spectrum-note svg { color:#48a38e; flex-shrink:0; }
 
 .feature-layout { display:grid; grid-template-columns:1fr 1fr 1fr; grid-template-rows:auto auto; gap:16px; }
+.feature-context { display:flex; flex-wrap:wrap; gap:22px; align-items:center; margin-bottom:16px; padding:13px 18px; }
+.feature-context > div { display:flex; flex-direction:column; gap:4px; min-width:120px; }
+.feature-context span { color:#9aadae; font-size:9px; }
+.feature-context strong { color:#3a5658; font:600 11px 'DM Mono',monospace; }
+.feature-empty { display:flex; align-items:center; justify-content:center; min-height:108px; color:#9aadae; font-size:10px; }
+.feature-heading-status { display:flex; align-items:center; gap:9px; }
+.feature-status-row { display:flex; gap:5px; flex-wrap:wrap; }
+.feature-alert { display:flex; align-items:center; gap:7px; margin-bottom:12px; }
 .feature-modality-panel { padding:18px; }
 .feature-table-wrap { overflow-x:auto; margin:14px 0 10px; }
 .feature-table { min-width:100%; }

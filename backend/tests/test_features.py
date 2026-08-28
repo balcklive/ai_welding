@@ -321,9 +321,9 @@ def test_extract_features_marks_fallback_modalities(
     assert resp.status_code == 200, resp.text[:400]
     data = resp.json()["data"]
     assert data["modality_status"] == {
-        "timeseries": "available",
-        "vision": "fallback",
-        "audio": "fallback",
+        "timeseries": "generated",
+        "vision": "missing",
+        "audio": "missing",
     }
 
 

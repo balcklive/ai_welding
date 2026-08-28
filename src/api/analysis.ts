@@ -232,6 +232,13 @@ export async function extractFeatures(
   });
 }
 
+/** 当前数据版本最近一次特征提取结果；无结果时返回 null。 */
+export async function getLatestFeatureExtraction(
+  versionId: number,
+): Promise<FeatureExtraction | null> {
+  return request<FeatureExtraction | null>(`/features/latest/${versionId}`);
+}
+
 /** 特征提取结果（导出时使用）。 */
 export async function getFeatureExtraction(
   id: string,

@@ -165,9 +165,9 @@ export interface FeatureExtraction {
   format: string;
   created_at: string | null;
   modality_status?: {
-    timeseries?: 'available' | 'fallback';
-    vision?: 'available' | 'fallback';
-    audio?: 'available' | 'fallback';
+    timeseries?: 'real' | 'generated' | 'missing';
+    vision?: 'real' | 'generated' | 'missing';
+    audio?: 'real' | 'generated' | 'missing';
   };
 }
 

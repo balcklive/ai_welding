@@ -7,11 +7,11 @@
 **实施边界（§3.1）：特征 = 真实计算**（不是罐头数字）：
 - `ts_features(x)`：numpy/scipy/pywt 算统计（均值/方差/峰值/偏度/峰度/RMS）+
   频域（FFT 主频）+ 时频（db1 三层小波细节能量），每通道 8 维。
-- `vision_features()`：合成熔池二值掩膜 → skimage `regionprops` + `graycomatrix`
-  GLCM + Sobel 真实计算，几何 4 维 + 纹理 4 维。
-- `audio_features(x, fs)`：librosa 声学统计（质心频率/频谱滚降/过零率）+ scipy
+- `vision_features_from_image(data)`：真实图片 → Otsu/最大连通区域 → skimage
+  `regionprops` + `graycomatrix` GLCM + Sobel，几何 4 维 + 纹理 4 维。
+- `audio_features_from_wav(data)`：真实 WAV → librosa 声学统计（质心频率/频谱滚降/过零率）+ scipy
   welch 频带能量/功率与总 PSD，6 维。librosa 为本环境已装并选定的复用项
-  （pyproject 依赖 `librosa>=0.10`），未退化到 scipy 替代。
+  （pyproject 依赖 `librosa>=0.10`），未退化到合成音频。
 - `unify(ts, vis, audio, normalization, format)`：按固定分组顺序拼接
   `时序·电流 8 + 时序·电压 8 + 时序·气体 6 + 时序·送丝 6 + 视觉·几何 4 +
   视觉·纹理 4 + 声音·频带 6 = 42 维`，应用归一化，返回
@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import zlib
+from io import BytesIO
 
 import numpy as np
 import pywt
@@ -184,6 +185,49 @@ def vision_features(size: int = 128) -> dict:
     }
 
 
+def vision_features_from_image(data: bytes) -> dict:
+    """从真实图片计算视觉特征。
+
+    这是特征工程层的保底分割：使用灰度 Otsu 阈值和最大连通区域。
+    生产环境应将这里替换为已审核的熔池分割模型，但不会再用固定合成图像冒充真实输入。
+    """
+    from PIL import Image
+
+    with Image.open(BytesIO(data)) as image:
+        gray = np.asarray(image.convert("L"), dtype=float)
+    if gray.size == 0:
+        raise ValueError("视觉输入为空")
+    threshold = float(filters.threshold_otsu(gray)) if np.ptp(gray) > 1e-12 else float(gray.mean())
+    mask = gray > threshold
+    labels = measure.label(mask)
+    regions = measure.regionprops(labels, intensity_image=gray)
+    if not regions:
+        raise ValueError("视觉输入未检测到有效熔池区域")
+    region = max(regions, key=lambda item: item.area)
+    selected = labels == region.label
+    perimeter = float(region.perimeter)
+    major = float(region.axis_major_length)
+    minor = float(region.axis_minor_length)
+    return {
+        "area": float(region.area),
+        "perimeter": perimeter,
+        "aspect_ratio": major / minor if minor > 1e-12 else 0.0,
+        "circularity": 4.0 * np.pi * float(region.area) / (perimeter**2) if perimeter > 1e-12 else 0.0,
+        "gray_mean": float(region.intensity_mean or 0.0),
+        "glcm_contrast": _image_glcm(gray, selected, "contrast"),
+        "glcm_energy": _image_glcm(gray, selected, "energy"),
+        "sobel_gradient": float(np.mean(filters.sobel(gray)[selected])) if selected.any() else 0.0,
+    }
+
+
+def _image_glcm(gray: np.ndarray, mask: np.ndarray, prop: str) -> float:
+    """计算真实灰度图的 GLCM 属性，避免把背景纹理计入熔池。"""
+    image = np.clip(gray, 0, 255).astype(np.uint8)
+    image = np.where(mask, image, 0).astype(np.uint8)
+    glcm = feature.graycomatrix(image, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
+    return float(feature.graycoprops(glcm, prop)[0, 0])
+
+
 def generate_audio(
     weld_id: str,
     sample_rate: int = DEFAULT_AUDIO_SAMPLE_RATE,
@@ -259,6 +303,17 @@ def audio_features(x, fs: int = DEFAULT_AUDIO_SAMPLE_RATE) -> dict:
         "spectral_rolloff": rolloff,
         "zero_crossing_rate": zcr,
     }
+
+
+def audio_features_from_wav(data: bytes) -> dict:
+    """读取真实 WAV 文件并计算声音特征。"""
+    from scipy.io import wavfile
+
+    fs, audio = wavfile.read(BytesIO(data))
+    values = np.asarray(audio)
+    if values.ndim > 1:
+        values = values.mean(axis=1)
+    return audio_features(values, fs=int(fs))
 
 
 def unify(

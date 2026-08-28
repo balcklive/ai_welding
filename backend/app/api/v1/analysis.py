@@ -397,9 +397,8 @@ def extract_features(
 ) -> dict:
     """执行特征提取（**同步**，契约 §3.4）：时序/视觉/声音特征 + 统一向量 → 落库。
 
-    生成确定性信号 → `features.ts_features` 逐通道（8×4）→ `vision_features`
-    （8）→ `generate_audio` + `audio_features`（6）→ `unify` 拼 42 维归一化向量，
-    写 `feature_extractions` 行（含 created_at），返回 `ok(extraction)`。
+    读取信号/图片或视频关键帧/WAV → 逐模态计算特征 → `unify` 拼接统一向量，
+    写 `feature_extractions` 行（含来源状态与 created_at），返回 `ok(extraction)`。
     """
     if body.normalization not in _NORMALIZATIONS:
         return err(
@@ -419,10 +418,14 @@ def extract_features(
     ts: dict[str, dict] = {}
     for chan in bundle.channels:
         ts[chan.id] = features.ts_features(chan.values, fs=bundle.sample_rate)
-    vis = features.vision_features()
-    audio, audio_fs = features.generate_audio(body.weld_id)
-    audio_feats = features.audio_features(audio, audio_fs)
+    vis, vision_source = _load_real_vision_features(version)
+    audio_feats, audio_source = _load_real_audio_features(version)
     unified = features.unify(ts, vis, audio_feats, body.normalization, body.format)
+    unified["modality_status"] = {
+        "timeseries": "real" if bundle.source == "real" else "generated",
+        "vision": vision_source,
+        "audio": audio_source,
+    }
 
     extraction = FeatureExtraction(
         version_id=body.version_id,
@@ -447,6 +450,31 @@ def extract_features(
     session.commit()
     session.refresh(extraction)
     return ok(_extraction_payload(extraction, record=record, version=version, bundle_source=bundle.source))
+
+
+@router.get("/features/latest/{version_id}")
+def get_latest_feature_extraction(
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """返回数据版本最近一次提取结果；不存在时返回 null。"""
+    version = session.get(DataVersion, version_id)
+    if version is None:
+        return err(40402, "数据版本不存在", status=404)
+    record = session.get(DataRecord, version.record_id)
+    if record is None:
+        return err(40401, "焊缝数据不存在", status=404)
+    try:
+        forbid_unless_record_owned(session, current_user, record)
+    except Exception:
+        return err(40300, "无权限", status=403)
+    extraction = session.exec(
+        select(FeatureExtraction)
+        .where(FeatureExtraction.version_id == version_id)
+        .order_by(FeatureExtraction.id.desc())
+    ).first()
+    return ok(_extraction_payload(extraction, record=record, version=version) if extraction else None)
 
 
 @router.get("/features/{extraction_id}")
@@ -1124,13 +1152,48 @@ def _extraction_payload(
         "format": e.format,
         "created_at": _iso_utc(e.created_at),
     }
-    if record is not None or version is not None or bundle_source is not None:
-        payload["modality_status"] = _feature_modality_status(
-            record=record,
-            version=version,
-            bundle_source=bundle_source,
-        )
+    stored_status = (e.unified_vector or {}).get("modality_status")
+    if isinstance(stored_status, dict):
+        payload["modality_status"] = stored_status
+    elif record is not None or version is not None or bundle_source is not None:
+        payload["modality_status"] = _feature_modality_status(record=record, version=version, bundle_source=bundle_source)
     return payload
+
+
+def _load_real_vision_features(version: DataVersion) -> tuple[dict, str]:
+    """优先读取真实图片/视频关键帧；不可用时返回空特征并明确标记。"""
+    from app.storage import get_storage
+
+    keys = version.object_keys or []
+    image_key = next((k for k in keys if k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp"))), None)
+    video_key = next((k for k in keys if k.lower().endswith((".mp4", ".mov", ".avi", ".mkv"))), None)
+    try:
+        storage = get_storage()
+        if image_key:
+            return features.vision_features_from_image(storage.get_object(image_key)), "real"
+        if video_key:
+            from app.services.media_probe import analyze_video
+
+            _, frames = analyze_video(storage.get_object(video_key), [("first", 0.0)])
+            if frames:
+                return features.vision_features_from_image(frames[0]["bytes"]), "real"
+    except Exception as exc:  # noqa: BLE001 - 单模态失败不应吞掉其它结果
+        logger.warning("vision feature extraction unavailable: {}", exc)
+    return {key: 0.0 for key in features.VISION_GEOMETRY_KEYS + features.VISION_TEXTURE_KEYS}, "missing"
+
+
+def _load_real_audio_features(version: DataVersion) -> tuple[dict, str]:
+    """读取真实 WAV；文件缺失或解析失败时返回空特征并明确标记。"""
+    from app.storage import get_storage
+
+    audio_key = next((k for k in (version.object_keys or []) if k.lower().endswith((".wav", ".wave"))), None)
+    if not audio_key:
+        return {key: 0.0 for key in features.AUDIO_FEATURE_KEYS}, "missing"
+    try:
+        return features.audio_features_from_wav(get_storage().get_object(audio_key)), "real"
+    except Exception as exc:  # noqa: BLE001 - 单模态失败不应吞掉其它结果
+        logger.warning("audio feature extraction unavailable: {}", exc)
+        return {key: 0.0 for key in features.AUDIO_FEATURE_KEYS}, "missing"
 
 
 def _requested_channels(request: Request) -> list[str]:
@@ -1178,9 +1241,9 @@ def _feature_modality_status(*, record, version: DataVersion | None, bundle_sour
     if version is not None:
         available |= set(_derive_modalities_from_keys(version.object_keys or []))
     return {
-        "timeseries": "available" if "timeseries" in available else "fallback",
-        "vision": "available" if "video" in available or "infrared" in available else "fallback",
-        "audio": "available" if "audio" in available else "fallback",
+        "timeseries": "real" if bundle_source == "real" else "generated",
+        "vision": "real" if "video" in available or "infrared" in available else "missing",
+        "audio": "real" if "audio" in available else "missing",
     }
 
 
