@@ -213,7 +213,9 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
       .then(() => setRepoRefresh((v) => v + 1))
       .catch((err) => console.warn('[model-center] createModel failed', err));
   };
-  const showContext = selectedDataId && (ws === 'analysis' || (ws === 'data-center' && route !== 'data-center/datasets'));
+  // 数据上传是新建数据操作，不依赖当前焊缝上下文；核验/版本页则展示当前上下文。
+  const showContext = selectedDataId && (ws === 'analysis' || (ws === 'data-center' && route !== 'data-center/datasets' && route !== 'data-center/registration'));
+  const showDataSwitcher = ws === 'analysis' || route === 'data-center/validation' || route === 'data-center/versions';
 
   let content: React.ReactNode = null;
   if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} selectedDatasetId={selectedDatasetId} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
@@ -231,7 +233,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{ws === 'analysis' && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />}{showContext && <SelectionContext dataId={selectedDataId!} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
+  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />}{showContext && <SelectionContext dataId={selectedDataId!} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
 }
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-intro"><div><div className="eyebrow"><span />{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>; }
