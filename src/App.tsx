@@ -1203,7 +1203,7 @@ function DatasetRecords({ dataset, versionId, onBack, onVersionChange, onSelectR
     setLoading(true);
     listDatasetVersionItems(dataset.id, versionId, { q: query.trim() || undefined, quality: quality || undefined, split: split || undefined, page, page_size: PAGE_SIZE })
       .then((result) => { if (!cancelled) { setRows(result.items); setTotal(result.total); setNotice(null); } })
-      .catch((err) => { if (!cancelled) { setRows(mockDatasetItemRows); setTotal(mockDatasetItemRows.length); setNotice('成员列表暂时无法同步，正在显示演示数据。'); console.warn('[datasets] listDatasetVersionItems failed', err); } })
+      .catch((err) => { if (!cancelled) { setRows(mockDatasetItemRows); setTotal(mockDatasetItemRows.length); setNotice('成员列表暂时无法同步，请刷新后重试。'); console.warn('[datasets] listDatasetVersionItems failed', err); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [dataset.id, versionId, query, quality, split, page]);
@@ -1236,12 +1236,12 @@ function DatasetSourceRecords({ dataset, onBack, onSelectRecord }: { dataset: Da
 }
 
 function RawSignalPreview({ weldId, versionId, navigate, setSelectedDataId }: { weldId: string; versionId: number; navigate: (route: Route) => void; setSelectedDataId: (id: string | null) => void }) {
-  // 初始为空 + 加载中：mock 波形仅在接口失败时兜底，不得在加载期闪现
+  // 初始为空；真实信号加载失败时不再回落到合成波形，避免误导用户。
   const [channels, setChannels] = useState<Chan[]>([]);
   const [signalDuration, setSignalDuration] = useState(dur);
   const [hover, setHover] = useState<{ left: number; top: number; time: number } | null>(null);
   const [active, setActive] = useState<Set<string>>(new Set(['cur', 'vol', 'gas']));
-  const [usingFallback, setUsingFallback] = useState(false);
+  const [signalError, setSignalError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const toggle = (id: string) => setActive((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   useEffect(() => {
@@ -1250,11 +1250,11 @@ function RawSignalPreview({ weldId, versionId, navigate, setSelectedDataId }: { 
     setChannels([]);
     setSignalDuration(dur);
     setHover(null);
-    setUsingFallback(false);
+    setSignalError(null);
     setLoading(true);
     getSignals(weldId, String(versionId), { channels: ['cur', 'vol', 'gas', 'wir'] })
       .then((data) => { if (!cancelled) { setSignalDuration(data.duration || dur); setChannels(data.channels.map(toChan)); } })
-      .catch((err) => { if (!cancelled) { setChannels(mockChannels); setUsingFallback(true); console.warn('[datasets] raw signal preview failed', err); } })
+      .catch((err) => { if (!cancelled) { setChannels([]); setSignalError('信号暂时无法读取，请稍后重试。'); console.warn('[datasets] raw signal preview failed', err); } })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [weldId, versionId]);
@@ -1268,7 +1268,7 @@ function RawSignalPreview({ weldId, versionId, navigate, setSelectedDataId }: { 
     setHover({ left: event.clientX - chartRect.left, top: event.clientY - chartRect.top, time });
   };
   const cursorX = hover ? AXIS_L + (hover.time / signalDuration) * PLOT_W : 0;
-  return <section className="panel raw-signal-preview"><div className="panel-heading"><div><h2>原始数据预览</h2><p>基于当前数据版本的多通道时域波形，可用于快速确认数据是否正常。</p></div><div className="raw-signal-meta"><span>{loading ? '信号加载中' : usingFallback ? '演示波形' : '真实信号'}</span><small>版本 #{versionId}</small></div></div><div className="raw-channel-toggles">{channels.map((channel) => <button key={channel.id} className={active.has(channel.id) ? 'active' : ''} onClick={() => toggle(channel.id)}><i style={{ background: channel.color }} />{channel.name}<small>{channel.unit}</small>{active.has(channel.id) && <Check size={12} />}</button>)}</div><div className="raw-signal-chart" onMouseLeave={() => setHover(null)}>{loading && !channels.length ? <p className="dataset-empty-state" role="status">波形加载中…</p> : <><svg viewBox={`0 0 ${CH} ${CW}`} preserveAspectRatio="none" role="img" aria-label="原始多通道信号波形" onMouseMove={handleHover}>{[0, .25, .5, .75, 1].map((position) => <line key={position} x1={AXIS_L} y1={PLOT_H * position} x2={CH} y2={PLOT_H * position} stroke="#edf2f2" />)}{visibleChannels.map((channel) => <path key={channel.id} d={toPath(channel.values, channel.lo, channel.hi)} fill="none" stroke={channel.color} strokeWidth={channel.id === 'cur' ? 2 : 1.6} />)}{hover && <line x1={cursorX} y1={0} x2={cursorX} y2={PLOT_H} stroke="#d16f69" strokeWidth="1.5" strokeDasharray="4 3" />}</svg>{hover && <div className="raw-signal-tooltip" style={{ left: hover.left, top: hover.top }}><strong>{fmt(hover.time)}</strong>{visibleChannels.map((channel) => { const i = Math.min(channel.values.length - 1, Math.max(0, Math.round((hover.time / signalDuration) * Math.max(channel.values.length - 1, 0)))); return <span key={channel.id}><i style={{ background: channel.color }} />{channel.name}<b>{channel.values[i]?.toFixed(3)} {channel.unit}</b></span>; })}</div>}<div className="raw-signal-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>{signalDuration.toFixed(2)}s</span></div></>}</div>{usingFallback && <p className="raw-signal-note" role="status"><AlertTriangle size={14} />真实波形暂时无法读取，当前展示演示数据。</p>}<div className="raw-signal-footer"><span><Waves size={14} />电流 / 电压 / 气体流量 / 送丝速度</span><button className="outline-button" onClick={() => { setSelectedDataId(weldId); navigate('analysis/analysis'); }}>进入完整信号分析 <ArrowUpRight size={14} /></button></div></section>;
+  return <section className="panel raw-signal-preview"><div className="panel-heading"><div><h2>原始数据预览</h2><p>基于当前数据版本的多通道时域波形，可用于快速确认数据是否正常。</p></div><div className="raw-signal-meta"><span>{loading ? '信号加载中' : signalError ? '信号不可用' : '真实信号'}</span><small>版本 #{versionId}</small></div></div><div className="raw-channel-toggles">{channels.map((channel) => <button key={channel.id} className={active.has(channel.id) ? 'active' : ''} onClick={() => toggle(channel.id)}><i style={{ background: channel.color }} />{channel.name}<small>{channel.unit}</small>{active.has(channel.id) && <Check size={12} />}</button>)}</div><div className="raw-signal-chart" onMouseLeave={() => setHover(null)}>{loading && !channels.length ? <p className="dataset-empty-state" role="status">波形加载中…</p> : signalError ? <p className="dataset-empty-state" role="alert">{signalError}</p> : <><svg viewBox={`0 0 ${CH} ${CW}`} preserveAspectRatio="none" role="img" aria-label="原始多通道信号波形" onMouseMove={handleHover}>{[0, .25, .5, .75, 1].map((position) => <line key={position} x1={AXIS_L} y1={PLOT_H * position} x2={CH} y2={PLOT_H * position} stroke="#edf2f2" />)}{visibleChannels.map((channel) => <path key={channel.id} d={toPath(channel.values, channel.lo, channel.hi)} fill="none" stroke={channel.color} strokeWidth={channel.id === 'cur' ? 2 : 1.6} />)}{hover && <line x1={cursorX} y1={0} x2={cursorX} y2={PLOT_H} stroke="#d16f69" strokeWidth="1.5" strokeDasharray="4 3" />}</svg>{hover && <div className="raw-signal-tooltip" style={{ left: hover.left, top: hover.top }}><strong>{fmt(hover.time)}</strong>{visibleChannels.map((channel) => { const i = Math.min(channel.values.length - 1, Math.max(0, Math.round((hover.time / signalDuration) * Math.max(channel.values.length - 1, 0)))); return <span key={channel.id}><i style={{ background: channel.color }} />{channel.name}<b>{channel.values[i]?.toFixed(3)} {channel.unit}</b></span>; })}</div>}<div className="raw-signal-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>{signalDuration.toFixed(2)}s</span></div></>}</div><div className="raw-signal-footer"><span><Waves size={14} />电流 / 电压 / 气体流量 / 送丝速度</span><button className="outline-button" onClick={() => { setSelectedDataId(weldId); navigate('analysis/analysis'); }}>进入完整信号分析 <ArrowUpRight size={14} /></button></div></section>;
 }
 
 const EMPTY_OBJECT_KEYS: string[] = [];
@@ -2391,7 +2391,7 @@ function Validation({ dataId }: { embedded?: boolean; dataId?: string }) {
     let cancelled = false;
     const fallback = () => {
       setLoading(false);
-      setNotice('核验结果暂时无法加载，正在显示演示数据。');
+      setNotice('核验结果暂时无法加载，请点击“执行核验”或稍后重试。');
       setReport((prev) => prev ?? {
         id: 0,
         version_id: 0,
