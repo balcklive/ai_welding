@@ -418,7 +418,7 @@ export interface AlignmentResult {
 
 export interface SplitResult {
   sample_count: number;
-  rules: { fixed_rate: number; keep_event_buffer: number };
+  rules: { fixed_rate: number; stride?: number; keep_event_buffer: number };
   task_format: string;
   samples: {
     id: number;
@@ -480,6 +480,7 @@ export interface SignalQuery {
 
 export interface SplitRules {
   fixed_rate: number;
+  stride?: number;
   keep_event_buffer?: number;
   task_format?: string;
 }
