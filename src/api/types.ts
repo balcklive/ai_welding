@@ -256,6 +256,8 @@ export interface DatasetItemRow {
   split: 'train' | 'val' | 'test';
   frame_no: number | null;
   created_at: string | null;
+  /** 成员来源焊缝的当前/锁定数据版本，用于区分数据集快照版本。 */
+  weld_version?: string | null;
 }
 
 /** 数据项目卡片（总览，由数据集派生）：`{name, status, sample_count, progress, updated_at}`。 */

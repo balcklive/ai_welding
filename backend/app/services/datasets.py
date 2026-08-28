@@ -487,6 +487,7 @@ def list_version_items(
             DatasetItem.split.label("split"),
             Sample.frame_no.label("frame_no"),
             Sample.meta.label("meta"),
+            split_version.version_no.label("split_weld_version"),
             split_record.weld_id.label("split_weld_id"),
             split_record.weld_name.label("split_weld_name"),
             split_record.registration_no.label("split_registration_no"),
@@ -503,6 +504,7 @@ def list_version_items(
             annotation_record.modalities.label("annotation_modalities"),
             annotation_record.quality.label("annotation_quality"),
             annotation_record.created_at.label("annotation_created_at"),
+            annotation_version.version_no.label("annotation_weld_version"),
             meta_record.weld_id.label("meta_weld_id"),
             meta_record.weld_name.label("meta_weld_name"),
             meta_record.registration_no.label("meta_registration_no"),
@@ -640,12 +642,15 @@ def _version_item_meta_records(
         return {}, {}
 
     records = session.exec(select(DataRecord).where(or_(*clauses))).all()
-    by_id = {record.id: _version_item_record_dict(record) for record in records if record.id is not None}
-    by_weld_id = {record.weld_id: _version_item_record_dict(record) for record in records}
+    version_ids = {record.latest_version_id for record in records if record.latest_version_id is not None}
+    versions = session.exec(select(DataVersion).where(DataVersion.id.in_(version_ids))).all() if version_ids else []
+    version_no_by_id = {version.id: version.version_no for version in versions}
+    by_id = {record.id: _version_item_record_dict(record, version_no_by_id.get(record.latest_version_id)) for record in records if record.id is not None}
+    by_weld_id = {record.weld_id: _version_item_record_dict(record, version_no_by_id.get(record.latest_version_id)) for record in records}
     return by_id, by_weld_id
 
 
-def _version_item_record_dict(record: DataRecord) -> dict:
+def _version_item_record_dict(record: DataRecord, weld_version: str | None = None) -> dict:
     return {
         "weld_id": record.weld_id,
         "weld_name": record.weld_name,
@@ -655,6 +660,7 @@ def _version_item_record_dict(record: DataRecord) -> dict:
         "modalities": record.modalities,
         "quality": record.quality,
         "created_at": record.created_at,
+        "weld_version": weld_version,
     }
 
 
@@ -690,6 +696,7 @@ def _version_item_payload(
         "created_at": _iso_utc(
             _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="created_at")
         ),
+        "weld_version": _first_present(meta_record, prefetched_meta_record, split_record, annotation_record, field="weld_version"),
     }
 
 
@@ -703,6 +710,7 @@ def _version_item_prefetched_record(row: dict, prefix: str) -> dict:
         "modalities": row.get(f"{prefix}_modalities"),
         "quality": row.get(f"{prefix}_quality"),
         "created_at": row.get(f"{prefix}_created_at"),
+        "weld_version": row.get(f"{prefix}_weld_version"),
     }
 
 
