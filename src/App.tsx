@@ -2177,6 +2177,8 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   // 初始为空波形占位：mock 波形仅在接口失败时兜底，不得在加载期闪现
   const [channels, setChannels] = useState<Chan[]>(emptyChannels);
   const [signalsLoading, setSignalsLoading] = useState(true);
+  const [signalSource, setSignalSource] = useState<'real' | 'generated' | null>(null);
+  const [signalError, setSignalError] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
   const [psdData, setPsdData] = useState<PsdData | null>(null);
   const [stftData, setStftData] = useState<StftData | null>(null);
@@ -2185,6 +2187,9 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   const [phaseData, setPhaseData] = useState<PhaseData | null>(null);
   const [pddData, setPddData] = useState<PddData | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [resultError, setResultError] = useState<string | null>(null);
   const toggle = (id: string) => setActive((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   useEffect(() => {
     if (!dataId) return;
@@ -2197,16 +2202,25 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
     if (!dataId || versionId == null) return;
     let cancelled = false;
     setSignalsLoading(true);
+    setSignalError(null);
+    setSignalSource(null);
+    setChannels(emptyChannels);
     const opts: SignalQuery = { channels: ['cur', 'vol', 'gas', 'wir'] };
     if (filterOn) { opts.filter_type = filterType; opts.cutoff = cutoff; if (filterType === '带通') opts.cutoff2 = cutoff2; }
-    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) setChannels(data.channels.map(toChan)); }).catch((err) => { if (!cancelled) { setChannels(mockChannels); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
+    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') setChannels(data.channels.map(toChan)); else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
     return () => { cancelled = true; };
   }, [dataId, versionId, filterOn, filterType, cutoff, cutoff2]);
-  // 主视图 mode（PSD/STFT/DWT/小波分解）：mode / 目标通道 / 滤波变化 → 后端计算
+  // 主视图 mode（PSD/STFT/DWT/小波分解）：仅真实信号可进入生产分析
   useEffect(() => {
-    if (!dataId || versionId == null) return;
+    if (!dataId || versionId == null || signalSource !== 'real') return;
     if (mode !== 'PSD' && mode !== 'STFT' && mode !== 'DWT' && mode !== '小波分解') return;
     let cancelled = false;
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    if (mode === 'PSD') setPsdData(null);
+    else if (mode === 'STFT') setStftData(null);
+    else if (mode === 'DWT') setDwtData(null);
+    else setWaveletData(null);
     const apiMode = mode === 'PSD' ? 'psd' : mode === 'STFT' ? 'stft' : mode === 'DWT' ? 'dwt' : 'wavelet';
     const filter = filterOn ? { type: filterType, cutoff, cutoff2: filterType === '带通' ? cutoff2 : undefined } : undefined;
     getAnalysisMode(dataId, String(versionId), apiMode, filterChan, filter).then((data) => {
@@ -2215,41 +2229,43 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
       else if (mode === 'STFT') setStftData(data as StftData);
       else if (mode === 'DWT') setDwtData(data as DwtData);
       else setWaveletData(data as WaveletData);
-    }).catch((err) => { if (!cancelled) console.warn(`[analysis] getAnalysisMode ${mode} failed`, err); });
+    }).catch((err) => { if (!cancelled) { setAnalysisError(`${mode} 分析计算失败，请重试。`); console.warn(`[analysis] getAnalysisMode ${mode} failed`, err); } }).finally(() => { if (!cancelled) setAnalysisLoading(false); });
     return () => { cancelled = true; };
-  }, [dataId, versionId, mode, filterChan, filterOn, filterType, cutoff, cutoff2]);
+  }, [dataId, versionId, signalSource, mode, filterChan, filterOn, filterType, cutoff, cutoff2]);
   // 侧边 UI 相图（current/voltage，cur+vol 两通道）
   useEffect(() => {
-    if (!dataId || versionId == null) return;
+    if (!dataId || versionId == null || signalSource !== 'real') return;
     let cancelled = false;
+    setPhaseData(null);
     const filter = filterOn ? { type: filterType, cutoff, cutoff2: filterType === '带通' ? cutoff2 : undefined } : undefined;
     getAnalysisMode(dataId, String(versionId), 'phase', 'cur', filter).then((data) => { if (!cancelled) setPhaseData(data as PhaseData); }).catch((err) => { if (!cancelled) console.warn('[analysis] phase failed', err); });
     return () => { cancelled = true; };
-  }, [dataId, versionId, filterOn, filterType, cutoff, cutoff2]);
+  }, [dataId, versionId, signalSource, filterOn, filterType, cutoff, cutoff2]);
   // 侧边 PDD 分布（按所选通道）
   useEffect(() => {
-    if (!dataId || versionId == null) return;
+    if (!dataId || versionId == null || signalSource !== 'real') return;
     let cancelled = false;
+    setPddData(null);
     const filter = filterOn ? { type: filterType, cutoff, cutoff2: filterType === '带通' ? cutoff2 : undefined } : undefined;
     getAnalysisMode(dataId, String(versionId), 'pdd', pddChan, filter).then((data) => { if (!cancelled) setPddData(data as PddData); }).catch((err) => { if (!cancelled) console.warn('[analysis] pdd failed', err); });
     return () => { cancelled = true; };
-  }, [dataId, versionId, pddChan, filterOn, filterType, cutoff, cutoff2]);
+  }, [dataId, versionId, signalSource, pddChan, filterOn, filterType, cutoff, cutoff2]);
   // 分析结果：稳定度 / 三类占比 / 异常区段
   useEffect(() => {
-    if (!dataId || versionId == null) return;
+    if (!dataId || versionId == null || signalSource !== 'real') return;
     let cancelled = false;
-    getAnalysisResult(dataId, String(versionId)).then((data) => { if (!cancelled) setResult(data); }).catch((err) => { if (!cancelled) console.warn('[analysis] getAnalysisResult failed', err); });
+    setResult(null);
+    setResultError(null);
+    getAnalysisResult(dataId, String(versionId)).then((data) => { if (!cancelled) setResult(data); }).catch((err) => { if (!cancelled) { setResultError('异常检测结果暂不可用，页面不会显示估算值。'); console.warn('[analysis] getAnalysisResult failed', err); } });
     return () => { cancelled = true; };
-  }, [dataId, versionId]);
-  const anomalies = result && result.anomalies.length
-    ? result.anomalies.map((a) => ({ range: [a.start, a.end] as [number, number], type: a.type, sev: (a.type.includes('电弧') ? 'orange' : 'red') as 'orange' | 'red' }))
-    : [{ range: anomalA, type: '电弧不稳', sev: 'orange' as const }, { range: anomalB, type: '飞溅倾向', sev: 'red' as const }];
+  }, [dataId, versionId, signalSource]);
+  const anomalies = (result?.anomalies ?? []).map((a) => ({ range: [a.start, a.end] as [number, number], type: a.type, sev: (a.type.includes('电弧') ? 'orange' : 'red') as 'orange' | 'red' }));
   const filterChanObj = channels.find((c) => c.id === filterChan) ?? channels[0];
   // 信号已由后端按滤波参数计算（getSignals 带 filter 时返回滤波后值），此处直接用
   const filteredValues = filterChanObj.values;
-  const seg = result?.segments ?? { normal: 92.4, arc_instability: 5.1, sputter: 2.5 };
+  const seg = result?.segments;
   const modes = ['时域', 'PSD', 'STFT', 'DWT', '小波分解'];
-  return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" exportType="analysis" exportRefIds={versionId != null ? [versionId] : undefined} />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />REG-20260815-00248</span><h2>焊缝 · MAG 短路过渡样本</h2><p>Fronius CMT · Q235B · 6 mm · 2026-08-15 09:42</p></div><div className="analysis-kpis"><div><span>核验状态</span><strong className="accent-text">通过</strong></div><div><span>有效焊接段</span><strong>3.86 s</strong></div><div><span>异常区段</span><strong className="warning-text">{anomalies.length} 个</strong></div></div></div>
+  return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" exportType="analysis" exportRefIds={versionId != null ? [versionId] : undefined} />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />REG-20260815-00248</span><h2>焊缝 · MAG 短路过渡样本</h2><p>Fronius CMT · Q235B · 6 mm · 2026-08-15 09:42</p><div className="source-status"><span className={signalSource === 'real' ? 'real' : 'generated'}>{signalsLoading ? '信号加载中…' : signalSource === 'real' ? '真实信号' : '信号不可用'}</span>{result && <span>分析结果已完成</span>}</div></div><div className="analysis-kpis"><div><span>核验状态</span><strong className="accent-text">通过</strong></div><div><span>有效焊接段</span><strong>3.86 s</strong></div><div><span>异常区段</span><strong className="warning-text">{result ? `${anomalies.length} 个` : '—'}</strong></div></div></div>{signalError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{signalError}</div>}{resultError && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{resultError}</div>}
   <div className="explore-layout">
     <section className="panel explore-main">
       <div className="panel-heading"><div><h2>多模态信号联动</h2><p>勾选通道任意组合，拖动波形同步定位 — 当前：{modeLabel(mode)}</p></div><div className="mode-tabs">{modes.map((item) => <button className={mode === item ? 'active' : ''} onClick={() => setMode(item)} key={item}>{item}</button>)}</div></div>
@@ -2267,7 +2283,7 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
       <div className="event-track"><span>起弧 <b>00:00.42</b></span><i /><span>稳态焊接 <b>00:00.78 - 00:04.28</b></span><i /><span>收弧 <b>00:04.86</b></span></div>
       <div className="anomaly-summary"><div className="anomaly-summary-head"><AlertTriangle size={14} /><span>已检出异常区段 {anomalies.length} 个 · 点击可定位</span></div>{anomalies.map((a, i) => <button key={i} className={`anomaly-chip ${a.sev}`} onClick={() => setCursor((a.range[0] + a.range[1]) / 2)}><i /><strong>{a.type}</strong><small>{fmt(a.range[0])} – {fmt(a.range[1])}</small><span>定位 <ArrowUpRight size={12} /></span></button>)}</div>
       <div className="signal-cards">{channels.map((c) => <div key={c.id} className={active.has(c.id) ? '' : 'dim'}><Waves size={16} /><span>{c.name}波形<strong>{c.mean}</strong></span></div>)}</div></>}
-      {mode === 'PSD' && <div className="spectrum-view"><div className="spectrum-head"><span><FilterIcon size={14} />功率谱密度 · Welch 法</span><small>目标通道：{filterChanObj.name}（{filterOn ? `已滤波 ${filterType}` : '原始信号'}）</small></div><PsdChart values={filteredValues} color={filterChanObj.color} lo={filterChanObj.lo} hi={filterChanObj.hi} freqs={psdData?.freqs} psd={psdData?.psd} /><div className="spectrum-note"><BarChart3 size={13} /><span>主峰集中在低频段（短路过渡频率），异常区段在 2-5 kHz 存在次峰。</span></div></div>}
+      {mode === 'PSD' && <div className="spectrum-view">{analysisLoading && <p className="dataset-empty-state" role="status">PSD 正在计算…</p>}{analysisError && <p className="dataset-empty-state" role="alert">{analysisError}</p>}<div className="spectrum-head"><span><FilterIcon size={14} />功率谱密度 · Welch 法</span><small>目标通道：{filterChanObj.name}（{filterOn ? `已滤波 ${filterType}` : '原始信号'}）</small></div><PsdChart values={filteredValues} color={filterChanObj.color} lo={filterChanObj.lo} hi={filterChanObj.hi} freqs={psdData?.freqs} psd={psdData?.psd} /><div className="spectrum-note"><BarChart3 size={13} /><span>主峰集中在低频段（短路过渡频率），异常区段在 2-5 kHz 存在次峰。</span></div></div>}
       {mode === 'STFT' && <div className="spectrum-view"><div className="spectrum-head"><span><Activity size={14} />短时傅里叶变换时频图</span><small>目标通道：{filterChanObj.name}</small></div><StftHeatmap values={filteredValues} color={filterChanObj.color} magnitude={stftData?.magnitude} /><div className="spectrum-note"><Waves size={13} /><span>时频图可观察到 1.9-2.3s 和 3.6-3.9s 两个异常区段的高频能量抬升。</span></div></div>}
       {mode === 'DWT' && <div className="spectrum-view"><div className="spectrum-head"><span><Layers3 size={14} />离散小波分解（4 层 · db4）</span><small>目标通道：{filterChanObj.name}</small></div><DwtChart values={filteredValues} color={filterChanObj.color} bands={dwtData?.bands} approx={dwtData?.approx} /><div className="spectrum-note"><Gauge size={13} /><span>D1-D4 为细节系数、A4 为近似系数，异常在 D1-D2 高频层最明显。</span></div></div>}
       {mode === '小波分解' && <div className="spectrum-view"><div className="spectrum-head"><span><Waves size={14} />小波多层分量分解</span><small>目标通道：{filterChanObj.name} · 5 层</small></div><WaveletDecomp values={filteredValues} color={filterChanObj.color} bands={waveletData?.bands} /><div className="spectrum-note"><Layers3 size={13} /><span>L1-L5 由低到高展示不同尺度的小波分量，低层捕捉高频瞬变。</span></div></div>}
@@ -2285,10 +2301,10 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
       </section>
       <section className="panel explore-result-panel">
         <div className="panel-heading"><div><h2>分析结果</h2><p>AI 异常检测模型 v1.8</p></div><Sparkles size={16} className="accent-text" /></div>
-        <div className="result-score"><strong>{result ? result.stability.toFixed(1) : 96.8}%</strong><span>焊接稳定度</span></div>
-        <div className="result-row"><span><i className="result-dot green" />正常区段</span><strong>{seg.normal.toFixed(1)}%</strong></div>
-        <div className="result-row"><span><i className="result-dot orange" />电弧不稳</span><strong>{seg.arc_instability.toFixed(1)}%</strong></div>
-        <div className="result-row"><span><i className="result-dot red" />飞溅倾向</span><strong>{seg.sputter.toFixed(1)}%</strong></div>
+        <div className="result-score"><strong>{result ? `${result.stability.toFixed(1)}%` : '—'}</strong><span>焊接稳定度</span></div>
+        <div className="result-row"><span><i className="result-dot green" />正常区段</span><strong>{seg ? `${seg.normal.toFixed(1)}%` : '—'}</strong></div>
+        <div className="result-row"><span><i className="result-dot orange" />电弧不稳</span><strong>{seg ? `${seg.arc_instability.toFixed(1)}%` : '—'}</strong></div>
+        <div className="result-row"><span><i className="result-dot red" />飞溅倾向</span><strong>{seg ? `${seg.sputter.toFixed(1)}%` : '—'}</strong></div>
         <button className="full-button small-button">查看异常详情 <ArrowUpRight size={14} /></button>
       </section>
     </aside>
@@ -2615,43 +2631,10 @@ function ModelTestLive() {
 
 function InfoRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={accent ? 'accent-text' : ''}>{value}</strong></div>; }
 
-const mockTsFeatures = [
-  { name: '均值', cur: '180.2', vol: '22.4', gas: '18.0', wir: '7.0' },
-  { name: '方差', cur: '142.8', vol: '3.2', gas: '0.8', wir: '0.4' },
-  { name: '峰值', cur: '246.1', vol: '28.3', gas: '21.2', wir: '8.6' },
-  { name: '偏度', cur: '0.12', vol: '-0.08', gas: '0.31', wir: '0.05' },
-  { name: '峰度', cur: '2.94', vol: '3.12', gas: '2.67', wir: '2.81' },
-  { name: 'RMS', cur: '182.1', vol: '22.5', gas: '18.0', wir: '7.0' },
-  { name: 'FFT 主频', cur: '39.2 Hz', vol: '37.8 Hz', gas: '12.4 Hz', wir: '11.1 Hz' },
-  { name: '小波能量', cur: '8.42', vol: '1.86', gas: '0.72', wir: '0.38' },
-];
-const mockVisionFeatures = [
-  { name: '熔池面积', value: '1,284 px²', desc: '分割掩膜像素统计' },
-  { name: '熔池周长', value: '186 px', desc: '边缘轮廓长度' },
-  { name: '长宽比', value: '2.34', desc: '外接矩形长/宽' },
-  { name: '圆形度', value: '0.72', desc: '4πA/P²' },
-  { name: '灰度均值', value: '128.4', desc: '熔池区域平均灰度' },
-  { name: '纹理对比度', value: '0.46', desc: 'GLCM 对比度' },
-  { name: '纹理能量', value: '0.82', desc: 'GLCM 角二阶矩' },
-  { name: '边缘梯度', value: '34.2', desc: 'Sobel 梯度均值' },
-];
-const mockAudioFeatures = [
-  { name: '频带能量 (0-1kHz)', value: '24.6 dB' },
-  { name: '频带功率 (1-5kHz)', value: '18.3 dB' },
-  { name: '总功率谱密度', value: '0.042' },
-  { name: '质心频率', value: '2.14 kHz' },
-  { name: '频谱滚降', value: '4.2 kHz' },
-  { name: '过零率', value: '0.038' },
-];
-const mockUnifiedVector = [
-  { group: '时序·电流', dims: 8, range: '[0:8]', tone: '#2c9caf' },
-  { group: '时序·电压', dims: 8, range: '[8:16]', tone: '#67cdb0' },
-  { group: '时序·气体', dims: 6, range: '[16:22]', tone: '#f0a34a' },
-  { group: '时序·送丝', dims: 6, range: '[22:28]', tone: '#75add1' },
-  { group: '视觉·几何', dims: 4, range: '[28:32]', tone: '#b89ac4' },
-  { group: '视觉·纹理', dims: 4, range: '[32:36]', tone: '#b89ac4' },
-  { group: '声音·频带', dims: 6, range: '[36:42]', tone: '#d4a05a' },
-];
+type FeatureTableRow = { name: string; cur: string; vol: string; gas: string; wir: string };
+type VisionFeatureRow = { name: string; value: string; desc: string };
+type AudioFeatureRow = { name: string; value: string };
+type UnifiedFeatureRow = { group: string; dims: number; range: string; tone: string };
 const TS_ROWS: [string, string][] = [
   ['mean', '均值'], ['variance', '方差'], ['peak', '峰值'], ['skewness', '偏度'],
   ['kurtosis', '峰度'], ['rms', 'RMS'], ['fft_dominant_freq', 'FFT 主频'], ['wavelet_energy', '小波能量'],
@@ -2712,11 +2695,14 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
   const [exportFmt, setExportFmt] = useState('NPY');
   const [versionId, setVersionId] = useState<number | null>(null);
   const [extractionId, setExtractionId] = useState<number | null>(null);
-  const [tsRows, setTsRows] = useState(mockTsFeatures);
-  const [visionRows, setVisionRows] = useState(mockVisionFeatures);
-  const [audioRows, setAudioRows] = useState(mockAudioFeatures);
-  const [unified, setUnified] = useState(mockUnifiedVector);
-  const [totalDims, setTotalDims] = useState(mockUnifiedVector.reduce((s, v) => s + v.dims, 0));
+  const [tsRows, setTsRows] = useState<FeatureTableRow[]>([]);
+  const [visionRows, setVisionRows] = useState<VisionFeatureRow[]>([]);
+  const [audioRows, setAudioRows] = useState<AudioFeatureRow[]>([]);
+  const [unified, setUnified] = useState<UnifiedFeatureRow[]>([]);
+  const [totalDims, setTotalDims] = useState(0);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const [modalityStatus, setModalityStatus] = useState<FeatureExtraction['modality_status'] | null>(null);
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
@@ -2725,23 +2711,28 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
   }, [dataId]);
   const handleExtract = () => {
     if (!dataId || versionId == null) { console.warn('[features] Version has not been resolved; please try again later'); return; }
+    setExtracting(true);
+    setExtractError(null);
     extractFeatures({ weld_id: dataId, version_id: versionId, normalization: normMethod === 'L2 范数' ? 'L2' : normMethod, format: exportFmt })
       .then((res) => {
         setExtractionId(res.id);
         setTsRows(mapTsRows(res));
         setVisionRows(mapVisionRows(res));
         setAudioRows(mapAudioRows(res));
+        setModalityStatus(res.modality_status ?? null);
         const mapped = mapUnifiedGroups(res.unified_vector);
         if (mapped.length) { setUnified(mapped); setTotalDims(res.unified_vector.total_dims); }
         setNormMethod(res.normalization === 'L2' ? 'L2 范数' : res.normalization);
       })
-      .catch((err) => console.warn('[features] extractFeatures failed', err));
+      .catch((err) => { setExtractError('特征提取失败，未显示演示值。请检查数据版本和模态文件后重试。'); console.warn('[features] extractFeatures failed', err); })
+      .finally(() => setExtracting(false));
   };
-  return <div className="page-wrap"><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从时序、视觉、声音模态提取代表性特征，输出统一特征向量供融合层使用。" action={<Toolbar action="执行提取" secondary="导出特征集" onAction={handleExtract} exportType="features" exportRefIds={extractionId != null ? [extractionId] : undefined} />} />
+  const fallbackModalities = modalityStatus ? Object.entries(modalityStatus).filter(([, status]) => status === 'fallback').map(([name]) => ({ timeseries: '时序', vision: '视觉', audio: '声音' } as Record<string, string>)[name] ?? name) : [];
+  return <div className="page-wrap"><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从时序、视觉、声音模态提取代表性特征，输出统一特征向量供融合层使用。" action={<Toolbar action={extracting ? '提取中…' : '执行提取'} secondary="导出特征集" onAction={handleExtract} exportType="features" exportRefIds={extractionId != null ? [extractionId] : undefined} actionDisabled={extracting || !dataId || versionId == null} />} />{extractError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{extractError}</div>}{fallbackModalities.length > 0 && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{fallbackModalities.join('、')}模态未检测到真实文件，本次结果包含回退特征，请勿用于生产判定。</div>}
     <div className="feature-layout">
       <section className="panel feature-modality-panel">
         <div className="panel-heading"><div><h2>时序信号特征</h2><p>电流 / 电压 / 气体流量 / 送丝速度 · 统计 + 频域 + 时频</p></div><Waves size={17} className="accent-text" /></div>
-        <div className="feature-table-wrap">
+        {extracting && <p className="dataset-empty-state" role="status">正在计算时序、视觉和声音特征…</p>}<div className="feature-table-wrap">
           <div className="feature-table">
             <div className="ft-row ft-head"><span>特征</span><span style={{ color: '#2c9caf' }}>电流</span><span style={{ color: '#67cdb0' }}>电压</span><span style={{ color: '#f0a34a' }}>气体</span><span style={{ color: '#75add1' }}>送丝</span></div>
             {tsRows.map((f) => <div className="ft-row" key={f.name}><span>{f.name}</span><span className="mono">{f.cur}</span><span className="mono">{f.vol}</span><span className="mono">{f.gas}</span><span className="mono">{f.wir}</span></div>)}
@@ -2789,7 +2780,7 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
           <div className="fp-step"><Boxes size={15} /><span>特征拼接 · {totalDims} 维</span></div><i>↓</i>
           <div className="fp-step"><Check size={15} /><span>归一化 · 输出向量</span></div>
         </div>
-        <div className="pipeline-note"><FileText size={14} /><span>当前为演示数据，接入后端后特征值由对应模型实时计算。</span></div>
+        <div className="pipeline-note"><FileText size={14} /><span>{extractionId ? '结果已由后端计算并保存，可从当前数据版本追溯。' : '尚未执行提取。执行后才会展示真实计算结果，不使用演示数值。'}</span></div>
       </section>
     </div>
   </div>;

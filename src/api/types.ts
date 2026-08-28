@@ -164,6 +164,11 @@ export interface FeatureExtraction {
   normalization: string;
   format: string;
   created_at: string | null;
+  modality_status?: {
+    timeseries?: 'available' | 'fallback';
+    vision?: 'available' | 'fallback';
+    audio?: 'available' | 'fallback';
+  };
 }
 
 export interface DatasetQuality {
@@ -375,6 +380,7 @@ export type AnalysisViewData =
   | PddData;
 
 export interface AnalysisResult {
+  source?: 'real' | 'generated';
   stability: number;
   segments: {
     normal: number;
