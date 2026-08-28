@@ -1398,7 +1398,7 @@ function Registration() {
         try {
           // 统一预签名直传（跳过后端代理：实测吞吐 ~2×，XHR 可回显进度）。
           // prefix 用 raw/（业务原始文件区）——不要用 uploads/（有 30 天生命周期清理）。
-          const { object_key, upload_url } = await presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw' });
+          const { object_key, upload_url } = await presignUpload({ size: file.size, content_type: file.type || 'application/octet-stream', prefix: 'raw', filename: file.name });
           await putFileDirect(upload_url, file, (percent) => setUploads((prev) => ({ ...prev, [zone.key]: { status: 'uploading', fileName: file.name, progress: percent } })));
           keys.push(object_key);
           setUploads((prev) => ({ ...prev, [zone.key]: { status: 'done', fileName: file.name } }));

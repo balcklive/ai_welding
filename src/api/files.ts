@@ -31,6 +31,7 @@ export async function presignUpload(req: {
   size: number;
   content_type: string;
   prefix: string;
+  filename?: string;
 }): Promise<{ object_key: string; upload_url: string }> {
   return request<{ object_key: string; upload_url: string }>(
     '/files/presign-upload',
