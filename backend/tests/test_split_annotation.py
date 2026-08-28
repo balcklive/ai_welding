@@ -904,6 +904,19 @@ def test_annotation_video_source_creates_anchor_and_frames(
     resp = client.post("/api/v1/annotation-tasks", json={"source": "video"})
     assert resp.status_code == 400 and resp.json()["code"] == 40000
 
+    # 非视频任务不能创建帧；不含视频对象的版本不能创建视频任务。
+    manual_job_id = _create_annotation_task("manual")
+    resp = client.post(
+        f"/api/v1/annotation-tasks/{manual_job_id}/frames", json={"timestamp": 1.0}
+    )
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+    no_video_vid = _version_id_by_no(WELD_0248, "v1.1")
+    resp = client.post(
+        "/api/v1/annotation-tasks",
+        json={"source": "video", "version_id": no_video_vid},
+    )
+    assert resp.status_code == 400 and resp.json()["code"] == 40000
+
 
 # ---------- 标注产物导出（P3：video 掩膜 / signal segment JSON） ----------
 
@@ -927,14 +940,6 @@ class FakeStorageExport:
 
     def delete_object(self, object_key):
         pass
-
-
-#: 1x1 白色 JPEG（base64，Pillow 可打开）——掩膜导出测试的假抽帧产物。
-_JPEG_1X1_B64 = (
-    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRof"
-    "Hh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAA"
-    "AAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q=="
-)
 
 
 def test_export_signal_segment_labels(
@@ -967,7 +972,7 @@ def test_export_signal_segment_labels(
     assert data["labels"][0]["end_time"] == 2.8
     assert data["labels_url"].startswith("https://minio/")
     keys = {k for k, _d, _t in storage.uploads}
-    assert any(k.endswith("segments_") and k.endswith(".json") for k in keys)
+    assert any("/segments_" in k and k.endswith(".json") for k in keys)
 
 
 def test_export_video_masks(
@@ -977,7 +982,6 @@ def test_export_video_masks(
     executor_sessionlocal,
     monkeypatch,
 ) -> None:
-    import base64
     import io
 
     from PIL import Image
@@ -999,9 +1003,11 @@ def test_export_video_masks(
     def _fake_analyze(data, events):
         # 防回归：event_points 必须是 [(event, t)] 元组列表（media_probe 逐事件解包）
         assert isinstance(events, list) and events and isinstance(events[0], tuple) and events[0][1] == 2.5
+        frame = io.BytesIO()
+        Image.new("RGB", (2, 2), "white").save(frame, format="JPEG")
         return (
-            {"duration": 5.42, "width": 1, "height": 1},
-            [{"event": "frame", "t": 2.5, "bytes": base64.b64decode(_JPEG_1X1_B64)}],
+            {"duration": 5.42, "width": 2, "height": 2},
+            [{"event": "frame", "t": 2.5, "bytes": frame.getvalue()}],
         )
 
     storage = FakeStorageExport()
@@ -1023,7 +1029,7 @@ def test_export_video_masks(
     assert any(k.endswith(".jpg") for k in keys)
     assert any(k.endswith(".png") for k in keys)
     png = [d for k, d, _t in storage.uploads if k.endswith(".png")][0]
-    assert Image.open(io.BytesIO(png)).size == (1, 1)
+    assert Image.open(io.BytesIO(png)).size == (2, 2)
 
 
 def test_export_manual_source_returns_400(

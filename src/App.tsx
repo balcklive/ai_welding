@@ -657,22 +657,37 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
   const [captureKey, setCaptureKey] = useState(0);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const taskCreatedRef = useRef(false);
+  const taskDataIdRef = useRef<string | null>(null);
   const sampleByTime = useRef<Map<number, number>>(new Map());
   const { status: jobStatus } = useJob<unknown>(taskId);
 
-  // 解析选中焊缝最新版本并创建 video 标注任务（best-effort；StrictMode 双执行闸门放异步 resolve 后）
+  // 选择版本链中最新的含视频版本并创建任务；信号处理等最新版本可能不再携带视频对象。
   useEffect(() => {
     if (!dataId) return;
+    if (taskDataIdRef.current !== dataId) {
+      setTaskId(null);
+      setVideoUrl(null);
+      setFrameImage(null);
+      setSaved(false);
+      setSavedFrames([]);
+      sampleByTime.current.clear();
+    }
     let cancelled = false;
-    getWeld(dataId).then((w) => {
+    listVersions(dataId).then((versions) => {
       if (cancelled) return;
-      const vid = w.latest_version_id;
-      if (vid == null) return;
-      if (taskCreatedRef.current) return;
-      taskCreatedRef.current = true;
-      createAnnotationTask({ source: 'video', version_id: vid, name: 'AN-视频' }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => console.warn('[annotation.video] createAnnotationTask failed', err));
-    }).catch((err) => console.warn('[annotation.video] getWeld failed', err));
+      const version = [...versions].reverse().find((v) =>
+        (v.object_keys ?? []).some((key) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key)),
+      );
+      if (!version) return;
+      if (taskDataIdRef.current === dataId) return;
+      taskDataIdRef.current = dataId;
+      createAnnotationTask({ source: 'video', version_id: version.id, name: 'AN-视频' })
+        .then((res) => { if (!cancelled) setTaskId(res.job_id); })
+        .catch((err) => {
+          if (taskDataIdRef.current === dataId) taskDataIdRef.current = null;
+          console.warn('[annotation.video] createAnnotationTask failed', err);
+        });
+    }).catch((err) => console.warn('[annotation.video] listVersions failed', err));
     return () => { cancelled = true; };
   }, [dataId]);
 
@@ -680,7 +695,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
   useEffect(() => {
     if (!taskId || jobStatus !== 'succeeded') return;
     let cancelled = false;
-    listAnnotationSamples(taskId, 1).then((page) => {
+    listAnnotationSamples(taskId, 1, 100).then((page) => {
       if (cancelled) return;
       const anchor = page.items.find((s) => s.meta?.mode === 'video');
       if (anchor) {

@@ -31,6 +31,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from loguru import logger
 from sqlmodel import Session, func, select
 
 from app.models.analysis import (
@@ -436,7 +437,13 @@ def _export_video_masks(session: Session, task: AnnotationTask, storage) -> dict
         try:
             # event_points 需 [(event, t)] 元组列表（media_probe 逐事件抽帧解包）
             _meta, keyframes = media_probe.analyze_video(video_bytes, [("frame", float(ts))])
-        except Exception:  # noqa: BLE001 - 单帧抽帧失败跳过该帧，不阻塞整体导出
+        except Exception as exc:  # noqa: BLE001 - 单帧抽帧失败跳过该帧，不阻塞整体导出
+            logger.warning(
+                "[annotation.export] 跳过抽帧失败样本: sample_id={} timestamp={} err={}",
+                sample.id,
+                ts,
+                exc,
+            )
             continue
         if not keyframes:
             continue

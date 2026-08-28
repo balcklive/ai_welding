@@ -666,6 +666,8 @@ def create_annotation_task(
         video_key = next(
             (k for k in (version.object_keys or []) if _is_video_key(k)), None
         )
+        if video_key is None:
+            return err(40000, "所选版本不包含可标注视频", status=400)
         video_anchor = {
             "weld_id": record.weld_id if record is not None else None,
             "version_id": body.version_id,
@@ -932,6 +934,8 @@ def create_annotation_frame(
     task = annotation.resolve_annotation_task(session, task_id)
     if task is None:
         return err(40401, "标注任务不存在", status=404)
+    if task.source != "video":
+        return err(40000, "仅视频标注任务可创建帧样本", status=400)
     ts = body.timestamp
     if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts < 0:
         return err(40000, "timestamp 需为非负数值（秒）", status=400)
@@ -946,6 +950,8 @@ def create_annotation_frame(
     video_meta = next(
         ((s.meta or {}) for s in anchors if (s.meta or {}).get("mode") == "video"), {}
     )
+    if not video_meta.get("video_key"):
+        return err(40000, "视频标注任务缺少有效视频锚点", status=400)
     sample = Sample(
         annotation_task_id=task.id,
         meta={

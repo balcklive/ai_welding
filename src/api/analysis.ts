@@ -182,9 +182,10 @@ export async function importAnnotationSamples(
 export async function listAnnotationSamples(
   taskId: string,
   page: number,
+  pageSize?: number,
 ): Promise<Page<Sample>> {
   return request<Page<Sample>>(`/annotation-tasks/${taskId}/samples`, {
-    query: { page },
+    query: { page, page_size: pageSize },
   });
 }
 
