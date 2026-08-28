@@ -241,7 +241,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} />}{showContext && <SelectionContext dataId={selectedDataId!} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
+  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
 }
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-intro"><div><div className="eyebrow"><span />{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>; }
@@ -885,10 +885,11 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
     </div>
   );
 }
-function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void }) {
+function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, showContext, onChange }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; showContext: boolean; onChange?: () => void }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [welds, setWelds] = useState<DataRecord[]>([]);
   const [loadingWelds, setLoadingWelds] = useState(false);
+  const [row, setRow] = useState<WeldRow | null>(null);
   useEffect(() => {
     let cancelled = false;
     listDatasets().then((list) => {
@@ -909,25 +910,26 @@ function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDa
     });
     return () => { cancelled = true; };
   }, [selectedDatasetId]);
+  useEffect(() => {
+    if (!selectedDataId) { setRow(null); return; }
+    let cancelled = false;
+    setRow(null);
+    getWeld(selectedDataId)
+      .then((weld) => { if (!cancelled) setRow(toWeldRow(weld)); })
+      .catch((err) => {
+        if (!cancelled) {
+          setRow(mockWeldRows.find((item) => item.id === selectedDataId) ?? mockWeldRows[0]);
+          console.warn('[selection] getWeld failed', err);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [selectedDataId]);
   return <div className="selection-switcher" role="region" aria-label="当前数据上下文">
     <div className="selection-switcher-title"><Database size={15} /><span>当前处理数据</span></div>
     <label className="filter-field">数据集<select value={selectedDatasetId ?? ''} onChange={(event) => { const id = event.target.value ? Number(event.target.value) : null; setSelectedDatasetId(id); setSelectedDataId(null); }}><option value="">请选择数据集</option>{datasets.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
     <label className="filter-field">焊缝数据<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || loadingWelds} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{loadingWelds ? '数据加载中…' : '请选择一条焊缝数据'}</option>{welds.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
-    <span className="selection-switcher-hint">{selectedDatasetId == null || !selectedDataId ? '选择数据集和焊缝后，分析与标注功能可用' : `已选：${selectedDataId}`}</span>
+    {showContext && selectedDataId ? <div className="selection-switcher-details"><div><span>焊缝</span><strong>{row?.id ?? '加载中…'}</strong></div><div><span>来源</span><strong>{row?.source ?? '—'}</strong></div><div><span>焊机</span><strong>{row?.machine ?? '—'}</strong></div><div><span>版本</span><strong>{row?.version ?? '—'}</strong></div>{row && <StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill>}{onChange && <button className="ghost-button selection-context-change" onClick={onChange}>更换数据 <ArrowUpRight size={13} /></button>}</div> : <span className="selection-switcher-hint">选择数据集和焊缝后，分析与标注功能可用</span>}
   </div>;
-}
-
-function SelectionContext({ dataId, onChange }: { dataId: string; onChange?: () => void }) {
-  // 初始为空：getWeld 返回前不得闪现 mock 行，mock 仅作失败兜底（见下方 catch）
-  const [row, setRow] = useState<WeldRow | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    getWeld(dataId)
-      .then((r) => { if (!cancelled) setRow(toWeldRow(r)); })
-      .catch((err) => { if (!cancelled) { setRow(mockWeldRows.find((item) => item.id === dataId) ?? mockWeldRows[0]); console.warn('[selection] getWeld failed', err); } });
-    return () => { cancelled = true; };
-  }, [dataId]);
-  return <div className="selection-context"><div><span>当前处理焊缝</span><strong>{row?.id ?? '加载中…'}</strong></div><div><span>数据来源</span><strong>{row?.source ?? '—'}</strong></div><div><span>焊机</span><strong>{row?.machine ?? '—'}</strong></div><div><span>当前版本</span><strong>{row?.version ?? '—'}</strong></div>{row && <StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill>}{onChange && <button className="ghost-button selection-context-change" onClick={onChange}>更换数据 <ArrowUpRight size={13} /></button>}</div>;
 }
 
 function SelectionRequired({ onBack }: { onBack: () => void }) {
