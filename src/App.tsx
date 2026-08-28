@@ -645,9 +645,8 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
  * 重置每帧）→ 点标注器自带保存（onExit）→ 归一化 × 帧宽高转像素 → createAnnotationFrame 建帧样本
  * → saveAnnotation(kind='polygon', category='熔池')。已标注帧在侧栏展示。
  */
-function AnnotationVideo({ embedded = false, dataId, onBack }: { embedded?: boolean; dataId?: string; onBack: () => void }) {
+function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: string; onBack: () => void }) {
   const [taskId, setTaskId] = useState<string | null>(null);
-  const [versionId, setVersionId] = useState<number | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [frameImage, setFrameImage] = useState<string | null>(null);
   const [frameW, setFrameW] = useState(1280);
@@ -670,7 +669,6 @@ function AnnotationVideo({ embedded = false, dataId, onBack }: { embedded?: bool
       if (cancelled) return;
       const vid = w.latest_version_id;
       if (vid == null) return;
-      setVersionId(vid);
       if (taskCreatedRef.current) return;
       taskCreatedRef.current = true;
       createAnnotationTask({ source: 'video', version_id: vid, name: 'AN-视频' }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => console.warn('[annotation.video] createAnnotationTask failed', err));
@@ -726,8 +724,9 @@ function AnnotationVideo({ embedded = false, dataId, onBack }: { embedded?: bool
   };
 
   // react-image-annotate 保存（onExit）：把归一化多边形转像素 → 建帧样本 → 保存 kind='polygon'
-  const handleExit = (state: { images?: Array<{ regions?: Array<{ type?: string; points?: number[][]; cls?: string; open?: boolean }> }> }) => {
-    const regions = state.images?.[0]?.regions ?? [];
+  // 库的 onExit 把 regions 类型标成 unknown[]，先按宽松签名接参、内部收窄（TS 逆变要求）
+  const handleExit = (state: { images?: Array<{ regions?: unknown[] }> }) => {
+    const regions = (state.images?.[0]?.regions ?? []) as Array<{ type?: string; points?: number[][]; cls?: string; open?: boolean }>;
     // 全部闭合多边形都保存（单类熔池，可一帧多区域），空画布不误报已保存
     const polys = regions.filter((r) => (r.points?.length ?? 0) >= 3 && r.open !== true);
     if (!polys.length || !taskId || !frameImage) return;
