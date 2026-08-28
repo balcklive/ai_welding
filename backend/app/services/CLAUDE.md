@@ -183,7 +183,7 @@
 
 - `models.py`：**Task 16**。模型中心服务，供 `app/api/v1/models.py` 路由调用（契约 §3.6）：
   - `create_model`（同名抛 ValueError → 路由 409）/ `list_models`（**汇总 + 列表**：summary
-    `{total, prod_candidates, recent_training, gpu_usage=42}`，单条查询取全部 model_versions
+    `{total, prod_candidates, recent_training}`，单条查询取全部 model_versions
     按 id 倒序取每条模型最新版本，避免 N+1）/ `get_model`（详情 + 版本列表）/
     `model_payload` / `version_payload`。
   - `update_version_status`（PATCH：status 白名单 生产候选/训练中/实验版本 校验抛 ValueError；

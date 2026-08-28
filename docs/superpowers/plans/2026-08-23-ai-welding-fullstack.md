@@ -532,7 +532,7 @@ def paginate(items: list, total: int, page: int, page_size: int) -> dict:
 
 **Interfaces:**
 - Produces（对齐 `API接口清单.md` §3.6）：
-  - `GET /models` → `ok({summary:{total, prod_candidates, recent_training, gpu_usage}, models[]})`；`GET /models/{id}`；`POST /models` `{name, type, description?}`；`PATCH /models/{id}/versions/{vid}` `{status?, note?}`（状态流转）。
+  - `GET /models` → `ok({summary:{total, prod_candidates, recent_training}, models[]})`；`GET /models/{id}`；`POST /models` `{name, type, description?}`；`PATCH /models/{id}/versions/{vid}` `{status?, note?}`（状态流转）。
   - `POST /training-tasks` body `{dataset_version_id, base_model_id, epochs, batch_size, learning_rate, val_ratio, ...}` → `{job_id}`；`GET /training-tasks/{task_id}` → Job（result 含 `metrics{mAP50, precision, recall}` + `loss_curve{train[], val[]}` + `progress`）；`GET /training-tasks/{task_id}/logs` → `ok(log_text)`。**训练成功自动生成 `model_versions`（status=实验版本）+ 权重写 `models/{model_version_id}/weights.pt`**。
   - `POST /test-tasks` `{model_version_id, dataset_version_id, tasks[]}` → `{job_id}`；`GET /test-tasks/{task_id}` → Job（result：accuracy/recall/f1/latency + confusion_matrix）。
   - `POST /inference-tasks` `{model_version_id, input, input_type}` → `{job_id}`；`GET /inference-tasks/{task_id}` → Job（result：boxes/categories/confidence/latency）。

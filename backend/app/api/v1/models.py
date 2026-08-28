@@ -93,7 +93,7 @@ class InferenceTaskCreate(BaseModel):
 
 @router.get("/models")
 def list_models(session: Session = Depends(get_session)) -> dict:
-    """模型仓库列表 + 汇总（总数/生产候选/最近训练/GPU 资源），含各模型最新版本。"""
+    """模型仓库列表 + 汇总（总数/生产候选/最近训练），含各模型最新版本。"""
     return ok(svc.list_models(session))
 
 

@@ -47,9 +47,6 @@ _PROGRESS_SLEEP: float = 0.005
 #: 模型版本状态白名单（契约 §3.18 / §3.6 PATCH）。
 MODEL_VERSION_STATUSES: tuple[str, ...] = ("生产候选", "训练中", "实验版本")
 
-#: 模拟 GPU 资源占用（前端 ModelRepository 汇总卡，常量演示值）。
-GPU_USAGE = 42
-
 #: 权重占位 blob（MinIO `models/{id}/weights.pt`，演示不承载真实模型权重）。
 _WEIGHTS_BLOB = b"mock-yolo-weights-placeholder-blob-v1"
 
@@ -80,8 +77,8 @@ def create_model(
 def list_models(session: Session) -> dict:
     """模型仓库列表 + 汇总：`{summary, models[]}`。
 
-    - summary：`{total, prod_candidates, recent_training, gpu_usage}`（均来自
-      `model_versions`/`jobs`；gpu_usage 为常量演示值 42）。
+    - summary：`{total, prod_candidates, recent_training}`，全部来自
+      `models`/`model_versions`/`jobs`。
     - models[]：每个模型含其最新版本（按 id 倒序取首条，id 单调=创建顺序）+ 核心指标。
     单条查询取全部版本，避免逐模型 N+1。
     """
@@ -102,7 +99,6 @@ def list_models(session: Session) -> dict:
         "total": len(models),
         "prod_candidates": prod_candidates,
         "recent_training": _recent_training(session),
-        "gpu_usage": GPU_USAGE,
     }
     items = [model_payload(m, latest.get(m.id)) for m in models]
     return {"summary": summary, "models": items}

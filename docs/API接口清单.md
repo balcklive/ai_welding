@@ -209,7 +209,7 @@
 
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
-| GET | `/api/v1/models` | 模型仓库列表 + 汇总（总数/生产候选/最近训练/GPU 资源） | 需登录 |
+| GET | `/api/v1/models` | 模型仓库列表 + 汇总（总数/生产候选/最近训练） | 需登录 |
 | GET | `/api/v1/models/{model_id}` | 模型详情 | — 需登录 |
 | POST | `/api/v1/models` | 新建模型（登记模型仓库条目，对应模型仓库工具栏"新建模型"） | body: `name`, `type`, `description?` |
 | PATCH | `/api/v1/models/{model_id}/versions/{model_version_id}` | 更新模型版本状态/备注（如置为生产候选） | body: `status?`(生产候选/训练中/实验版本), `note?` |

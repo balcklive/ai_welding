@@ -120,7 +120,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 - `models.py`：**Task 16 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.6，业务逻辑在
   `app.services.models`：
-  - `GET /models`（列表 + 汇总 `{summary:{total, prod_candidates, recent_training, gpu_usage=42},
+  - `GET /models`（列表 + 汇总 `{summary:{total, prod_candidates, recent_training},
     models[]}`，models 含最新版本号/指标/状态/权重键）、`GET /models/{model_id}`（详情 +
     版本列表）、`POST /models`（body `{name, type, description?}`，同名 → 40900，空名/空类型 →
     40000）、`PATCH /models/{model_id}/versions/{vid}`（body `{status?, note?}`，status 白名单

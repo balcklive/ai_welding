@@ -62,6 +62,7 @@ import {
   getModel,
   getTrainingLogs,
   listModels,
+  updateModelVersionStatus,
 } from './api/models';
 import { exportReport } from './api/reports';
 import { useJob } from './hooks/useJob';
@@ -73,6 +74,8 @@ import type {
   DataRecord,
   Dataset,
   DatasetItemRow,
+  DatasetQuality,
+  DatasetSplit,
   DatasetVersion,
   DataVersion,
   DimensionStatus,
@@ -101,18 +104,17 @@ import type {
   TrainingResult,
   ValidationReport,
   ValidationRuleResult,
-  WeldEvent,
   WaveletBand,
   WaveletData,
 } from './api/types';
 import Login from './pages/Login';
 
-type Route = 'overview' | 'data-center/datasets' | 'data-center/registration' | 'data-center/validation' | 'data-center/versions' | 'analysis/select' | 'analysis/alignment' | 'analysis/analysis' | 'analysis/split' | 'analysis/annotation' | 'analysis/features' | 'model-center/repository' | 'model-center/training' | 'model-center/testing' | 'model-center/inference';
+type Route = 'overview' | 'data-center/datasets' | 'data-center/registration' | 'data-center/validation' | 'data-center/versions' | 'analysis/select' | 'analysis/alignment' | 'analysis/analysis' | 'analysis/split' | 'analysis/annotation' | 'analysis/features' | 'model-center/dataset-build' | 'model-center/repository' | 'model-center/training' | 'model-center/testing' | 'model-center/inference';
 
 const workspaceHeaders: Record<string, { eyebrow: string; title: string; description: string }> = {
   'data-center': { eyebrow: '数据资产中心', title: '数据中心', description: '以单条焊缝数据为单位，管理数据上传、质量核验和版本链路。' },
   'analysis': { eyebrow: '多模态数据生产线', title: '分析与标注', description: '选择一条焊缝后，完成对齐、信号分析、切分与标注。' },
-  'model-center': { eyebrow: '模型研发中心', title: '模型中心', description: '统一管理模型版本、训练任务、测试评估与推理验证。' },
+  'model-center': { eyebrow: '模型研发中心', title: '模型中心', description: '从数据到模型：构建训练数据集，统一管理模型版本、训练任务、测试评估与推理验证。' },
 };
 
 const navStructure: { id: string; label: string; icon: typeof BarChart3; route?: Route; children?: { route: Route; label: string }[] }[] = [
@@ -132,6 +134,7 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
     { route: 'analysis/features', label: '特征提取' },
   ] },
   { id: 'model-center', label: '模型中心', icon: TrainFront, children: [
+    { route: 'model-center/dataset-build', label: '数据集构建' },
     { route: 'model-center/repository', label: '模型仓库' },
     { route: 'model-center/training', label: '新建训练' },
     { route: 'model-center/testing', label: '测试评估' },
@@ -200,12 +203,14 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
     : route === 'analysis/annotation' ? { action: '保存标注', secondary: '导出结果' }
     : ws === 'analysis' ? { action: '开始处理', secondary: '导出结果' }
     : route === 'model-center/training' ? { action: '开始训练', secondary: '导出报告' }
+    : route === 'model-center/dataset-build' ? { action: undefined, secondary: '导出报告' }
     : { action: '新建模型', secondary: '导出报告' };
   // 当前页/工作区 → 报告导出 type（§3.7）：data-list/validation/analysis/annotation/features/test。
   const exportType = ws === 'data-center' ? 'data-list'
     : route === 'analysis/annotation' ? 'annotation'
     : route === 'analysis/features' ? 'features'
     : ws === 'analysis' ? 'analysis'
+    : route === 'model-center/dataset-build' ? undefined
     : ws === 'model-center' ? 'test'
     : undefined;
   const handleRepoCreate = () => {
@@ -228,7 +233,8 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <Alignment embedded splitOnly dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <Annotation embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtraction embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} />;
+  else if (route === 'model-center/dataset-build') content = <DatasetBuild />;
+  else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} navigate={navigate} />;
   else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training /></>;
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
@@ -1252,7 +1258,7 @@ function RawSignalPreview({ weldId, versionId, navigate, setSelectedDataId }: { 
 const EMPTY_OBJECT_KEYS: string[] = [];
 
 function RawMediaPreview({ objectKeys, loading = false }: { objectKeys: string[]; loading?: boolean }) {
-  const [urls, setUrls] = useState<{ key: string; url: string }[]>([]);
+  const [urls, setUrls] = useState<{ key: string; sourceKey: string; url: string; preview?: boolean }[]>([]);
   const [processing, setProcessing] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const mediaKeys = useMemo(() => objectKeys.filter((key) => /\.(mp4|avi|mkv|mov|webm|jpg|jpeg|png|webp|bmp|gif)$/i.test(key)), [objectKeys]);
@@ -1266,14 +1272,29 @@ function RawMediaPreview({ objectKeys, loading = false }: { objectKeys: string[]
       try {
         const result = await getFileUrl(key);
         if (result.processing) isProcessing = true;
-        return { key, url: result.url };
+        // The URL endpoint may transparently resolve a raw video to a generated
+        // browser preview. Keep the source key so the raw video can be hidden
+        // when a playable preview is available.
+        return { key: result.object_key ?? key, sourceKey: key, url: result.url, preview: result.preview };
       }
       catch (err) { console.warn('[datasets] media file url failed', key, err); return null; }
     }))
-      .then((results) => results.filter((item): item is { key: string; url: string } => item !== null))
+      .then((results) => results.filter((item): item is { key: string; sourceKey: string; url: string; preview?: boolean } => item !== null))
       .then((next) => {
         if (cancelled) return;
-        setUrls(next);
+        const isVideo = (key: string) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key);
+        const isPreview = (item: { key: string; sourceKey: string; preview?: boolean }) =>
+          item.preview === true || item.key !== item.sourceKey || /(?:^|[./_-])preview(?:[./_-])/i.test(item.key);
+        const hasBrowserPreview = next.some((item) => isVideo(item.key) && isPreview(item));
+        const visible = hasBrowserPreview
+          ? next.filter((item) => !isVideo(item.key) || isPreview(item))
+          : next;
+        // A raw request can resolve to the same preview key as an explicit
+        // *.preview.mp4 object. Avoid rendering the preview twice.
+        const deduped = visible.filter((item, index, all) =>
+          all.findIndex((candidate) => candidate.key === item.key && candidate.url === item.url) === index,
+        );
+        setUrls(deduped);
         setProcessing(isProcessing);
         if (isProcessing) retry = setTimeout(() => { if (!cancelled) setRefresh((value) => value + 1); }, 2000);
       })
@@ -1419,13 +1440,19 @@ function modelMetricText(metric: Record<string, unknown> | null | undefined): st
   if (acc != null) return `Acc ${(acc * 100).toFixed(1)}%`;
   return '—';
 }
-function ModelRepository({ refreshKey = 0 }: { refreshKey?: number }) {
+const modelCatalog = [
+  { name: '熔池分割模型', type: '语义分割', description: '从视频帧中提取熔池区域，服务于熔池形态分析。', icon: ScanLine },
+  { name: '焊接异常检测模型', type: '时序分类', description: '融合电流、电压和送丝信号，识别焊接过程异常。', icon: Activity },
+  { name: '质量预测模型', type: '多模态回归', description: '结合时序、视觉与声音特征，预测焊接质量。', icon: BarChart3 },
+];
+function ModelRepository({ refreshKey = 0, navigate }: { refreshKey?: number; navigate: (route: Route) => void }) {
   const [summary, setSummary] = useState<ModelSummary | null>(null);
   const [models, setModels] = useState<Model[]>([]);
   const [repoLoading, setRepoLoading] = useState(true);
   const [selectedModel, setSelectedModel] = useState<Model | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [exporting, setExporting] = useState<number | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState<number | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -1445,7 +1472,8 @@ function ModelRepository({ refreshKey = 0 }: { refreshKey?: number }) {
   }, [refreshKey]);
   const openDetail = (model: Model) => { setDetailLoading(true); setSelectedModel(model); getModel(String(model.id)).then(setSelectedModel).catch(() => setNotice('模型详情暂时无法读取。')).finally(() => setDetailLoading(false)); };
   const handleExport = (version: ModelVersion) => { if (!selectedModel || exporting != null) return; setExporting(version.id); setNotice(null); exportModelVersion(selectedModel.id, version.id).then(() => setNotice(`已提交 ${version.version_no} 的 ONNX 导出任务。`)).catch(() => setNotice('模型导出暂时不可用，请稍后重试。')).finally(() => setExporting(null)); };
-  return <div className="model-repository"><div className="repository-summary"><div><span>模型总数</span><strong>{summary?.total ?? '—'}</strong></div><div><span>生产候选</span><strong>{summary?.prod_candidates ?? '—'}</strong></div><div><span>最近训练</span><strong>{summary?.recent_training ? fmtDT(summary.recent_training) : '—'}</strong></div><div><span>GPU 资源</span><strong>{summary ? `${summary.gpu_usage}%` : '—'}</strong></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{repoLoading ? <p className="dataset-empty-state" role="status">模型仓库加载中…</p> : models.length ? <div className="model-card-grid">{models.map((model) => <section className="panel model-card" key={model.id}><div className="model-card-top"><div className="model-logo"><Cpu size={17} /></div><StatusPill tone={model.status === '训练中' ? 'orange' : 'green'}>{model.status ?? '无版本'}</StatusPill><MoreHorizontal size={16} className="muted-icon" /></div><h2>{model.name}</h2><p>{model.type} · {model.version ?? '暂无版本'}</p><div className="model-metric"><span>核心指标</span><strong>{modelMetricText(model.metric)}</strong></div><div className="model-card-footer"><span>{model.description ?? '暂无模型描述'}</span><button className="ghost-button" onClick={() => openDetail(model)}>查看详情 <ArrowUpRight size={13} /></button></div></section>)}</div> : <p className="dataset-empty-state">暂无模型，请先新建模型或开始训练。</p>}{selectedModel && <div className="app-dialog-backdrop" role="presentation" onClick={() => setSelectedModel(null)}><section className="app-dialog model-detail-dialog" role="dialog" aria-modal="true" aria-label="模型详情" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>{selectedModel.name}</h2><p>{selectedModel.type} · {selectedModel.description ?? '暂无描述'}</p></div><button className="icon-button" onClick={() => setSelectedModel(null)} aria-label="关闭">×</button></div>{detailLoading ? <p className="dataset-empty-state">详情加载中…</p> : <div className="model-version-list">{selectedModel.versions?.length ? selectedModel.versions.map((version) => <div className="model-version-row" key={version.id}><div><strong>{version.version_no}</strong><span>{version.status} · {modelMetricText(version.metric)}</span><small>{version.created_at ? fmtDT(version.created_at) : '暂无创建时间'}</small></div><button className="outline-button" disabled={!version.file_key || exporting === version.id} onClick={() => handleExport(version)}><Download size={14} />{exporting === version.id ? '导出中…' : '导出 ONNX'}</button></div>) : <p className="dataset-empty-state">该模型暂无版本。</p>}</div>}</section></div>}</div>;
+  const handleStatus = (version: ModelVersion, status: string) => { if (!selectedModel || updatingStatus != null) return; setUpdatingStatus(version.id); setNotice(null); updateModelVersionStatus(String(selectedModel.id), String(version.id), { status }).then((updated) => { setSelectedModel((current) => current ? { ...current, versions: current.versions?.map((item) => item.id === updated.id ? updated : item), status: updated.status, version: updated.version_no, metric: updated.metric, latest_version_id: updated.id } : current); return listModels(); }).then((res) => { setModels(res.models ?? []); setSummary(res.summary); }).catch(() => setNotice('模型状态更新失败，请稍后重试。')).finally(() => setUpdatingStatus(null)); };
+  return <div className="model-repository"><section className="model-repository-hero"><div className="model-repository-hero-icon"><Cpu size={25} /></div><div className="model-repository-hero-copy"><span className="eyebrow"><i />模型资产管理</span><h2>让每个模型版本都可追踪、可评估、可发布</h2><p>模型仓库统一承接模型登记、版本管理、指标评估、权重导出和推理验证。</p></div><button className="primary-button" onClick={() => navigate('model-center/training')}><Play size={15} />开始一次训练</button></section><div className="model-workflow"><div><span>01</span><strong>登记模型</strong><small>建立模型条目</small></div><i>→</i><div><span>02</span><strong>训练版本</strong><small>关联数据集快照</small></div><i>→</i><div><span>03</span><strong>测试评估</strong><small>查看指标与混淆矩阵</small></div><i>→</i><div><span>04</span><strong>发布推理</strong><small>晋级生产并验证样本</small></div></div><div className="repository-summary"><div><span>模型总数</span><strong>{summary?.total ?? '—'}</strong></div><div><span>生产候选</span><strong>{summary?.prod_candidates ?? '—'}</strong></div><div><span>最近训练</span><strong>{summary?.recent_training ? fmtDT(summary.recent_training) : '—'}</strong></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{repoLoading ? <p className="dataset-empty-state" role="status">模型仓库加载中…</p> : models.length ? <div className="model-card-grid">{models.map((model) => <section className="panel model-card" key={model.id}><div className="model-card-top"><div className="model-logo"><Cpu size={17} /></div><StatusPill tone={model.status === '训练中' ? 'orange' : 'green'}>{model.status ?? '无版本'}</StatusPill><MoreHorizontal size={16} className="muted-icon" /></div><h2>{model.name}</h2><p>{model.type} · {model.version ?? '暂无版本'}</p><div className="model-metric"><span>核心指标</span><strong>{modelMetricText(model.metric)}</strong></div><div className="model-card-footer"><span>{model.description ?? '暂无模型描述'}</span><button className="ghost-button" onClick={() => openDetail(model)}>查看详情 <ArrowUpRight size={13} /></button></div></section>)}</div> : <><div className="model-catalog-heading"><div><h2>标准模型目录</h2><p>平台预留的三类模型能力入口，训练完成后会在这里生成版本。</p></div><button className="outline-button" onClick={() => navigate('model-center/training')}><Plus size={14} />新建训练任务</button></div><div className="model-catalog-grid">{modelCatalog.map(({ name, type, description, icon: Icon }) => <section className="panel model-catalog-card" key={name}><div className="model-catalog-icon"><Icon size={20} /></div><StatusPill tone="blue">待接入版本</StatusPill><h3>{name}</h3><span>{type}</span><p>{description}</p><button className="ghost-button" onClick={() => navigate('model-center/training')}>去创建版本 <ArrowUpRight size={13} /></button></section>)}</div></>}{selectedModel && <div className="app-dialog-backdrop" role="presentation" onClick={() => setSelectedModel(null)}><section className="app-dialog model-detail-dialog" role="dialog" aria-modal="true" aria-label="模型详情" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>{selectedModel.name}</h2><p>{selectedModel.type} · {selectedModel.description ?? '暂无描述'}</p></div><button className="icon-button" onClick={() => setSelectedModel(null)} aria-label="关闭">×</button></div>{detailLoading ? <p className="dataset-empty-state">详情加载中…</p> : <div className="model-version-list">{selectedModel.versions?.length ? selectedModel.versions.map((version) => <div className="model-version-row" key={version.id}><div><strong>{version.version_no}</strong><span>{version.status} · {modelMetricText(version.metric)}</span><small>{version.created_at ? fmtDT(version.created_at) : '暂无创建时间'}</small></div><div className="model-version-actions"><button className="outline-button" disabled={!version.file_key || exporting === version.id} onClick={() => handleExport(version)}><Download size={14} />{exporting === version.id ? '导出中…' : '导出 ONNX'}</button>{version.status === '生产候选' ? <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '实验版本')}>{updatingStatus === version.id ? '更新中…' : '退回实验版'}</button> : <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '生产候选')}>{updatingStatus === version.id ? '更新中…' : '设为生产候选'}</button>}</div></div>) : <p className="dataset-empty-state">该模型暂无版本。</p>}</div>}</section></div>}</div>;
 }
 
 function InferencePanel() {
@@ -2280,6 +2308,45 @@ function AvailabilityTag({ track }: { track: AlignmentTrack }) {
   return <span className={`track-availability ${pair[1]}`} title={track.reason ?? undefined}>{pair[0]}</span>;
 }
 
+/** 模型中心 · 数据集构建：选数据集与来源 → 建版本即自动构建（8:1:1 防泄漏）→ 轮询展示划分结果。 */
+function DatasetBuild() {
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasetId, setDatasetId] = useState<number | null>(null);
+  const [source, setSource] = useState<'manual' | 'split_task' | 'annotation_task'>('manual');
+  const [buildJobId, setBuildJobId] = useState<string | null>(null);
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { status: buildStatus, progress, result: buildResult } = useJob<{ item_count: number; split: Partial<DatasetSplit>; quality: DatasetQuality | null; snapshot_id: string | null }>(buildJobId);
+  useEffect(() => {
+    let cancelled = false;
+    listDatasets().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[dataset-build] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const dataset = datasets.find((d) => d.id === datasetId) ?? null;
+  const handleBuild = () => {
+    if (datasetId == null) return;
+    setBuildError(null);
+    createDatasetVersion(String(datasetId), { name: `构建-${new Date().toISOString().slice(0, 10)}` })
+      .then((version) => createBuildTask(String(datasetId), String(version.id), { type: source }))
+      .then((res) => setBuildJobId(res.job_id))
+      .catch((err) => { setBuildError(err instanceof Error ? err.message : '创建版本/构建失败'); console.warn('[dataset-build] build failed', err); });
+  };
+  useEffect(() => {
+    if (buildStatus === 'succeeded') setBuildJobId(null);
+    else if (buildStatus === 'failed') { setBuildJobId(null); setBuildError('数据集构建失败，请重试或检查来源样本'); }
+  }, [buildStatus]);
+  const split = buildResult?.split;
+  const total = split ? (split.train ?? 0) + (split.val ?? 0) + (split.test ?? 0) : 0;
+  const slicePct = (v: number | undefined) => (total > 0 && v != null ? `${((v / total) * 100).toFixed(0)}%` : '0%');
+  const qualityPct = buildResult?.quality ? `${((1 - buildResult.quality.repeat_rate - buildResult.quality.empty_label_rate - buildResult.quality.dimension_missing_rate) * 100).toFixed(1)}%` : null;
+  const sourceMeta: Record<string, { label: string; desc: string }> = {
+    manual: { label: '全部焊缝', desc: '按登记焊缝生成成员' },
+    split_task: { label: '切分样本', desc: '仅纳入已切分样本' },
+    annotation_task: { label: '标注样本', desc: '仅纳入已完成标注样本' },
+  };
+  return <div className="page-wrap"><PageIntro eyebrow="模型研发中心" title="数据集构建" description="从焊缝/切分/标注样本聚合生成固定快照数据集，按焊缝分组 8:1:1 划分训练、验证与测试。" action={<Toolbar secondary="导出报告" />} /><div className="build-layout"><section className="panel build-config"><div className="panel-heading"><div><h2>数据集</h2><p>选择要构建的目标数据集</p></div><Box size={17} /></div>{loading ? <p className="dataset-empty-state" role="status">数据集加载中…</p> : <><div className="form-block"><label className="form-label">目标数据集</label><select className="native-select" value={datasetId ?? ''} onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择数据集</option>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.version ?? '未建版本'}</option>)}</select></div><div className="form-block"><label className="form-label">构建来源</label><div className="build-source">{(['manual', 'split_task', 'annotation_task'] as const).map((key) => <label className={source === key ? 'chosen' : ''} key={key}><input type="radio" name="build-source" checked={source === key} onChange={() => setSource(key)} />{sourceMeta[key].label}<small>{sourceMeta[key].desc}</small></label>)}</div></div></>}<div className="split-ratio-note"><b>训练 / 验证 / 测试 = 8 : 1 : 1</b><small>按焊缝 ID 分组划分，同一焊缝的样本不会同时出现在训练与测试集（防数据泄漏）。</small></div><button className="full-button" onClick={handleBuild} disabled={datasetId == null || buildJobId != null}>{buildJobId != null ? <><Activity size={16} />构建中 {progress}%</> : <><GitBranch size={16} />构建数据集</>}</button>{buildError && <p className="dataset-empty-state" role="alert">{buildError}</p>}</section><section className="panel build-result"><div className="panel-heading"><div><h2>构建结果</h2><p>{buildJobId != null ? '正在生成版本快照…' : buildResult ? '最近一次构建' : dataset ? `当前 · ${dataset.name}` : '选择数据集后开始构建'}</p></div><StatusPill tone={buildStatus === 'failed' ? 'red' : buildStatus === 'running' ? 'orange' : 'green'}>{buildStatus === 'succeeded' ? '构建成功' : buildStatus === 'failed' ? '构建失败' : buildStatus === 'running' ? '构建中' : '待构建'}</StatusPill></div>{buildResult && split ? <><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>样本总数</span><strong>{buildResult.item_count.toLocaleString()}</strong></div><div><span>质量评分</span><strong>{qualityPct ?? '—'}</strong></div><div><span>快照</span><strong>{buildResult.snapshot_id ? buildResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><Database size={30} /><span>{buildJobId != null ? '构建进行中，完成后展示划分结果…' : '暂无构建结果。选择数据集与来源后点击「构建数据集」。'}</span></div>}</section></div></div>;
+}
+
 function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
@@ -2287,6 +2354,8 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [signals, setSignals] = useState<SignalData | null>(null);
   const [playhead, setPlayhead] = useState(0);
+  // 对齐任务：纳入对齐的模态（默认取自登记模态，未登记则视频+时序）
+  const [modalities, setModalities] = useState<string[]>(['video', 'timeseries']);
 
   const [fixedRate, setFixedRate] = useState(10);
   const [stride, setStride] = useState(10);
@@ -2305,7 +2374,7 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
       if (cancelled) return;
       setRecord(r);
       setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null);
-
+      setModalities(r.modalities?.length ? r.modalities : ['video', 'timeseries']);
     }).catch((err) => { if (!cancelled) console.warn('[alignment] getWeld failed', err); });
     return () => { cancelled = true; };
   }, [dataId]);
@@ -2337,7 +2406,7 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
     if (!dataId || versionId == null) { console.warn('[alignment] Version has not been resolved; please try again later'); return; }
     const run = splitOnly
       ? createSplitTask(dataId, String(versionId), { fixed_rate: fixedRate, stride, keep_event_buffer: keepEventBuffer ? bufferSeconds : 0, task_format: taskFormat })
-      : createAlignmentTask(dataId, String(versionId), record?.modalities?.length ? record.modalities : ['video', 'timeseries']);
+      : createAlignmentTask(dataId, String(versionId), modalities.length ? modalities : ['video', 'timeseries']);
     run.then((res) => setJobId(res.job_id)).catch((err) => console.warn('[alignment] Job creation failed', err));
   };
   const tone = jobStatus === 'running' ? 'orange' : jobStatus === 'failed' ? 'red' : 'green';
@@ -2366,19 +2435,37 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
     });
   })();
   const errMsg = jobErrorMessage(job?.error);
-  return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title={splitOnly ? '数据切分工作台' : '对齐与切分'} description={splitOnly ? '先确认真实输入，再配置规则并预览样本，确认后创建切分任务。' : '自动识别起收弧事件，完成视频、波形和音频的时间同步与样本切分。'} action={<Toolbar action="生成切分样本" secondary="导出标注集" exportType="annotation" />} />{splitOnly && <div className="split-steps"><span className="active">1 数据检查</span><i>→</i><span className={previewed ? 'active' : ''}>2 规则配置</span><i>→</i><span className={done ? 'active' : ''}>3 结果确认</span></div>}<div className="split-source-banner"><div><strong>{record?.weld_id ?? dataId ?? '正在读取焊缝…'}</strong><span>版本 v{versionId ?? '—'} · {record?.source ?? '数据来源读取中'}</span></div><div className="source-status"><span className={signals?.source === 'real' ? 'real' : 'generated'}>{signals?.source === 'real' ? '真实信号' : '演示信号'}</span><span>{videoUrl ? '视频已加载' : '视频未加载'}</span><span>{signals ? `${signals.duration.toFixed(2)} 秒 · ${signals.sample_rate} Hz` : '信号加载中…'}</span></div></div><div className="alignment-layout"><section className="panel alignment-board">{splitOnly && signals?.source !== 'real' && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />当前信号为演示数据，切分结果仅用于验证界面流程。</div>}{!splitOnly && alignRes?.version && <div className="alignment-banner ok" role="status"><CheckCircle2 size={15} />已生成「时间对齐」版本 {alignRes.version.version_no}（{alignRes.version.object_keys.length} 个产物 · 事件来源 {alignRes.event_source === 'real' ? '真实信号' : '生成回退'}）</div>}{jobStatus === 'failed' && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />任务失败：{errMsg}</div>}<div className="board-toolbar"><div><span className="file-badge"><GitBranch size={15} />{splitOnly ? '切分输入' : '多模态对齐任务'}{record ? ` · ${record.weld_id}` : ''}</span><h2>熔池视频 / 电流电压 / 音频</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="video-placeholder">{videoUrl ? <video className="alignment-video" src={videoUrl} controls onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)} /> : <><div className="video-grid" /><div className="play-orb"><Play size={22} /></div><span className="mock-media-label">暂无真实视频</span></>}<div className="video-label">{record ? `熔池视频 · ${record.weld_id}` : '等待输入'}</div><span className="video-time">{fmt(playhead)} / {fmt(timelineDur)}</span></div><div className="timeline-stack">{trackRows.map((row) => <Track key={row.channel} label={row.label} tone={row.tone} track={row.track} duration={timelineDur} events={events} playhead={playhead} values={row.values} lo={row.lo} hi={row.hi} color={row.color} />)}</div><div className="alignment-events"><span><i className="event-start" />起弧 <b>{events ? fmt(events.arc) : '—'}</b></span><span><i className="event-active" />有效焊接段 <b>{events ? `${fmt(events.weld_segment[0])} - ${fmt(events.weld_segment[1])}` : '—'}</b></span><span><i className="event-end" />收弧 <b>{events ? fmt(events.tail) : '—'}</b></span></div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>切分规则</h2><p>修改配置后先预览，再创建任务</p></div><SlidersHorizontal size={17} /></div><label className="switch-row"><span>按固定帧数切分</span><input type="checkbox" checked readOnly /></label><label className="split-field-label">每个样本</label><select className="split-control" value={fixedRate} onChange={(e) => { setFixedRate(Number(e.target.value)); setPreviewed(false); }}><option value={5}>5 帧 / 样本</option><option value={10}>10 帧 / 样本</option><option value={20}>20 帧 / 样本</option><option value={50}>50 帧 / 样本</option></select><label className="split-field-label">样本步长</label><select className="split-control" value={stride} onChange={(e) => { setStride(Number(e.target.value)); setPreviewed(false); }}><option value={5}>5 帧</option><option value={10}>10 帧</option><option value={20}>20 帧</option></select><label className="switch-row"><span>保留事件点前后缓冲</span><input type="checkbox" checked={keepEventBuffer} onChange={(e) => { setKeepEventBuffer(e.target.checked); setPreviewed(false); }} /></label><div className="select-field" style={{ gap: 8, justifyContent: 'space-between' }}><span>± {bufferSeconds.toFixed(2)} 秒</span><input aria-label="事件缓冲秒数" type="number" min={0} step={0.1} value={bufferSeconds} disabled={!keepEventBuffer} onChange={(e) => { const next = Number.parseFloat(e.target.value); setBufferSeconds(Number.isFinite(next) && next >= 0 ? next : 0); setPreviewed(false); }} style={{ width: 96, background: 'transparent', border: 'none', color: 'inherit', textAlign: 'right' }} /></div><div className="split-estimate"><strong>{previewSampleCount.toLocaleString()}</strong><span>预计样本</span><small>{fmt(splitStart)} – {fmt(splitEnd)} · {signals?.source === 'real' ? '真实信号' : '演示信号'}</small></div><button className="full-button" onClick={() => { setPreviewed(true); if (done) setJobId(null); }}>{previewed ? <><Check size={16} />已更新预览</> : <><ScissorsIcon />预览切分结果</>}</button>{previewed && <button className="full-button split-create-button" onClick={handleRun} disabled={running || !dataId || versionId == null}>{done ? <><Check size={16} />已创建 {splitRes?.sample_count ?? previewSampleCount} 个样本</> : running ? <><Activity size={16} />切分处理中 {progress}%</> : <><Play size={16} />确认并创建切分任务</>}</button>}</section><section className="panel"><div className="panel-heading"><div><h2>输出任务格式</h2><p>选择后会影响后续标注方式</p></div></div><div className="format-chips">{['目标检测', '图像分类', '语义分割', '时序分类'].map((format) => <button type="button" className={taskFormat === format ? 'chosen' : ''} key={format} onClick={() => { setTaskFormat(format); setPreviewed(false); }}>{format}</button>)}</div><div className="export-note"><FileText size={15} /><span>{taskFormat === '目标检测' ? '图像 + 缺陷框 JSON' : taskFormat === '图像分类' ? '图像 + 类别标签' : taskFormat === '语义分割' ? '图像 + Mask 掩膜' : '信号片段 + 时序标签'}</span></div></section></aside></div>{splitOnly && previewed && <section className="panel split-preview-panel"><div className="panel-heading"><div><h2>样本预览 <span className="inline-count">前 {Math.min(8, previewSampleCount)} 个</span></h2><p>点击样本可定位到对应时间窗口</p></div><span className="preview-summary">共 {previewSampleCount.toLocaleString()} 个 · {taskFormat}</span></div><div className="sample-preview-grid">{previewSamples.map((sample) => <button type="button" key={sample.index} className="sample-preview-card" onClick={() => setPlayhead(sample.start)}><div className="sample-thumb"><span>Frame {String(sample.index).padStart(3, '0')}</span><Play size={16} /></div><strong>样本 {String(sample.index).padStart(3, '0')}</strong><small>{fmt(sample.start)} – {fmt(sample.end)}</small></button>)}</div></section>}</div>;
-
+  const pct = (s: number) => `${Math.min(100, Math.max(0, (s / (timelineDur || 1)) * 100)).toFixed(2)}%`;
+  // 时间标尺刻度：对齐页 ruler 与切分页 cut-axis 共用同一时间轴
+  const rulerTicks = useMemo(() => {
+    const dur = Math.max(timelineDur, 1);
+    const step = dur <= 6 ? 1 : dur <= 15 ? 2 : dur <= 30 ? 5 : 10;
+    const ticks: number[] = [];
+    for (let t = 0; t <= dur + 1e-9; t += step) ticks.push(t);
+    if (ticks[ticks.length - 1] < dur) ticks.push(dur);
+    return ticks;
+  }, [timelineDur]);
+  // 切分条带上的切割边界（每个样本起点，上限 400 防极端配置卡渲染）
+  const cutTicks = useMemo(() => {
+    const step = Math.max(1, stride) / (signals?.sample_rate ?? 1000);
+    const ticks: number[] = [];
+    for (let t = splitStart; t <= splitEnd + 1e-9 && ticks.length < 400; t += step) ticks.push(t);
+    return ticks;
+  }, [splitStart, splitEnd, stride, signals?.sample_rate]);
+  const cutStartPct = (splitStart / (timelineDur || 1)) * 100;
+  const cutEndPct = (splitEnd / (timelineDur || 1)) * 100;
+  const modalOptions: { id: string; label: string; desc: string; icon: React.ReactNode }[] = [
+    { id: 'video', label: '视频', desc: '熔池相机画面', icon: <ImageIcon size={14} /> },
+    { id: 'timeseries', label: '时序', desc: '电流 / 电压 / 气体 / 送丝', icon: <Waves size={14} /> },
+    { id: 'audio', label: '音频', desc: '弧声信号', icon: <AudioWaveform size={14} /> },
+    { id: 'infrared', label: '红外', desc: '热成像', icon: <ScanLine size={14} /> },
+  ];
+  if (splitOnly) {
+    return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title="数据切分工作台" description="把单条焊缝的长数据按固定帧数/事件规则切成小段样本，供后续标注与训练。" action={<Toolbar secondary="导出标注集" exportType="annotation" />} /><div className="split-steps"><span className="active">1 数据检查</span><i>→</i><span className={previewed ? 'active' : ''}>2 规则配置</span><i>→</i><span className={done ? 'active' : ''}>3 结果确认</span></div><div className="split-source-banner"><div><strong>{record?.weld_id ?? dataId ?? '正在读取焊缝…'}</strong><span>版本 v{versionId ?? '—'} · {record?.source ?? '数据来源读取中'}</span></div><div className="source-status"><span className={signals?.source === 'real' ? 'real' : 'generated'}>{signals?.source === 'real' ? '真实信号' : '演示信号'}</span><span>{videoUrl ? '视频已加载' : '视频未加载'}</span><span>{signals ? `${signals.duration.toFixed(2)} 秒 · ${signals.sample_rate} Hz` : '信号加载中…'}</span></div></div><div className="alignment-layout"><section className="panel alignment-board">{signals?.source !== 'real' && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />当前信号为演示数据，切分结果仅用于验证界面流程。</div>}{jobStatus === 'failed' && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />切分任务失败：{errMsg}</div>}<div className="board-toolbar"><div><span className="file-badge"><ScissorsIcon />切分输入{record ? ` · ${record.weld_id}` : ''}</span><h2>熔池视频 / 电流电压 / 音频</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="cut-wrap"><div className="cut-strip"><div className="cut-band"><div className="cut-seg" style={{ left: 0, width: `${cutStartPct}%` }} /><div className="cut-seg cut-effective" style={{ left: `${cutStartPct}%`, width: `${Math.max(0, cutEndPct - cutStartPct)}%` }} /><div className="cut-seg" style={{ left: `${cutEndPct}%`, width: `${Math.max(0, 100 - cutEndPct)}%` }} />{cutTicks.map((t) => <span key={t.toFixed(3)} className="cut-bound" style={{ left: pct(t) }} />)}{events && <i className="cut-evt cut-evt-arc" style={{ left: pct(events.arc) }} title="起弧" />}{events && <b className="cut-evt cut-evt-tail" style={{ left: pct(events.tail) }} title="收弧" />}</div><div className="cut-axis">{rulerTicks.map((t) => <span key={t} style={{ left: pct(t) }}>{fmt(t)}</span>)}</div></div><div className="cut-wave">{(() => { const row = trackRows.find((r) => r.channel === 'current'); return row?.values && row.values.length > 1 && row.lo != null && row.hi != null ? <svg viewBox="0 0 100 20" preserveAspectRatio="none"><path d={buildPath(row.values, row.lo, row.hi, 100, 20)} fill="none" stroke={row.color ?? '#2c9caf'} strokeWidth="1.1" vectorEffect="non-scaling-stroke" /></svg> : null; })()}{events && <i className="lane-marker" style={{ left: pct(events.arc) }} />}{events && <b className="lane-marker lane-marker-end" style={{ left: pct(events.tail) }} />}{playhead > 0 && <span className="lane-playhead" style={{ left: pct(playhead) }} />}</div></div><div className="cut-summary"><div><span>切分区间</span><strong>{fmt(splitStart)} – {fmt(splitEnd)}</strong><small>起收弧 ± 缓冲</small></div><div><span>样本长度</span><strong>{fixedRate} 帧</strong><small>≈ {fmt(fixedRate / (signals?.sample_rate ?? 1000))}</small></div><div><span>样本步长</span><strong>{stride} 帧</strong><small>重叠 {Math.max(0, fixedRate - stride)} 帧</small></div><div><span>预计样本</span><strong>{previewSampleCount.toLocaleString()}</strong><small>{taskFormat}</small></div></div><div className="split-action-row"><button className="full-button" onClick={() => { setPreviewed(true); if (done) setJobId(null); }}>{previewed ? <><Check size={16} />已更新预览</> : <><ScissorsIcon />预览切分结果</>}</button>{previewed && <button className="full-button split-create-button" onClick={handleRun} disabled={running || !dataId || versionId == null}>{done ? <><Check size={16} />已创建 {splitRes?.sample_count ?? previewSampleCount} 个样本</> : running ? <><Activity size={16} />切分处理中 {progress}%</> : <><Play size={16} />确认并创建切分任务</>}</button>}</div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>切分规则</h2><p>修改配置后先预览，再创建任务</p></div><SlidersHorizontal size={17} /></div><label className="switch-row"><span>按固定帧数切分</span><input type="checkbox" checked readOnly /></label><label className="split-field-label">每个样本</label><select className="split-control" value={fixedRate} onChange={(e) => { setFixedRate(Number(e.target.value)); setPreviewed(false); }}><option value={5}>5 帧 / 样本</option><option value={10}>10 帧 / 样本</option><option value={20}>20 帧 / 样本</option><option value={50}>50 帧 / 样本</option></select><label className="split-field-label">样本步长</label><select className="split-control" value={stride} onChange={(e) => { setStride(Number(e.target.value)); setPreviewed(false); }}><option value={5}>5 帧</option><option value={10}>10 帧</option><option value={20}>20 帧</option></select><label className="switch-row"><span>保留事件点前后缓冲</span><input type="checkbox" checked={keepEventBuffer} onChange={(e) => { setKeepEventBuffer(e.target.checked); setPreviewed(false); }} /></label><div className="select-field" style={{ gap: 8, justifyContent: 'space-between' }}><span>± {bufferSeconds.toFixed(2)} 秒</span><input aria-label="事件缓冲秒数" type="number" min={0} step={0.1} value={bufferSeconds} disabled={!keepEventBuffer} onChange={(e) => { const next = Number.parseFloat(e.target.value); setBufferSeconds(Number.isFinite(next) && next >= 0 ? next : 0); setPreviewed(false); }} style={{ width: 96, background: 'transparent', border: 'none', color: 'inherit', textAlign: 'right' }} /></div><div className="split-estimate"><strong>{previewSampleCount.toLocaleString()}</strong><span>预计样本</span><small>{fmt(splitStart)} – {fmt(splitEnd)} · {signals?.source === 'real' ? '真实信号' : '演示信号'}</small></div></section><section className="panel"><div className="panel-heading"><div><h2>输出任务格式</h2><p>选择后会影响后续标注方式</p></div></div><div className="format-chips">{['目标检测', '图像分类', '语义分割', '时序分类'].map((format) => <button type="button" className={taskFormat === format ? 'chosen' : ''} key={format} onClick={() => { setTaskFormat(format); setPreviewed(false); }}>{format}</button>)}</div><div className="export-note"><FileText size={15} /><span>{taskFormat === '目标检测' ? '图像 + 缺陷框 JSON' : taskFormat === '图像分类' ? '图像 + 类别标签' : taskFormat === '语义分割' ? '图像 + Mask 掩膜' : '信号片段 + 时序标签'}</span></div></section></aside></div>{previewed && <section className="panel split-preview-panel"><div className="panel-heading"><div><h2>样本预览 <span className="inline-count">前 {Math.min(8, previewSampleCount)} 个</span></h2><p>点击样本可定位到对应时间窗口</p></div><span className="preview-summary">共 {previewSampleCount.toLocaleString()} 个 · {taskFormat}</span></div><div className="sample-preview-grid">{previewSamples.map((sample) => <button type="button" key={sample.index} className="sample-preview-card" onClick={() => setPlayhead(sample.start)}><div className="sample-thumb"><span>Frame {String(sample.index).padStart(3, '0')}</span><Play size={16} /></div><strong>样本 {String(sample.index).padStart(3, '0')}</strong><small>{fmt(sample.start)} – {fmt(sample.end)}</small></button>)}</div></section>}</div>;
+  }
+  return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title="多模态对齐" description="将单条焊缝的视频、时序、音频与红外统一到同一时间轴，自动识别起收弧事件并生成对齐版本。" action={<Toolbar secondary="导出标注集" exportType="analysis" />} /><div className="split-source-banner"><div><strong>{record?.weld_id ?? dataId ?? '正在读取焊缝…'}</strong><span>版本 v{versionId ?? '—'} · {record?.source ?? '数据来源读取中'}</span></div><div className="source-status"><span className={signals?.source === 'real' ? 'real' : 'generated'}>{signals?.source === 'real' ? '真实信号' : '演示信号'}</span><span>{videoUrl ? '视频已加载' : '视频未加载'}</span><span>{signals ? `${signals.duration.toFixed(2)} 秒 · ${signals.sample_rate} Hz` : '信号加载中…'}</span></div></div><div className="alignment-layout"><section className="panel alignment-board">{alignRes?.version && <div className="alignment-banner ok" role="status"><CheckCircle2 size={15} />已生成「时间对齐」版本 {alignRes.version.version_no}（{alignRes.version.object_keys.length} 个产物 · 事件来源 {alignRes.event_source === 'real' ? '真实信号' : '生成回退'}）</div>}{jobStatus === 'failed' && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />对齐任务失败：{errMsg}</div>}<div className="studio-head"><div><span className="file-badge"><Waves size={15} />多模态时间轴</span><h2>熔池视频 / 电流电压 / 音频 / 红外</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="studio-ruler"><div className="ruler-tickbar">{rulerTicks.map((t) => <span key={t} style={{ left: pct(t) }}>{fmt(t)}</span>)}</div><div className="ruler-events">{events && <i className="ruler-arc" style={{ left: pct(events.arc) }} title="起弧" />}{events && <b className="ruler-tail" style={{ left: pct(events.tail) }} title="收弧" />}</div>{playhead > 0 && <span className="ruler-playhead" style={{ left: pct(playhead) }} />}</div>{trackRows.map((row) => { const isVideo = row.channel === 'video'; return <div className="lane" key={row.channel}><div className="lane-label"><span className="lane-dot" style={{ background: isVideo ? '#4fa9c2' : (row.color ?? '#2c9caf') }} />{row.label}{row.track && <AvailabilityTag track={row.track} />}</div><div className={`lane-track ${isVideo ? 'lane-track-video' : ''}`}>{isVideo ? (videoUrl ? <video className="studio-video" src={videoUrl} controls onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)} /> : <div className="lane-video-empty"><Play size={18} /><span>等待真实视频</span></div>) : (row.values && row.values.length > 1 && row.lo != null && row.hi != null && <svg className="lane-wave" viewBox="0 0 100 18" preserveAspectRatio="none"><path d={buildPath(row.values, row.lo, row.hi, 100, 18)} fill="none" stroke={row.color ?? '#2c9caf'} strokeWidth="1.1" vectorEffect="non-scaling-stroke" /></svg>)}{events && <i className="lane-marker" style={{ left: pct(events.arc) }} />}{events && <b className="lane-marker lane-marker-end" style={{ left: pct(events.tail) }} />}{playhead > 0 && <span className="lane-playhead" style={{ left: pct(playhead) }} />}</div></div>; })}<div className="studio-events"><span><i className="studio-evt arc" />起弧 <b>{events ? fmt(events.arc) : '—'}</b></span><span><i className="studio-evt seg" />有效焊接段 <b>{events ? `${fmt(events.weld_segment[0])} – ${fmt(events.weld_segment[1])}` : '—'}</b></span><span><i className="studio-evt tail" />收弧 <b>{events ? fmt(events.tail) : '—'}</b></span><span className="studio-dur">总时长 {fmt(timelineDur)}</span></div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>对齐任务</h2><p>选择要纳入对齐的模态</p></div><Waves size={17} /></div><div className="modal-checklist">{modalOptions.map((m) => <label className="modal-check" key={m.id}><input type="checkbox" checked={modalities.includes(m.id)} onChange={(e) => { setModalities((prev) => (e.target.checked ? [...prev, m.id] : prev.filter((x) => x !== m.id))); }} /><span className="modal-check-box">{m.icon}</span><b>{m.label}</b><small>{m.desc}</small></label>)}</div><div className="split-estimate studio-estimate"><strong>{modalities.length}</strong><span>种模态纳入对齐</span><small>{signals?.source === 'real' ? '真实信号' : '演示信号'} · 起收弧事件将自动识别</small></div><button className="full-button" onClick={handleRun} disabled={running || !dataId || versionId == null || modalities.length === 0}>{done ? <><Check size={16} />已完成对齐</> : running ? <><Activity size={16} />对齐处理中 {progress}%</> : <><Waves size={16} />开始多模态对齐</>}</button>{done && <button className="full-button studio-reset" onClick={() => setJobId(null)}><RefreshCw size={15} />重新对齐</button>}</section>{alignRes && <section className="panel"><div className="panel-heading"><div><h2>对齐产物</h2><p>写入「时间对齐」版本</p></div><FileText size={17} /></div><div className="artifact-list">{alignRes.assets.map((a, i) => <div className="artifact-row" key={`${a}-${i}`}><span className="artifact-icon">{a.toLowerCase().endsWith('.csv') ? <BarChart3 size={13} /> : a.toLowerCase().endsWith('.jpg') ? <ImageIcon size={13} /> : <FileText size={13} />}</span><div><strong>{a.split('/').pop()}</strong><small>{a}</small></div></div>)}</div></section>}</aside></div></div>;
 }
 
-function Track({ label, tone, track, duration, events, playhead, values, lo, hi, color }: {
-  label: string; tone: string; track?: AlignmentTrack; duration: number;
-  events?: WeldEvent | null; playhead?: number;
-  values?: number[]; lo?: number; hi?: number; color?: string;
-}) {
-  const dur = duration > 0 ? duration : 5.42;
-  const pct = (s: number) => `${Math.min(100, Math.max(0, (s / dur) * 100)).toFixed(2)}%`;
-  return <div className="timeline-row"><span>{label}{track && <AvailabilityTag track={track} />}</span><div className={`timeline-track ${tone}`}>{values && values.length > 1 && lo != null && hi != null && <svg className="track-wave" viewBox="0 0 100 16" preserveAspectRatio="none"><path d={buildPath(values, lo, hi, 100, 16)} fill="none" stroke={color ?? '#2c9caf'} strokeWidth="1" vectorEffect="non-scaling-stroke" /></svg>}{events && <i style={{ left: pct(events.arc) }} />}{events && <b style={{ left: pct(events.tail) }} />}{playhead != null && playhead > 0 && <span className="timeline-playhead" style={{ left: pct(playhead) }} />}</div><small>0s</small><small>{fmt(dur)}</small></div>;
-}
 function ScissorsIcon() { return <span className="scissors-icon">✂</span>; }
 
 function ModelTestLive() {

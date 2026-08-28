@@ -503,7 +503,6 @@ def test_list_models_summary(override_get_session, override_get_current_user) ->
     assert summary["prod_candidates"] == 1  # 仅「焊接异常检测模型」为生产候选
     assert "recent_training" in summary  # 初始无训练任务 → None
     assert summary["recent_training"] is None
-    assert summary["gpu_usage"] == 42
 
     models = data["models"]
     assert len(models) == 3

@@ -267,7 +267,6 @@ export interface ModelSummary {
   total: number;
   prod_candidates: number;
   recent_training: string | null;
-  gpu_usage: number;
 }
 
 // ── Dashboard 总览（§3.2） ──────────────────────────────────────────

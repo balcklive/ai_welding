@@ -18,7 +18,7 @@ import type {
   TrainingResult,
 } from './types';
 
-/** 模型仓库列表 + 汇总（总数/生产候选/最近训练/GPU 资源）。 */
+/** 模型仓库列表 + 汇总（总数/生产候选/最近训练）。 */
 export async function listModels(): Promise<{
   summary: ModelSummary;
   models: Model[];

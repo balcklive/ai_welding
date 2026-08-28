@@ -292,8 +292,8 @@ DATASET_DEMO: list[dict] = [
     },
 ]
 
-# ── 模型演示数据（对齐 App.tsx ModelRepository） ──
-MODEL_DEMO: list[dict] = [
+# ── 内置模型目录（不依赖演示数据开关，保证模型仓库始终有可管理的入口） ──
+MODEL_CATALOG: list[dict] = [
     {
         "name": "焊接异常检测模型",
         "type": "时序分类",
@@ -346,16 +346,17 @@ def seed_demo(session: Session) -> None:
     # Registrations require a dataset; seed datasets before demo weld records.
     _seed_datasets(session)
     _seed_welds(session)
-    _seed_models(session)
 
 
 def seed_all(session: Session, *, demo: bool = True) -> None:
     """管理员 + 演示数据，末尾统一 commit。幂等：已存在则跳过。
 
-    demo=False 时只 seed 管理员（线上默认走此路径，避免演示数据污染真实库）；
+    内置模型目录始终 seed；demo=False 时只额外 seed 管理员和内置模型，避免
+    焊缝/数据集等演示数据污染真实库；
     测试仍用默认 demo=True 造演示数据。
     """
     seed_admin(session)
+    _seed_models(session)
     if demo:
         seed_demo(session)
     session.commit()
@@ -612,7 +613,7 @@ def _seed_datasets(session: Session) -> None:
 
 
 def _seed_models(session: Session) -> None:
-    for cfg in MODEL_DEMO:
+    for cfg in MODEL_CATALOG:
         model = session.exec(select(Model).where(Model.name == cfg["name"])).first()
         if model is not None:
             continue
