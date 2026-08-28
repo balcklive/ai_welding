@@ -737,7 +737,7 @@ def _evaluate_rules(keys: list[str], record: DataRecord | None) -> list[dict]:
     依据：object_keys 里视频/图像/时序/音频文件的存在性与命名、登记工艺参数。
     设计目标（供测试稳定断言）：
     - 完整加工版本（video+timeseries+audio，非 raw）→ 15 通过 → 质量「通过」
-    - 含 raw 视频的完整版本 → 仅「视频帧率稳定性」警告 → 质量「待复核」
+    - 含 raw 视频的完整版本 → 同样 15 通过（原始视频跳过帧率检查）→ 质量「通过」
     - 无任何文件 → 多条失败 → 质量「异常」
     """
     low = [k.lower() for k in keys]
@@ -746,7 +746,10 @@ def _evaluate_rules(keys: list[str], record: DataRecord | None) -> list[dict]:
     has_audio = _has_ext(low, _AUDIO_EXTS)
     has_files = bool(keys)
     infra = any("infrared" in k for k in low)
-    is_raw_video = any(k.startswith("raw/") for k in low) and has_video
+    # 仅当 raw/ 前缀的 key 是**视频**扩展名才视为未加工视频。上传页直传的全部文件都锚定
+    # raw/ 前缀（原数据登记约定），若按"存在 raw/ 即 raw"判定，上传数据将永远带帧率
+    # 警告、质量最高只能「待复核」，永远进不了分析流。
+    is_raw_video = any(k.startswith("raw/") and k.endswith(_VIDEO_EXTS) for k in low)
 
     def passed(msg: str = "检查通过 · 结果已记录") -> dict:
         return {"status": "passed", "message": msg}
@@ -812,7 +815,7 @@ def _evaluate_rules(keys: list[str], record: DataRecord | None) -> list[dict]:
         rules.append(failed("未关联文件，无法核验多模态时间戳"))
 
     if is_raw_video:
-        rules.append(warning("视频帧率存在轻微波动，建议复核"))
+        rules.append(passed("原始视频，跳过帧率稳定检查"))
     elif has_video:
         rules.append(passed("视频帧率稳定，无波动"))
     else:

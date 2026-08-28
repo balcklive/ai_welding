@@ -1083,6 +1083,26 @@ def test_validation_failed_version(override_get_session, override_get_current_us
     assert detail["quality"] == "异常"
 
 
+def test_validation_raw_video_version_passes(
+    override_get_session, override_get_current_user
+) -> None:
+    """0248 v1.0（raw/ 视频完整版）→ 原始视频跳过帧率检查 → 15 项全过 → quality 通过。
+
+    上传页直传文件全部锚定 raw/ 前缀，若"存在 raw/ 即警告"，上传数据将永远
+    带帧率警告、最高只能「待复核」，永远进不了分析流（回归保护）。
+    """
+    vid = _version_id_by_no(WELD_0248, "v1.0")
+    resp = client.post(f"/api/v1/welds/{WELD_0248}/versions/{vid}/validation")
+    assert resp.status_code == 200
+    report = resp.json()["data"]
+    assert report["passed"] == 15
+    assert report["warning"] == 0
+    assert report["failed"] == 0
+
+    detail = client.get(f"/api/v1/welds/{WELD_0248}").json()["data"]
+    assert detail["quality"] == "通过"
+
+
 def test_validation_unknown_version(override_get_session, override_get_current_user) -> None:
     resp = client.post(f"/api/v1/welds/{WELD_0248}/versions/999999/validation")
     assert resp.status_code == 404

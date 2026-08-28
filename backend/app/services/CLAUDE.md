@@ -39,7 +39,10 @@
   供分析「选择数据」数据集优先两级选择的第二级范围）；版本链/新建版本；
   `run_validation` = **15 项确定性核验引擎**（规则名照抄 seed/App.tsx，结果只依赖版本
   `object_keys` 与登记工艺参数，无随机；score=max(0,100-警告*5-失败*20)；质量级联
-  失败>0→异常 / 仅警告→待复核 / 否则→通过）；`attach_raw_files`（去重追加 keys +
+  失败>0→异常 / 仅警告→待复核 / 否则→通过；**raw 视频放宽**：仅当 raw/ 前缀 key 为
+  **视频扩展名**才判未加工视频，且规则降为通过（"原始视频，跳过帧率稳定检查"）——
+  上传页直传全部锚定 raw/，按旧"存在 raw/ 即警告"会让上传数据永远待复核进不了分析流，
+  回归测试 `test_validation_raw_video_version_passes`）；`attach_raw_files`（去重追加 keys +
   累加 storage_bytes + 按扩展名推导回填 modalities，video 含图像）；`list_through_welds`
   （quality=通过 的可分析焊缝，供 analysis candidates）。payload 序列化在
   `record_payload`/`records_payload`（批量预查 latest 版本防 N+1）/`version_payload`/
