@@ -23,6 +23,7 @@ dist-ssr
 .env
 .superpowers/
 .playwright-cli/
+.claude/
 
 # --- 后端（backend/）---
 backend/.venv/

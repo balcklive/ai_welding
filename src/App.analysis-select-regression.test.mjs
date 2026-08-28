@@ -18,8 +18,9 @@ test('analysis select is dataset-first: dataset dropdown, then welds scoped by d
 });
 
 test('analysis select lists all welds in the dataset and greys out unvalidated ones', () => {
-  assert.match(select, /disabled=\{row\.quality !== '通过'\}/);
-  assert.match(select, /selection-card \$\{row\.quality !== '通过' \? 'disabled' : ''\}/);
+  // 准入规则：仅核验「异常」置灰不可选，「待复核」可进（上传数据核验出警告即可继续分析）。
+  assert.match(select, /disabled=\{row\.quality === '异常'\}/);
+  assert.match(select, /selection-card \$\{row\.quality === '异常' \? 'disabled' : ''\}/);
   assert.doesNotMatch(select, /rows\.slice\(0, 3\)/);
   assert.match(select, /该数据集暂无数据，请先在数据中心上传数据。/);
 });
@@ -31,7 +32,9 @@ test('analysis select no longer consumes the flat candidates endpoint', () => {
 test('registration form picks the owning dataset and defaults the field', () => {
   assert.match(registration, /所属数据集/);
   assert.match(registration, /dataset_id: 0/);
-  assert.match(registration, /!form\.dataset_id \|\| !form\.source\.trim\(\)/);
+  // 上传时序重构后必填校验改由 missingFields 数组驱动（dataset/source/weld_name/file）。
+  assert.match(registration, /ok: !!form\.dataset_id/);
+  assert.match(registration, /ok: !!form\.source\.trim\(\)/);
 });
 
 test('data-center/registration stays out of routesRequiringData (new-registration rule)', () => {
