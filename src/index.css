@@ -321,3 +321,11 @@ button { border: 0; cursor: pointer; }
 .alignment-banner { display:flex; align-items:center; gap:8px; margin-bottom:14px; padding:10px 14px; border-radius:8px; font-size:11px; }
 .alignment-banner.ok { color:#1e7f6e; background:#e2f5ee; }
 .alignment-banner.bad { color:#bd6b5b; background:#fbeeea; }
+
+/* 数据上传页：必填星标红色强调 + 缺失项红色闪烁提示（Registration） */
+.required-mark { color:#e5484d; font-weight:700; }
+.toolbar-error { color:#e5484d; font-size:11px; }
+.full-button--disabled { color:#9db8b6; background:#e3efec; cursor:not-allowed; }
+.full-button--disabled:hover { background:#e3efec; }
+@keyframes field-flash { 0%,100% { background:transparent; box-shadow:none; } 20%,60% { background:rgba(229,72,77,.13); box-shadow:0 0 0 2px rgba(229,72,77,.55); } 40%,80% { background:transparent; box-shadow:none; } }
+.field-flash { animation:field-flash 1s ease; border-radius:8px; }
