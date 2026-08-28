@@ -134,7 +134,7 @@ const navStructure: { id: string; label: string; icon: typeof BarChart3; route?:
     { route: 'analysis/features', label: '特征提取' },
   ] },
   { id: 'model-center', label: '模型中心', icon: TrainFront, children: [
-    { route: 'model-center/dataset-build', label: '数据集构建' },
+    { route: 'model-center/dataset-build', label: '训练数据准备' },
     { route: 'model-center/repository', label: '模型仓库' },
     { route: 'model-center/training', label: '新建训练' },
     { route: 'model-center/testing', label: '测试评估' },
@@ -196,7 +196,9 @@ function App() {
 
 function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, datasetHomeKey, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; datasetHomeKey: number; navigate: (r: Route) => void }) {
   const ws = route.split('/')[0];
-  const header = workspaceHeaders[ws];
+  const header = route === 'model-center/dataset-build'
+    ? { eyebrow: '模型研发中心', title: '训练数据准备', description: '基于数据中心的数据集，筛选可用于模型训练的样本并生成固定版本。' }
+    : workspaceHeaders[ws];
   // 模型仓库刷新计数（「新建模型」成功后自增，触发 ModelRepository 重新拉取）。
   const [repoRefresh, setRepoRefresh] = useState(0);
   const [isDatasetDetail, setIsDatasetDetail] = useState(false);
@@ -235,7 +237,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <Alignment embedded splitOnly dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <Annotation embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtraction embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'model-center/dataset-build') content = <DatasetBuild />;
+  else if (route === 'model-center/dataset-build') content = <TrainingDataPreparation />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} navigate={navigate} />;
   else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training /></>;
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
@@ -1556,7 +1558,7 @@ function Toolbar({ action, secondary, onAction, onRefresh, actionDisabled = fals
   return <div className="page-toolbar"><button className="ghost-button" onClick={onRefresh} disabled={!onRefresh}><RefreshCw size={14} />刷新</button>{secondary && <button className="outline-button" onClick={handleExport} disabled={exporting}><Download size={14} />{exporting ? '导出中…' : secondary}</button>}{action && <button className="primary-button" onClick={onAction} disabled={actionDisabled || !onAction}><Plus size={15} />{action}</button>}{exportError && <span className="toolbar-error" role="alert">{exportError}</span>}</div>;
 }
 
-function StatusPill({ children, tone = 'green' }: { children: React.ReactNode; tone?: 'green' | 'orange' | 'red' | 'blue' }) {
+function StatusPill({ children, tone = 'green' }: { children: React.ReactNode; tone?: 'green' | 'orange' | 'red' | 'blue' | 'muted' }) {
   return <span className={`status ${tone}`}>{children}</span>;
 }
 
@@ -2383,7 +2385,7 @@ function AvailabilityTag({ track }: { track: AlignmentTrack }) {
   return <span className={`track-availability ${pair[1]}`} title={track.reason ?? undefined}>{pair[0]}</span>;
 }
 
-/** 模型中心 · 数据集构建：选数据集与来源 → 建版本即自动构建（8:1:1 防泄漏）→ 轮询展示划分结果。 */
+/** 模型中心 · 训练数据准备：从数据中心的数据集筛选样本，生成可用于训练的固定版本快照。 */
 function DatasetBuild() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<number | null>(null);
@@ -2415,11 +2417,65 @@ function DatasetBuild() {
   const slicePct = (v: number | undefined) => (total > 0 && v != null ? `${((v / total) * 100).toFixed(0)}%` : '0%');
   const qualityPct = buildResult?.quality ? `${((1 - buildResult.quality.repeat_rate - buildResult.quality.empty_label_rate - buildResult.quality.dimension_missing_rate) * 100).toFixed(1)}%` : null;
   const sourceMeta: Record<string, { label: string; desc: string }> = {
-    manual: { label: '全部焊缝', desc: '按登记焊缝生成成员' },
-    split_task: { label: '切分样本', desc: '仅纳入已切分样本' },
-    annotation_task: { label: '标注样本', desc: '仅纳入已完成标注样本' },
+    manual: { label: '全部样本', desc: '纳入数据集中的全部焊缝样本' },
+    split_task: { label: '已切分样本', desc: '仅纳入已完成切分的样本' },
+    annotation_task: { label: '已标注样本', desc: '仅纳入已完成标注的样本' },
   };
-  return <div className="page-wrap"><PageIntro eyebrow="模型研发中心" title="数据集构建" description="从焊缝/切分/标注样本聚合生成固定快照数据集，按焊缝分组 8:1:1 划分训练、验证与测试。" action={<Toolbar secondary="导出报告" />} /><div className="build-layout"><section className="panel build-config"><div className="panel-heading"><div><h2>数据集</h2><p>选择要构建的目标数据集</p></div><Box size={17} /></div>{loading ? <p className="dataset-empty-state" role="status">数据集加载中…</p> : <><div className="form-block"><label className="form-label">目标数据集</label><select className="native-select" value={datasetId ?? ''} onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择数据集</option>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.version ?? '未建版本'}</option>)}</select></div><div className="form-block"><label className="form-label">构建来源</label><div className="build-source">{(['manual', 'split_task', 'annotation_task'] as const).map((key) => <label className={source === key ? 'chosen' : ''} key={key}><input type="radio" name="build-source" checked={source === key} onChange={() => setSource(key)} />{sourceMeta[key].label}<small>{sourceMeta[key].desc}</small></label>)}</div></div></>}<div className="split-ratio-note"><b>训练 / 验证 / 测试 = 8 : 1 : 1</b><small>按焊缝 ID 分组划分，同一焊缝的样本不会同时出现在训练与测试集（防数据泄漏）。</small></div><button className="full-button" onClick={handleBuild} disabled={datasetId == null || buildJobId != null}>{buildJobId != null ? <><Activity size={16} />构建中 {progress}%</> : <><GitBranch size={16} />构建数据集</>}</button>{buildError && <p className="dataset-empty-state" role="alert">{buildError}</p>}</section><section className="panel build-result"><div className="panel-heading"><div><h2>构建结果</h2><p>{buildJobId != null ? '正在生成版本快照…' : buildResult ? '最近一次构建' : dataset ? `当前 · ${dataset.name}` : '选择数据集后开始构建'}</p></div><StatusPill tone={buildStatus === 'failed' ? 'red' : buildStatus === 'running' ? 'orange' : 'green'}>{buildStatus === 'succeeded' ? '构建成功' : buildStatus === 'failed' ? '构建失败' : buildStatus === 'running' ? '构建中' : '待构建'}</StatusPill></div>{buildResult && split ? <><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>样本总数</span><strong>{buildResult.item_count.toLocaleString()}</strong></div><div><span>质量评分</span><strong>{qualityPct ?? '—'}</strong></div><div><span>快照</span><strong>{buildResult.snapshot_id ? buildResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><Database size={30} /><span>{buildJobId != null ? '构建进行中，完成后展示划分结果…' : '暂无构建结果。选择数据集与来源后点击「构建数据集」。'}</span></div>}</section></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="模型研发中心" title="训练数据准备" description="基于数据中心的数据集，筛选可用于模型训练的样本并生成固定版本。" action={<Toolbar secondary="导出报告" />} /><div className="build-steps" aria-label="训练数据准备流程"><span className="current"><b>1</b>选择数据集</span><i /> <span><b>2</b>设定样本范围</span><i /> <span><b>3</b>生成训练数据集</span></div><div className="build-layout"><section className="panel build-config"><div className="panel-heading"><div><h2>准备条件</h2><p>配置完成后生成一份新的训练数据版本</p></div><Box size={17} /></div>{loading ? <p className="dataset-empty-state" role="status">正在读取数据中心的数据集…</p> : <><div className="form-block"><label className="form-label">1. 选择数据集</label><p className="form-help build-form-intro">选择数据中心中已有的数据集，准备动作不会修改原始数据。</p><select className="native-select" value={datasetId ?? ''} onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择数据集</option>{datasets.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.version ?? '未建版本'}</option>)}</select></div><div className="form-block"><label className="form-label">2. 选择样本范围</label><div className="build-source">{(['manual', 'split_task', 'annotation_task'] as const).map((key) => <label className={source === key ? 'chosen' : ''} key={key}><input type="radio" name="build-source" checked={source === key} onChange={() => setSource(key)} /><span><strong>{sourceMeta[key].label}</strong><small>{sourceMeta[key].desc}</small></span>{source === key && <Check size={15} />}</label>)}</div></div></>}<div className="split-ratio-note"><div className="rule-title"><GitBranch size={15} />自动划分规则</div><b>训练 80% <em>/</em> 验证 10% <em>/</em> 测试 10%</b><small>按焊缝 ID 分组，同一焊缝不会同时进入训练集和测试集，避免数据泄漏。</small></div><button className="full-button" onClick={handleBuild} disabled={datasetId == null || buildJobId != null}>{buildJobId != null ? <><Activity size={16} />正在生成 · {progress}%</> : <><GitBranch size={16} />生成训练数据集</>}</button>{buildError && <p className="dataset-empty-state" role="alert">生成失败：{buildError} 请检查样本范围后重试。</p>}</section><section className="panel build-result"><div className="panel-heading"><div><h2>生成结果</h2><p>{buildJobId != null ? '正在生成训练数据版本…' : buildResult ? '最近一次生成结果' : '完成左侧配置后，这里会显示数据划分结果'}</p></div><StatusPill tone={buildStatus === 'failed' ? 'red' : buildStatus === 'running' ? 'orange' : buildResult ? 'green' : 'muted'}>{buildStatus === 'succeeded' ? '已生成' : buildStatus === 'failed' ? '生成失败' : buildStatus === 'running' ? '生成中' : '未开始'}</StatusPill></div>{buildResult && split ? <><div className="result-context"><CheckCircle2 size={16} /><span>训练数据集已生成，可在“新建训练”中使用</span></div><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>样本总数</span><strong>{buildResult.item_count.toLocaleString()}</strong></div><div><span>质量评分</span><strong>{qualityPct ?? '—'}</strong></div><div><span>版本快照</span><strong>{buildResult.snapshot_id ? buildResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><div className="empty-steps"><span><Database size={17} />选择数据集</span><span><SlidersHorizontal size={17} />选择样本范围</span><span><GitBranch size={17} />生成版本</span></div><strong>{buildJobId != null ? '正在生成训练数据版本' : '还没有训练数据版本'}</strong><p>{buildJobId != null ? `系统正在按焊缝分组生成，当前进度 ${progress}%` : '配置左侧两项条件后，点击“生成训练数据集”即可开始。'}</p></div>}</section></div></div>;
+}
+
+function TrainingDataPreparation() {
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasetId, setDatasetId] = useState<number | null>(null);
+  const [source, setSource] = useState<'manual' | 'split_task' | 'annotation_task'>('manual');
+  const [buildJobId, setBuildJobId] = useState<string | null>(null);
+  const [buildError, setBuildError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { status: buildStatus, progress, result: buildResult } = useJob<{ item_count: number; split: Partial<DatasetSplit>; quality: DatasetQuality | null; snapshot_id: string | null }>(buildJobId);
+  useEffect(() => {
+    let cancelled = false;
+    listDatasets().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[training-data] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const dataset = datasets.find((item) => item.id === datasetId) ?? null;
+  const handleBuild = () => {
+    if (datasetId == null) return;
+    setBuildError(null);
+    createDatasetVersion(String(datasetId), { name: `训练版本-${new Date().toISOString().slice(0, 10)}` })
+      .then((version) => createBuildTask(String(datasetId), String(version.id), { type: source }))
+      .then((res) => setBuildJobId(res.job_id))
+      .catch((err) => setBuildError(err instanceof Error ? err.message : '生成训练数据版本失败'));
+  };
+  useEffect(() => {
+    if (buildStatus === 'succeeded' || buildStatus === 'failed') setBuildJobId(null);
+    if (buildStatus === 'failed') setBuildError('请检查样本范围和数据质量后重试');
+  }, [buildStatus]);
+  const split = buildResult?.split;
+  const total = split ? (split.train ?? 0) + (split.val ?? 0) + (split.test ?? 0) : 0;
+  const slicePct = (value: number | undefined) => total > 0 && value != null ? `${((value / total) * 100).toFixed(0)}%` : '0%';
+  const qualityPct = buildResult?.quality ? `${((1 - buildResult.quality.repeat_rate - buildResult.quality.empty_label_rate - buildResult.quality.dimension_missing_rate) * 100).toFixed(1)}%` : null;
+  const sourceMeta: Record<string, { label: string; desc: string }> = {
+    manual: { label: '全部样本', desc: '纳入输入数据集中的全部有效样本' },
+    split_task: { label: '已切分样本', desc: '仅纳入已完成切分的样本' },
+    annotation_task: { label: '已标注样本', desc: '仅纳入已完成标注的样本' },
+  };
+  return <div className="page-wrap">
+    <PageIntro eyebrow="模型研发中心" title="生成训练数据版本" description="从数据中心选择一个已有数据集，筛选样本并生成供模型训练使用的固定版本。" action={<Toolbar secondary="导出报告" />} />
+    <div className="build-steps" aria-label="训练数据准备流程"><span className="current"><b>1</b>选择输入数据集</span><i /><span><b>2</b>筛选样本范围</span><i /><span><b>3</b>生成训练版本</span></div>
+    <div className="build-layout">
+      <section className="panel build-config"><div className="panel-heading"><div><h2>生成条件</h2><p>创建一份新的固定训练数据版本</p></div><Box size={17} /></div>
+        {loading ? <p className="dataset-empty-state" role="status">正在读取数据中心的数据集…</p> : datasets.length === 0 ? <div className="build-no-dataset"><Database size={22} /><strong>暂无可用输入数据集</strong><p>请先在数据中心创建数据集并生成版本。</p></div> : <>
+          <div className="form-block"><label className="form-label">1. 输入数据集</label><p className="form-help build-form-intro">来源于数据中心，不会修改原始数据。</p><select className="native-select" value={datasetId ?? ''} onChange={(e) => setDatasetId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择输入数据集</option>{datasets.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.version ?? '未生成版本'}</option>)}</select>{dataset && <div className="selected-dataset-card"><div className="selected-dataset-head"><span className="dataset-row-icon"><Box size={16} /></span><div><strong>{dataset.name}</strong><small>{dataset.dataset_no} · 当前版本 {dataset.version ?? '未生成'}</small></div><StatusPill tone={dataset.status === '可训练' ? 'green' : 'orange'}>{dataset.status}</StatusPill></div><div className="selected-dataset-meta"><span>样本数 <b>{dataset.sample_count.toLocaleString()}</b></span><span>标注完成度 <b>{dataset.progress != null ? `${dataset.progress}%` : '—'}</b></span></div></div>}</div>
+          <div className="form-block"><label className="form-label">2. 样本纳入范围</label><div className="build-source">{(['manual', 'split_task', 'annotation_task'] as const).map((key) => <label className={source === key ? 'chosen' : ''} key={key}><input type="radio" name="training-source" checked={source === key} onChange={() => setSource(key)} /><span><strong>{sourceMeta[key].label}</strong><small>{sourceMeta[key].desc}</small></span>{source === key && <Check size={15} />}</label>)}</div></div>
+        </>}
+        <div className="split-ratio-note"><div className="rule-title"><GitBranch size={15} />3. 训练数据划分</div><b>训练 80% <em>/</em> 验证 10% <em>/</em> 测试 10%</b><small>按焊缝 ID 分组，同一焊缝不会同时进入训练集和测试集，避免数据泄漏。</small></div>
+        <button className="full-button" onClick={handleBuild} disabled={datasetId == null || buildJobId != null}>{buildJobId != null ? <><Activity size={16} />正在生成 · {progress}%</> : <><GitBranch size={16} />生成训练数据版本</>}</button>{buildError && <p className="dataset-empty-state" role="alert">生成失败：{buildError}</p>}
+      </section>
+      <section className="panel build-result"><div className="panel-heading"><div><h2>训练版本预览</h2><p>{buildJobId != null ? '正在生成训练数据版本…' : buildResult ? '最近一次生成结果' : dataset ? '根据当前配置预览生成结果' : '选择输入数据集后开始预览'}</p></div><StatusPill tone={buildStatus === 'failed' ? 'red' : buildStatus === 'running' ? 'orange' : buildResult ? 'green' : 'muted'}>{buildStatus === 'succeeded' ? '已生成' : buildStatus === 'failed' ? '生成失败' : buildStatus === 'running' ? '生成中' : '未开始'}</StatusPill></div>
+        {buildResult && split ? <><div className="result-context"><CheckCircle2 size={16} /><span>训练数据版本已生成，可在“新建训练”中使用</span></div><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>样本总数</span><strong>{buildResult.item_count.toLocaleString()}</strong></div><div><span>质量评分</span><strong>{qualityPct ?? '—'}</strong></div><div><span>版本快照</span><strong>{buildResult.snapshot_id ? buildResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><div className="empty-steps"><span><Database size={17} />输入数据集</span><span><SlidersHorizontal size={17} />样本范围</span><span><GitBranch size={17} />训练版本</span></div><strong>{buildJobId != null ? '正在生成训练数据版本' : '还没有训练数据版本'}</strong><p>{buildJobId != null ? `系统正在按焊缝分组生成，当前进度 ${progress}%` : dataset ? `预计纳入 ${dataset.sample_count.toLocaleString()} 条样本，生成后将显示实际划分结果。` : '配置左侧条件后，点击“生成训练数据版本”即可开始。'}</p></div>}
+      </section>
+    </div>
+  </div>;
 }
 
 function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {

@@ -348,6 +348,51 @@ button { border: 0; cursor: pointer; }
 .alignment-banner.ok { color:#1e7f6e; background:#e2f5ee; }
 .alignment-banner.bad { color:#bd6b5b; background:#fbeeea; }
 
+/* 训练数据准备：让页面按“选择 → 配置 → 生成”的任务路径阅读。 */
+.build-steps{display:flex;align-items:center;gap:12px;margin:0 0 18px;padding:12px 16px;color:#9aacac;background:#f7fbfa;border:1px solid #e2eeeb;border-radius:9px;font-size:10px}
+.build-steps span{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.build-steps span.current{color:#287f79;font-weight:700}
+.build-steps b{display:grid;place-items:center;width:21px;height:21px;border-radius:50%;color:#fff;background:#a5c6bf;font:600 10px 'DM Mono',monospace}
+.build-steps span.current b{background:#2c9caf}
+.build-steps i{width:34px;height:1px;background:#d5e7e2}
+.build-config{padding-bottom:20px}
+.build-config .panel-heading{margin-bottom:8px}
+.build-form-intro{margin:-2px 0 8px;line-height:1.6}
+.selected-dataset-card{margin-top:10px;padding:12px;background:#f6fbfa;border:1px solid #dcece8;border-radius:8px}
+.selected-dataset-head{display:flex;align-items:center;gap:9px}
+.selected-dataset-head .dataset-row-icon{width:28px;height:28px;flex-shrink:0}
+.selected-dataset-head > div{display:grid;gap:3px;min-width:0;flex:1}
+.selected-dataset-head strong{overflow:hidden;color:#3e6469;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.selected-dataset-head small{color:#8ca1a1;font:9px 'DM Mono',monospace}
+.selected-dataset-head .status{flex-shrink:0}
+.selected-dataset-meta{display:flex;gap:20px;margin:11px 0 0 37px;color:#8ca1a1;font-size:9px}
+.selected-dataset-meta b{margin-left:4px;color:#466f73;font:600 10px 'DM Mono',monospace}
+.build-no-dataset{display:grid;place-items:center;gap:8px;padding:34px 16px;color:#92a7a6;text-align:center}
+.build-no-dataset svg{color:#78b8aa}
+.build-no-dataset strong{color:#4a7073;font-size:11px}
+.build-no-dataset p{margin:0;font-size:10px}
+.build-source label{justify-content:flex-start;min-height:52px;padding:10px 12px}
+.build-source label > span{display:grid;gap:3px;min-width:0}
+.build-source label > span strong{color:#426a6e;font-size:11px;font-weight:600}
+.build-source label > span small{margin:0;color:#8ca1a1;font-size:9px}
+.build-source label > svg{margin-left:auto;color:#2c9caf;flex-shrink:0}
+.split-ratio-note{margin-top:20px;padding:14px 15px;border:1px solid #d9eee7}
+.rule-title{display:flex;align-items:center;gap:6px;color:#2f8d80;font-size:10px;font-weight:700}
+.split-ratio-note b{margin-top:8px;font-size:14px;letter-spacing:.1px}
+.split-ratio-note b em{color:#a1b8b4;font-style:normal;font-weight:400}
+.split-ratio-note small{line-height:1.6}
+.build-result{min-height:380px}
+.result-context{display:flex;align-items:center;gap:8px;margin:8px 0 18px;padding:10px 12px;color:#217e6d;background:#eefaf5;border-radius:7px;font-size:11px}
+.result-context svg{flex-shrink:0}
+.build-state{min-height:282px;gap:12px}
+.build-state strong{color:#456b70;font-size:12px;font-weight:600}
+.build-state p{max-width:360px;margin:0;color:#93a6a6;font-size:10px;line-height:1.7}
+.empty-steps{display:flex;align-items:center;gap:8px;margin-bottom:8px;color:#719092;font-size:10px}
+.empty-steps span{display:flex;align-items:center;gap:5px;padding:7px 9px;background:#f3faf8;border-radius:6px}
+.empty-steps svg{color:#6db8a9}
+.status.muted{color:#73898b;background:#f1f5f4}
+@media (max-width:720px){.build-steps{align-items:flex-start;flex-direction:column;gap:7px}.build-steps i{width:1px;height:10px;margin-left:10px}.empty-steps{align-items:stretch;flex-direction:column}.build-result{min-height:320px}}
+
 /* 数据上传页：必填星标红色强调 + 缺失项红色闪烁提示（Registration） */
 .required-mark { color:#e5484d; font-weight:700; }
 .native-select { width:100%; padding:11px 12px; border:1px solid #dce7e5; border-radius:6px; background:#fff; color:#45666b; font:inherit; }
