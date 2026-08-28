@@ -318,6 +318,7 @@ export interface SignalChannel {
 }
 
 export interface SignalData {
+  source: 'real' | 'generated';
   duration: number;
   sample_rate: number;
   channels: SignalChannel[];
