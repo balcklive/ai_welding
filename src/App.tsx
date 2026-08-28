@@ -40,6 +40,7 @@ import {
 import {
   aiPretag,
   createAlignmentTask,
+  getLatestAlignmentTask,
   createAnnotationFrame,
   createAnnotationTask,
   createSplitTask,
@@ -2561,6 +2562,10 @@ function TrainingDataPreparation() {
 function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
+  const [inputReady, setInputReady] = useState(false);
+  const [inputError, setInputError] = useState<string | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [artifactError, setArtifactError] = useState<string | null>(null);
   const [record, setRecord] = useState<DataRecord | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [signals, setSignals] = useState<SignalData | null>(null);
@@ -2580,16 +2585,37 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
   // 焊缝详情：最新版本号（handleRun 目标）+ 登记模态（不再硬编码模态表）
   useEffect(() => {
     if (!dataId) return;
+    hydratedRef.current = false;
+    setJobId(null);
+    setInputReady(false);
+    setInputError(null);
+    setCreateError(null);
     let cancelled = false;
     getWeld(dataId).then((r) => {
       if (cancelled) return;
       setRecord(r);
       setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null);
       setModalities(r.modalities?.length ? r.modalities : ['video', 'timeseries']);
-    }).catch((err) => { if (!cancelled) console.warn('[alignment] getWeld failed', err); });
+      setInputReady(true);
+    }).catch((err) => { if (!cancelled) setInputError(`焊缝信息读取失败：${err instanceof Error ? err.message : '请重试'}`); });
     return () => { cancelled = true; };
   }, [dataId]);
-  // v1.0 原始数据 → 真实视频预签名 URL + 真实信号波形（切分页也必须加载真实输入）
+  useEffect(() => {
+    if (!dataId || versionId == null || splitOnly || hydratedRef.current) return;
+    let cancelled = false;
+    getLatestAlignmentTask(dataId, String(versionId)).then((latest) => {
+      if (cancelled) return;
+      hydratedRef.current = true;
+      if (latest) setJobId(latest.id);
+    }).catch((err) => {
+      if (!cancelled) {
+        hydratedRef.current = true;
+        setInputError(`历史对齐任务读取失败：${err instanceof Error ? err.message : '请重试'}`);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [dataId, versionId, splitOnly]);
+  // 当前版本原始数据 → 真实视频预签名 URL + 真实信号波形
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
@@ -2602,7 +2628,7 @@ function Alignment({ splitOnly = false, dataId }: { embedded?: boolean; splitOnl
       getSignals(dataId, String(v10.id)).then((s) => { if (!cancelled) setSignals(s); }).catch(() => {});
     }).catch((err) => { if (!cancelled) console.warn('[alignment] listVersions failed', err); });
     return () => { cancelled = true; };
-  }, [dataId, splitOnly]);
+  }, [dataId, versionId, splitOnly]);
   // 对齐成功：时间轴切到新版本；视频轨道有源对象 → 用内核实际使用的视频刷新播放器
   useEffect(() => {
     if (!alignRes) return;

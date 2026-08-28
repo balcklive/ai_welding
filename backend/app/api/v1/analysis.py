@@ -1342,3 +1342,42 @@ def _filter_error(filter_type: str | None, cutoff: float | None, cutoff2: float 
         if cutoff >= cutoff2:
             return "cutoff 需小于 cutoff2"
     return None
+@router.get("/welds/{weld_id}/versions/{version_id}/alignment-tasks/latest")
+def get_latest_alignment_task(
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """恢复指定焊缝版本最近一次对齐任务，供页面刷新/重新进入时恢复状态。"""
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    try:
+        forbid_unless_record_owned(session, current_user, record)
+    except Exception:
+        return err(40300, "无权限", status=403)
+    version = svc.get_version(session, version_id)
+    if version is None or version.record_id != record.id:
+        return err(40402, "版本不存在", status=404)
+
+    row = session.exec(
+        select(AlignmentTask, Job)
+        .join(Job, Job.id == AlignmentTask.job_id)
+        .where(AlignmentTask.version_id == version_id)
+        .order_by(AlignmentTask.id.desc())
+    ).first()
+    if row is None:
+        return ok(None)
+
+    task, job = row
+    payload = to_job_payload(job)
+    if task.events is not None:
+        result = dict(payload.get("result") or {})
+        result["events"] = task.events
+        result["tracks"] = task.tracks
+        result["assets"] = task.assets
+        payload["result"] = result
+    return ok(payload)
+
+

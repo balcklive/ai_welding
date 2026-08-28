@@ -61,6 +61,16 @@ export async function getAlignmentTask(
   return request<Job<AlignmentResult>>(`/alignment-tasks/${taskId}`);
 }
 
+/** 恢复指定焊缝版本最近一次对齐任务；没有历史任务时返回 null。 */
+export async function getLatestAlignmentTask(
+  weldId: string,
+  versionId: string,
+): Promise<Job<AlignmentResult> | null> {
+  return request<Job<AlignmentResult> | null>(
+    `/welds/${weldId}/versions/${versionId}/alignment-tasks/latest`,
+  );
+}
+
 /** 多通道时域波形。传 `max_points` 时由服务端 min-max 抽稀（含 `times` 坐标，点数
  * 受控，不再本地抽稀）；未传（全量响应/旧路径）保留前端 ≤512 点均匀抽稀。 */
 export async function getSignals(
