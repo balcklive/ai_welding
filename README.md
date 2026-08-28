@@ -209,20 +209,6 @@ npm run build
 cd backend && uv run pytest
 ```
 
-## GitHub Pages 部署
+## 部署
 
-项目已配置 GitHub Actions 自动部署到 GitHub Pages。每次推送 `main` 分支后，工作流会自动执行依赖安装、Vite 构建，并将 `dist` 发布到 Pages。
-
-仓库地址为：
-
-```text
-https://github.com/balcklive/ai_welding
-```
-
-预计访问地址为：
-
-```text
-https://balcklive.github.io/ai_welding/
-```
-
-首次启用时，需要在 GitHub 仓库的 `Settings → Pages → Build and deployment` 中将发布来源设置为 `GitHub Actions`。当前页面是纯前端静态原型，展示和交互状态保存在浏览器内存中，不会写入数据库；真实数据、用户权限、文件上传和模型训练服务仍需后端支持。
+部署采用 Docker 私有化方案：推送到 `main` 后，GitHub Actions（`.github/workflows/deploy-docker.yml`）先执行前端 lint/typecheck/build 校验，再构建镜像推送到阿里云 ACR，并通过 SSH 在服务器拉取镜像、替换 FastAPI 容器（FastAPI 同时服务 `/api` 与前端静态文件）。详见 `docs/superpowers/specs/2026-08-26-docker-cicd-design.md`。

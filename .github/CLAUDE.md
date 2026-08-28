@@ -1,6 +1,6 @@
 # CLAUDE.md — .github/
 
-GitHub 相关配置目录，无脚本。当前仅含 CI/CD workflow。
+GitHub 相关配置目录，无脚本。当前仅含 CI/CD workflow（Docker 私有化部署；Pages 流水线已废弃删除）。
 
 - `workflows/`：GitHub Actions 工作流（见子目录 CLAUDE.md）。
 
