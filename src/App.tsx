@@ -1279,7 +1279,7 @@ function RawMediaPreview({ objectKeys, loading = false }: { objectKeys: string[]
       }
       catch (err) { console.warn('[datasets] media file url failed', key, err); return null; }
     }))
-      .then((results) => results.filter((item): item is { key: string; sourceKey: string; url: string; preview?: boolean } => item !== null))
+      .then((results) => results.filter((item): item is NonNullable<typeof item> => item !== null))
       .then((next) => {
         if (cancelled) return;
         const isVideo = (key: string) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key);
