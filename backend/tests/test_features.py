@@ -16,6 +16,7 @@
 
 import numpy as np
 import pytest
+from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.pool import StaticPool
@@ -25,8 +26,11 @@ from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
-from app.models import DataRecord, DataVersion, FeatureExtraction, User
+from app.models import AuditLog, DataRecord, DataVersion, FeatureExtraction, Job, User
 from app.services import features
+from app.services.jobs import create_job
+from app.jobs.features import handle as handle_feature_job
+from app.jobs.executor import _mark_failed_in
 
 client = TestClient(app)
 
@@ -43,6 +47,27 @@ def db_session():
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         seed_all(session)
+        # 测试不依赖可选的演示数据种子（生产环境已移除演示数据）。
+        for weld_id, registration_no in ((WELD_0248, "REG-TEST-0248"), ("WLD-20260814-0245", "REG-TEST-0245")):
+            if not session.exec(select(DataRecord).where(DataRecord.weld_id == weld_id)).first():
+                record = DataRecord(
+                    weld_id=weld_id,
+                    registration_no=registration_no,
+                    source="test",
+                    modalities=["timeseries"],
+                    quality="通过",
+                )
+                session.add(record)
+                session.commit()
+                session.refresh(record)
+                version = DataVersion(
+                    record_id=record.id,
+                    version_no="v1.0",
+                    action="原始数据",
+                    object_keys=[f"raw/{registration_no}/current.csv"],
+                )
+                session.add(version)
+                session.commit()
         yield session
     engine.dispose()
 
@@ -126,6 +151,32 @@ def test_audio_features_shape_and_finite() -> None:
 def test_audio_features_zero_input_safe() -> None:
     af = features.audio_features(np.zeros(2048), fs=1000)
     assert all(v == 0.0 for v in af.values())
+
+
+def test_vision_provider_response_is_validated(monkeypatch) -> None:
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            import json
+
+            return json.dumps({"features": _fake_vis()}).encode("utf-8")
+
+    monkeypatch.setattr(features, "urlopen", lambda *args, **kwargs: FakeResponse())
+    result = features.vision_features_from_provider(b"image-bytes", "http://vision.test/infer")
+    assert result == _fake_vis()
+
+    class InvalidResponse(FakeResponse):
+        def read(self):
+            return b'{"features": {"area": 1}}'
+
+    monkeypatch.setattr(features, "urlopen", lambda *args, **kwargs: InvalidResponse())
+    with pytest.raises(ValueError, match="字段不完整"):
+        features.vision_features_from_provider(b"image-bytes", "http://vision.test/infer")
 
 
 # ---------- unify ----------
@@ -218,9 +269,18 @@ def _extract_body(weld_id, vid, **overrides):
 
 
 def test_extract_features_endpoint_persists_and_get_roundtrip(
-    override_get_session, override_get_current_user, db_session
+    override_get_session, override_get_current_user, db_session, monkeypatch
 ) -> None:
     vid = _version_id_by_no(WELD_0248)
+    monkeypatch.setattr(
+        "app.api.v1.analysis.signal_ingest.load_signal_bundle",
+        lambda *args: SimpleNamespace(
+            channels=[SimpleNamespace(id=key, values=np.linspace(1, 2, 100)) for key in ("cur", "vol", "gas", "wir")],
+            source="real", sample_rate=1000, duration=0.1,
+        ),
+    )
+    monkeypatch.setattr("app.api.v1.analysis._load_real_vision_features", lambda version: (_fake_vis(), "real"))
+    monkeypatch.setattr("app.api.v1.analysis._load_real_audio_features", lambda version: (_fake_audio(), "real"))
     resp = client.post("/api/v1/features/extract", json=_extract_body(WELD_0248, vid))
     assert resp.status_code == 200, resp.text[:400]
     data = resp.json()["data"]
@@ -253,6 +313,159 @@ def test_extract_features_endpoint_persists_and_get_roundtrip(
     resp2 = client.get(f"/api/v1/features/{data['id']}")
     assert resp2.status_code == 200
     assert resp2.json()["data"] == data
+
+
+def test_create_feature_extraction_task_is_idempotent(
+    override_get_session, override_get_current_user, db_session
+) -> None:
+    record = DataRecord(weld_id="WLD-TASK-IDEMPOTENT", registration_no="REG-TASK-IDEMPOTENT", source="lab", quality="通过")
+    db_session.add(record)
+    db_session.commit()
+    db_session.refresh(record)
+    version = DataVersion(record_id=record.id, version_no="v1.0", action="原始数据", object_keys=["raw/task.csv"])
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+    body = _extract_body(record.weld_id, version.id)
+    first = client.post("/api/v1/features/extract-tasks", json=body)
+    second = client.post("/api/v1/features/extract-tasks", json=body)
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["data"]["job_id"] == second.json()["data"]["job_id"]
+
+
+def test_failed_feature_task_can_be_retried_and_is_audited(
+    override_get_session, override_get_current_user, db_session
+) -> None:
+    record = DataRecord(weld_id="WLD-TASK-RETRY", registration_no="REG-TASK-RETRY", source="lab", quality="通过")
+    db_session.add(record)
+    db_session.commit()
+    db_session.refresh(record)
+    version = DataVersion(record_id=record.id, version_no="v1.0", action="原始数据", object_keys=["raw/retry.csv"])
+    db_session.add(version)
+    db_session.commit()
+    db_session.refresh(version)
+    body = _extract_body(record.weld_id, version.id)
+    first = client.post("/api/v1/features/extract-tasks", json=body)
+    first_job = db_session.exec(select(Job).where(Job.type == "feature_extraction")).first()
+    assert first_job is not None
+    _mark_failed_in(db_session, first_job.id, "vision provider unavailable")
+    second = client.post("/api/v1/features/extract-tasks", json=body)
+    assert first.status_code == 200 and second.status_code == 200
+    assert second.json()["data"]["job_id"] != first.json()["data"]["job_id"]
+    failed_audit = db_session.exec(
+        select(AuditLog).where(AuditLog.action == "failed", AuditLog.resource_type == "feature_extraction_job")
+    ).all()
+    assert len(failed_audit) == 1
+
+
+def test_feature_job_blocks_non_production_modalities(
+    override_get_session, override_get_current_user, db_session, monkeypatch
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    monkeypatch.setattr(
+        "app.jobs.features.signal_ingest.load_signal_bundle",
+        lambda *args: SimpleNamespace(
+            channels=[SimpleNamespace(id="cur", values=np.linspace(1, 2, 100))],
+            source="generated", sample_rate=1000, duration=0.1,
+        ),
+    )
+    job = create_job(
+        db_session,
+        "feature_extraction",
+        {"request": _extract_body(WELD_0248, vid), "user_id": 1},
+    )
+    db_session.commit()
+
+    # 测试版本只有测试时序输入，且没有视觉/音频正式输入；生产默认必须拒绝落库。
+    with pytest.raises(ValueError, match="生产模式禁止"):
+        handle_feature_job(job.id, db_session)
+    assert db_session.exec(select(FeatureExtraction)).all() == []
+
+
+def test_feature_job_persists_metadata_for_formal_modalities(
+    override_get_session, override_get_current_user, db_session, monkeypatch
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    job = create_job(
+        db_session,
+        "feature_extraction",
+        {"request": _extract_body(WELD_0248, vid), "user_id": 1},
+    )
+    job.status = "running"
+    db_session.commit()
+
+    class Channel:
+        id = "cur"
+        values = np.linspace(1.0, 2.0, 100)
+
+    class Bundle:
+        channels = [Channel()]
+        source = "real"
+        sample_rate = 2000
+        duration = 0.05
+
+    monkeypatch.setattr("app.jobs.features.signal_ingest.load_signal_bundle", lambda *args: Bundle())
+    monkeypatch.setattr(
+        "app.jobs.features._load_real_vision_features",
+        lambda version: (_fake_vis(), "real"),
+    )
+    monkeypatch.setattr(
+        "app.jobs.features._load_real_audio_features",
+        lambda version: (_fake_audio(), "real"),
+    )
+    handle_feature_job(job.id, db_session)
+
+    db_session.refresh(job)
+    extraction = db_session.get(FeatureExtraction, job.result["extraction_id"])
+    assert job.status == "succeeded"
+    assert extraction is not None
+    assert extraction.status == "succeeded"
+    assert extraction.job_id == job.id
+    assert extraction.source_by_modality == {"timeseries": "real", "vision": "real", "audio": "real"}
+    assert extraction.sample_rate == 2000
+    assert extraction.sample_count == 100
+    assert extraction.pipeline_version == "feature-extraction-v2"
+
+
+def test_feature_download_writes_real_json_and_npy_and_audit(
+    override_get_session, override_get_current_user, db_session, monkeypatch
+) -> None:
+    vid = _version_id_by_no(WELD_0248)
+    record = db_session.exec(select(DataRecord).where(DataRecord.weld_id == WELD_0248)).first()
+    extracted_row = FeatureExtraction(
+        version_id=vid,
+        ts_features={}, vision_features=_fake_vis(), audio_features=_fake_audio(),
+        unified_vector=features.unify({}, _fake_vis(), _fake_audio(), "无", "JSON"),
+        normalization="无", format="JSON", created_by=1,
+    )
+    db_session.add(extracted_row)
+    db_session.commit()
+    db_session.refresh(extracted_row)
+    extracted = {"id": extracted_row.id}
+
+    class FakeStorage:
+        def __init__(self):
+            self.uploads = {}
+
+        def upload_stream(self, key, fileobj, size, content_type):
+            self.uploads[key] = (fileobj.read(), size, content_type)
+
+        def presign_get(self, key):
+            return f"https://storage.test/{key}"
+
+    storage = FakeStorage()
+    monkeypatch.setattr("app.storage.get_storage", lambda: storage)
+    for fmt, suffix in (("JSON", ".json"), ("NPY", ".npy")):
+        response = client.post(f"/api/v1/features/{extracted['id']}/download", json={"format": fmt})
+        assert response.status_code == 200, response.text[:400]
+        result = response.json()["data"]
+        assert result["format"] == fmt
+        assert result["object_key"].endswith(suffix)
+        assert result["url"].startswith("https://storage.test/")
+    audits = db_session.exec(
+        select(AuditLog).where(AuditLog.action == "export", AuditLog.resource_type == "feature_extraction")
+    ).all()
+    assert len(audits) == 2
 
 
 def test_extract_features_bad_ids(
@@ -318,13 +531,8 @@ def test_extract_features_marks_fallback_modalities(
         "/api/v1/features/extract",
         json=_extract_body(record.weld_id, version.id, normalization="无"),
     )
-    assert resp.status_code == 200, resp.text[:400]
-    data = resp.json()["data"]
-    assert data["modality_status"] == {
-        "timeseries": "generated",
-        "vision": "missing",
-        "audio": "missing",
-    }
+    assert resp.status_code == 400
+    assert "真实时序信号" in resp.json()["message"]
 
 
 def test_get_feature_extraction_unknown_id(

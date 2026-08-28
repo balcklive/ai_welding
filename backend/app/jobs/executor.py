@@ -25,6 +25,7 @@ from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.core.db import SessionLocal
+from app.core.audit import write_audit
 from app.models.jobs import Job
 from app.services.jobs import get_job_by_uid, mark_failed
 
@@ -94,6 +95,15 @@ def _mark_failed_in(session: Session, job_id: int, message: str) -> None:
     if failed is not None:
         mark_failed(session, failed, {"message": message})
         _release_request_claim(session, failed)
+        if failed.type == "feature_extraction":
+            write_audit(
+                session,
+                (failed.result or {}).get("user_id"),
+                "failed",
+                "feature_extraction_job",
+                failed.job_uid,
+                {"message": message},
+            )
         session.commit()
 
 
@@ -112,6 +122,9 @@ def _release_request_claim(session: Session, job: Job) -> None:
         if task is not None:
             task.active_request_key = None
             session.add(task)
+    elif job.type == "feature_extraction":
+        # 失败任务允许同一输入重试；成功/运行中仍由 request_key 保证幂等。
+        job.request_key = None
 
 
 def run_job(job_uid: str) -> None:

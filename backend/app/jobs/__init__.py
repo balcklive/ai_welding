@@ -15,6 +15,7 @@ from app.jobs.testing import handle as _test_handler  # noqa: F401  # 注册 tes
 from app.jobs.inference import handle as _inference_handler  # noqa: F401  # 注册 inference handler（Task 16）
 from app.jobs.signal_ingest import handle as _signal_ingest_handler  # noqa: F401  # 注册 signal_ingest handler（Task 18）
 from app.jobs.media_prep import handle as _media_prep_handler  # noqa: F401  # 注册 media_prep handler（视频转码预览）
+from app.jobs.features import handle as _feature_handler  # noqa: F401  # 注册 feature_extraction handler
 
 __all__ = [
     "executor",

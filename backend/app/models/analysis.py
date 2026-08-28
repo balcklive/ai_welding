@@ -126,6 +126,22 @@ class FeatureExtraction(SQLModel, table=True):
     created_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
+    job_id: int | None = Field(default=None, foreign_key="jobs.id", index=True)
+    status: str = Field(default="succeeded", max_length=16, index=True)
+    source_by_modality: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    input_object_keys: list = Field(default_factory=list, sa_column=Column(JSON))
+    algorithm_version: str = Field(default="feature-pipeline-v2", max_length=64)
+    pipeline_version: str = Field(default="feature-extraction-v2", max_length=64)
+    sample_rate: int | None = Field(default=None)
+    sample_count: int | None = Field(default=None)
+    duration: float | None = Field(default=None)
+    channel_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    missing_modalities: list = Field(default_factory=list, sa_column=Column(JSON))
+    warnings: list = Field(default_factory=list, sa_column=Column(JSON))
+    error_message: str | None = Field(default=None, max_length=1024)
+    started_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    finished_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    created_by: int | None = Field(default=None, foreign_key="users.id", index=True)
 
 
 class SignalIngest(SQLModel, table=True):

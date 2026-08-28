@@ -39,6 +39,8 @@ from __future__ import annotations
 
 import zlib
 from io import BytesIO
+import json
+from urllib.request import Request, urlopen
 
 import numpy as np
 import pywt
@@ -218,6 +220,21 @@ def vision_features_from_image(data: bytes) -> dict:
         "glcm_energy": _image_glcm(gray, selected, "energy"),
         "sobel_gradient": float(np.mean(filters.sobel(gray)[selected])) if selected.any() else 0.0,
     }
+
+
+def vision_features_from_provider(data: bytes, provider_url: str) -> dict:
+    """调用正式视觉推理服务并校验八维特征响应。"""
+    request = Request(provider_url, data=data, method="POST", headers={"Content-Type": "application/octet-stream"})
+    with urlopen(request, timeout=60) as response:  # noqa: S310 - URL comes from deployment config
+        payload = json.loads(response.read().decode("utf-8"))
+    values = payload.get("features", payload)
+    keys = VISION_GEOMETRY_KEYS + VISION_TEXTURE_KEYS
+    if not isinstance(values, dict) or any(key not in values for key in keys):
+        raise ValueError("视觉推理服务返回的特征字段不完整")
+    result = {key: float(values[key]) for key in keys}
+    if not all(np.isfinite(value) for value in result.values()):
+        raise ValueError("视觉推理服务返回了非有限特征值")
+    return result
 
 
 def _image_glcm(gray: np.ndarray, mask: np.ndarray, prop: str) -> float:

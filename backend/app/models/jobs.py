@@ -11,6 +11,7 @@ class Job(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     job_uid: str = Field(max_length=40, unique=True)
+    request_key: str | None = Field(default=None, max_length=128, index=True, unique=True)
     type: str = Field(max_length=32, index=True)
     status: str = Field(max_length=16, index=True)
     progress: int = Field(default=0)
