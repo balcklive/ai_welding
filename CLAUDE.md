@@ -1,7 +1,7 @@
 # CLAUDE.md — 项目根
 
 焊接数据智能分析与 AI 建模平台。面向焊接工艺研究、质量分析、数据治理和 AI 建模。
-当前阶段为前端静态原型（Vite + React 18 + TypeScript + Tailwind），页面中统计、图表、核验结果、训练指标等均为演示数据。
+当前阶段已从前端静态原型进入真实系统功能验收阶段：前后端 API、MySQL、MinIO、登录、异步 Job、报告导出和主要业务页面已打通；信号导入、信号分析、特征提取和报告支持真实数据链路。部分切分、标注、训练、测试、推理算法仍为演示/模拟计算，但任务编排、状态持久化、结果回填和产物关联按真实系统实现。
 
 ## 开发规则（必守）
 
@@ -15,7 +15,7 @@
 ## 技术栈与结构
 
 - 前端在仓库根目录（`src/`），保持现有结构不动。
-- 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），**全栈已打通**：后端 Task 1–17 全部实现（含真实 DSP、Job 执行器、MinIO 存储、报告导出），前端各页已接线到 `/api/v1`（登录闸门 + 各域 api 模块）。实现细节见 `backend/CLAUDE.md`；计划与验收见 `docs/superpowers/plans/`。
+- 后端独立在 `backend/`（FastAPI + SQLModel + Alembic + uv），**全栈主要业务链路已打通**：包含真实信号处理、Job 执行器、MinIO 存储、报告导出和前端各域 `/api/v1` 接线（登录闸门 + 各域 API 模块）。实现细节见 `backend/CLAUDE.md`；计划与验收见 `docs/superpowers/plans/`。
 - 设计文档见 `docs/`：接口契约 `API接口清单.md` · 表结构 `数据库设计.md` · 对象存储 `OSS存储设计.md` · 目录组织 `文件与目录设计.md` · 开发规范 `开发规范.md`。
 - 部署目标：私有化服务器，单容器 Docker（多阶段构建，FastAPI 同时服务 `/api` 与前端静态文件）。`Dockerfile` 负责构建镜像，`.github/workflows/deploy-docker.yml` 在 `main` 校验通过后由 GitHub Actions 构建并推送阿里云 ACR，再通过 SSH 在服务器执行 `docker pull` + `docker run`；服务器需配置项目 `.env`。
 
