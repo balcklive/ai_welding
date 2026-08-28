@@ -1251,20 +1251,34 @@ const EMPTY_OBJECT_KEYS: string[] = [];
 
 function RawMediaPreview({ objectKeys, loading = false }: { objectKeys: string[]; loading?: boolean }) {
   const [urls, setUrls] = useState<{ key: string; url: string }[]>([]);
+  const [processing, setProcessing] = useState(false);
+  const [refresh, setRefresh] = useState(0);
   const mediaKeys = useMemo(() => objectKeys.filter((key) => /\.(mp4|avi|mkv|mov|webm|jpg|jpeg|png|webp|bmp|gif)$/i.test(key)), [objectKeys]);
   useEffect(() => {
     let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let isProcessing = false;
     setUrls([]);
+    setProcessing(false);
     Promise.all(mediaKeys.map(async (key) => {
-      try { return { key, url: (await getFileUrl(key)).url }; }
+      try {
+        const result = await getFileUrl(key);
+        if (result.processing) isProcessing = true;
+        return { key, url: result.url };
+      }
       catch (err) { console.warn('[datasets] media file url failed', key, err); return null; }
     }))
       .then((results) => results.filter((item): item is { key: string; url: string } => item !== null))
-      .then((next) => { if (!cancelled) setUrls(next); })
+      .then((next) => {
+        if (cancelled) return;
+        setUrls(next);
+        setProcessing(isProcessing);
+        if (isProcessing) retry = setTimeout(() => { if (!cancelled) setRefresh((value) => value + 1); }, 2000);
+      })
       .catch((err) => { if (!cancelled) console.warn('[datasets] media preview failed', err); });
-    return () => { cancelled = true; };
-  }, [objectKeys, mediaKeys]);
-  const mediaLoading = loading || (mediaKeys.length > 0 && urls.length === 0);
+    return () => { cancelled = true; if (retry) clearTimeout(retry); };
+  }, [objectKeys, mediaKeys, refresh]);
+  const mediaLoading = loading || processing || (mediaKeys.length > 0 && urls.length === 0);
   if (mediaLoading) return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>正在读取当前焊缝的真实媒体文件…</p></div></div><div className="raw-media-empty" role="status"><ImageIcon size={28} /><strong>媒体加载中</strong><span>请稍候</span></div></section>;
   if (!urls.length) return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>当前焊缝没有已关联的图片或视频文件。</p></div></div><div className="raw-media-empty"><ImageIcon size={28} /><strong>暂无图片或视频</strong><span>该焊缝仍可查看时序信号和其他数据详情。</span></div></section>;
   return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>使用当前焊缝版本中的真实文件。</p></div></div><div className="raw-media-grid">{urls.map(({ key, url }) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key) ? <video key={key} src={url} controls preload="metadata" /> : <img key={key} src={url} alt={`真实数据 ${key}`} />)}</div></section>;

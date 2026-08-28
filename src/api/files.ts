@@ -67,8 +67,8 @@ export function putFileDirect(
 export async function getFileUrl(
   objectKey: string,
   expires?: number,
-): Promise<{ url: string }> {
-  return request<{ url: string }>(`/files/${objectKey}/url`, {
+): Promise<{ url: string; object_key?: string; preview?: boolean; processing?: boolean }> {
+  return request<{ url: string; object_key?: string; preview?: boolean; processing?: boolean }>(`/files/${objectKey}/url`, {
     query: { expires },
   });
 }

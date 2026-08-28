@@ -26,8 +26,10 @@ from pydantic import BaseModel
 from app.api.deps import get_current_user
 from app.core.audit import write_audit
 from app.core.db import get_session
+from app.models.jobs import Job
 from app.schemas.common import err, ok
 from app.storage import get_storage
+from sqlmodel import Session, select
 
 router = APIRouter(prefix="/files", dependencies=[Depends(get_current_user)])
 
@@ -40,6 +42,7 @@ MAX_PRESIGN_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024
 #: 预签名 GET URL 有效期上限（OSS §4：长视频 24h）
 MAX_PRESIGN_GET_EXPIRES = 86400
 _UPLOADS_LIFECYCLE = {"policy": "temporary", "retention_days": 30, "prefix": "uploads/"}
+_VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".webm")
 
 
 class PresignUploadRequest(BaseModel):
@@ -79,6 +82,35 @@ def _is_safe_object_path(value: str) -> bool:
     if any(part in {"", ".", ".."} for part in parts):
         return False
     return True
+
+
+def _browser_preview_key(session: Session, object_key: str) -> tuple[str, bool, bool]:
+    """Resolve a source video to the latest successful browser preview.
+
+    Raw uploads remain the source of truth in a weld version, but industrial-camera
+    videos are not necessarily browser-decodable.  ``media_prep`` stores the H.264
+    + faststart derivative in its job result, so the generic URL endpoint must use
+    that result too; previously only the video-annotation flow did this lookup.
+    """
+    if not object_key.lower().endswith(_VIDEO_EXTENSIONS):
+        return object_key, False, False
+    jobs = session.exec(
+        select(Job)
+        .where(Job.type == "media_prep")
+        .order_by(Job.id.desc())
+    ).all()
+    for job in jobs:
+        result = job.result or {}
+        if result.get("object_key") != object_key:
+            continue
+        if job.status in {"pending", "running"}:
+            return object_key, False, True
+        if job.status != "succeeded":
+            continue
+        preview_key = result.get("preview_key")
+        if isinstance(preview_key, str) and preview_key:
+            return preview_key, preview_key != object_key, False
+    return object_key, False, False
 
 
 def _is_csv_upload(file: UploadFile) -> bool:
@@ -189,6 +221,7 @@ def get_file_url(
     request: Request,
     object_key: str,
     expires: Annotated[int | None, Query()] = None,
+    session: Session = Depends(get_session),
 ) -> object:
     """预签名下载/播放 URL（支持 Range）。`expires` 秒，默认 1h，上限 24h。"""
     if not object_key or not object_key.strip():
@@ -202,5 +235,11 @@ def get_file_url(
         expires = 3600
     if not (0 < expires <= MAX_PRESIGN_GET_EXPIRES):
         return err(40000, "expires 需在 1~86400 秒之间", status=400)
+    resolved_key, preview, processing = _browser_preview_key(session, object_key)
     storage = get_storage()
-    return ok({"url": storage.presign_get(object_key, expires)})
+    return ok({
+        "url": storage.presign_get(resolved_key, expires),
+        "object_key": resolved_key,
+        "preview": preview,
+        "processing": processing,
+    })
