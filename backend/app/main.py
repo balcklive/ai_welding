@@ -21,6 +21,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.gzip import GZipMiddleware
 from loguru import logger
 from sqlmodel import Session
 
@@ -69,6 +70,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AI Welding Platform API", version="0.1.0", lifespan=lifespan)
+# gzip：波形/信号类 JSON 大响应压缩比 3~5x（配合 /signals max_points 服务端抽稀，
+# 公网低带宽下首屏从 ~26MB 降到 ~几十 KB）。
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 app.add_middleware(AccessLogMiddleware)
 
 

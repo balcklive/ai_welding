@@ -1,11 +1,11 @@
 # CLAUDE.md — backend/app/jobs/
 
-Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18**）。导入本包即完成 handler 注册
+Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep**）。导入本包即完成 handler 注册
 （`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py` /
 `app/jobs/dataset_build.py` / `app/jobs/training.py` / `app/jobs/testing.py` /
-`app/jobs/inference.py` / `app/jobs/signal_ingest.py`，各模块级 `@register_handler(...)`
+`app/jobs/inference.py` / `app/jobs/signal_ingest.py` / `app/jobs/media_prep.py`，各模块级 `@register_handler(...)`
 填充 `executor.HANDLERS`）。
-新增域任务（split/annotation/dataset_build/training/signal_ingest...）在本包加一个 `xxx.py`
+新增域任务（split/annotation/dataset_build/training/signal_ingest/media_prep...）在本包加一个 `xxx.py`
 注册即可，executor 无需改动。
 
 ## 脚本
@@ -68,6 +68,17 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18**）。导入本�
   校验 → 启发式 events/anomalies → 写 MinIO Parquet → 回填行 + job.result）。**关键差异**：
   `run_ingest` 内部自捕获异常并写 failed 行状态后正常返回——executor 的 failed 兜底会先
   `rollback` 丢弃 handler 写过的行状态，故不能像 alignment/split 把业务异常重抛给执行器。
+- `media_prep.py`：**视频可播性预处理**。`handle`（`@register_handler("media_prep")`）→
+  `run_media_prep(session, job)`——登记挂载视频 key 时由 welds 路由同事务建 job
+  （`result={weld_id, version_id, object_key}`）；handler 下载源视频（≤`MAX_VIDEO_PROBE_BYTES`
+  否则 ValueError failed）→ `_probe_codec`（ffmpeg stderr 解析编码）→ 已是
+  `BROWSER_FRIENDLY_CODECS`+faststart 则 `preview_key=object_key` 免转；否则
+  `media_probe.transcode_preview` 转 H.264+faststart 上传
+  `processed/{weld_id}/video/{stem}.preview.mp4` → `mark_succeeded(result={object_key,
+  preview_key, transcode, codec})`。消费方：`POST /annotation-tasks`(source=video) 用
+  `analysis._browser_friendly_video_key` 查最新 succeeded job 换预览 key。**同 signal_ingest
+  约定**：自捕获异常 rollback + 重取 job 行写 failed，不重抛；转码跑在 executor 单线程
+  轮询内（长视频转码期间其他 job 排队）。
 
 ## 坑/限制
 

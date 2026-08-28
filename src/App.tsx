@@ -473,6 +473,8 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
   const [signal, setSignal] = useState<SignalData | null>(null);
   const [segments, setSegments] = useState<AnnotationLabel[]>([]);
   const [draft, setDraft] = useState<{ start: number | null; end: number | null }>({ start: null, end: null });
+  // dataZoom 视口（百分比）：窗口请求重渲染时保持用户当前缩放位置
+  const [zoomPct, setZoomPct] = useState({ start: 0, end: 100 });
   const [saved, setSaved] = useState(false);
   const [weldImg, setWeldImg] = useState('');
   const taskCreatedRef = useRef(false);
@@ -520,12 +522,25 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
     return () => { cancelled = true; };
   }, [taskId, jobStatus]);
 
-  // 拉取多通道信号
-  useEffect(() => {
+  // 拉取多通道信号：Overview/Detail 两级加载——首屏全程概览（服务端 min-max 抽稀
+  // 2048 点，防 910k 点全量 ~26MB 响应在公网拖 50s+）；dataZoom 缩放停止后按可见
+  // 时间窗增量请求高分辨率细节（start/end + 4096 点）。stale 响应用递增 token 丢弃。
+  const fetchTokenRef = useRef(0);
+  const fetchSignalWindow = (start: number | null, end: number | null) => {
     if (!dataId || versionId == null) return;
-    let cancelled = false;
-    getSignals(dataId, String(versionId), {}).then((sig) => { if (!cancelled) setSignal(sig); }).catch((err) => console.warn('[annotation.signal] getSignals failed', err));
-    return () => { cancelled = true; };
+    const token = ++fetchTokenRef.current;
+    const query = start != null && end != null
+      ? { max_points: 4096, start: Math.max(0, start), end }
+      : { max_points: 2048 };
+    getSignals(dataId, String(versionId), query)
+      .then((sig) => { if (token === fetchTokenRef.current) setSignal(sig); })
+      .catch((err) => console.warn('[annotation.signal] getSignals failed', err));
+  };
+  useEffect(() => {
+    fetchTokenRef.current += 1; // 焊缝/版本切换：作废在途窗口请求
+    setZoomPct({ start: 0, end: 100 });
+    fetchSignalWindow(null, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataId, versionId]);
 
   // 焊缝图片参考（版本原始文件里取一张图像）
@@ -546,7 +561,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
   const anomalies = useMemo(() => signal?.source === 'real' ? signal.anomalies : [], [signal]);
   const fmtT = (t: number | null | undefined) => (t == null ? '—' : `${t.toFixed(2)}s`);
 
-  // ECharts 渲染 + 点击选段（起点 → 终点）
+  // ECharts 渲染 + 点击选段（起点 → 终点）+ 缩放增量取数
   useEffect(() => {
     const el = chartElRef.current;
     if (!el || !channels.length) return;
@@ -557,11 +572,20 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
       ...segments.map((s) => [{ xAxis: s.start_time ?? 0, itemStyle: { color: '#2c9caf', opacity: 0.18 } }, { xAxis: s.end_time ?? 0 }]),
       ...(draft.start != null && draft.end != null ? [{ xAxis: draft.start, itemStyle: { color: '#f0a34a', opacity: 0.28 } }, { xAxis: draft.end }] : []),
     ];
+    // 服务端抽稀（max_points）时带 times 坐标（min-max 选点非均匀）→ 按 [t,v] 画点；
+    // 全量响应（旧路径）退回序号均分。x 轴恒为绝对时间 [0, dur]，窗口数据只覆盖
+    // 可视区间，dataZoom 视口保持不动。
+    const seriesData = (c: { values: number[]; times?: number[] }) => c.times && c.times.length === c.values.length
+      ? c.times.map((t, j) => [t, c.values[j]])
+      : c.values.map((v, j) => [j / Math.max(c.values.length - 1, 1) * dur, v]);
     const option: echarts.EChartsOption = {
       animation: false,
       tooltip: { trigger: 'axis' },
       legend: { data: channels.map((c) => c.name), top: 0 },
-      dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 6, height: 16 }],
+      dataZoom: [
+        { type: 'inside', start: zoomPct.start, end: zoomPct.end },
+        { type: 'slider', bottom: 6, height: 16, start: zoomPct.start, end: zoomPct.end },
+      ],
       grid: channels.map((_, i) => ({ left: 64, right: 28, top: 30 + i * (gridHeight + 14), height: gridHeight })),
       xAxis: channels.map((_, i) => ({ type: 'value', gridIndex: i, min: 0, max: dur, boundaryGap: [0, 0], axisLabel: { show: i === channels.length - 1 } })),
       yAxis: channels.map((c, i) => ({ type: 'value', gridIndex: i, name: `${c.name} (${c.unit})`, min: c.lo, max: c.hi, axisLabel: { fontSize: 10 } })),
@@ -572,7 +596,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
         yAxisIndex: i,
         showSymbol: false,
         lineStyle: { width: 1.2 },
-        data: c.values.map((v, j) => [j / Math.max(c.values.length - 1, 1) * dur, v]),
+        data: seriesData(c),
         markArea: { silent: true, data: segData as never },
       })),
     };
@@ -587,8 +611,26 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
         return { start: t, end: null };
       });
     });
-    return () => { chart.dispose(); };
-  }, [channels, dur, anomalies, segments, draft]);
+    // 缩放停止（300ms 防抖）后按可见窗口增量取细节；拉回全程则取回概览
+    let zoomTimer: number | undefined;
+    chart.on('datazoom', () => {
+      window.clearTimeout(zoomTimer);
+      zoomTimer = window.setTimeout(() => {
+        const dz = (chart.getOption() as { dataZoom?: { start?: number; end?: number }[] }).dataZoom?.[0];
+        if (!dz || dur <= 0) return;
+        const startPct = dz.start ?? 0;
+        const endPct = dz.end ?? 100;
+        setZoomPct({ start: startPct, end: endPct });
+        if (endPct - startPct >= 98) {
+          fetchSignalWindow(null, null);
+        } else {
+          fetchSignalWindow((startPct / 100) * dur, (endPct / 100) * dur);
+        }
+      }, 300);
+    });
+    return () => { window.clearTimeout(zoomTimer); chart.dispose(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channels, dur, anomalies, segments, draft, zoomPct]);
 
   const commitSegment = (cat: string) => {
     if (draft.start == null || draft.end == null) return;
@@ -631,7 +673,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
         </div>
         <div className="signal-legend"><span><i style={{ background: '#2c9caf' }} />已标区间</span><span><i style={{ background: '#f0a34a' }} />待确认</span><span><i style={{ background: '#e88d6c' }} />AI 异常提示</span></div>
         <div className="signal-stage">{signal?.source === 'generated' ? <div className="selection-required"><Waves size={23} /><h2>真实时序数据不可用</h2><p>当前版本的 CSV 导入校验未通过，已阻止展示模拟波形。</p></div> : <div ref={chartElRef} className="annotation-signal-chart" style={{ width: '100%', height: 440 }} />}</div>
-        <div className="signal-stage-tip">{signal?.source === 'real' ? '点击真实波形设起点 → 再点设终点 → 选择缺陷类型；拖动底部滑块缩放时间轴。' : '正在加载真实时序数据，模拟波形不会用于标注。'}</div>
+        <div className="signal-stage-tip">{signal?.source === 'real' ? '点击真实波形设起点 → 再点设终点 → 选择缺陷类型；拖动底部滑块缩放时间轴，放大后自动加载高分辨率细节。' : '正在加载真实时序数据，模拟波形不会用于标注。'}</div>
         {draft.start != null && draft.end != null && (
           <div className="label-options signal-cat-options"><span className="signal-cat-hint">为 {fmtT(draft.start)}–{fmtT(draft.end)} 选择缺陷类型：</span>{labels.map((label, index) => <button key={label.name} className={`label-chip ${index % 5}`} onClick={() => commitSegment(label.name)}><i className={`chip-dot chip-${index % 5}`} />{label.name}</button>)}<button className="ghost-button" onClick={() => setDraft({ start: null, end: null })}>取消</button></div>
         )}
@@ -661,6 +703,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
   const [saved, setSaved] = useState(false);
   const [savedFrames, setSavedFrames] = useState<{ timestamp: number; sample_id: number; count: number }[]>([]);
   const [captureKey, setCaptureKey] = useState(0);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const taskDataIdRef = useRef<string | null>(null);
@@ -676,6 +719,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
       setFrameImage(null);
       setSaved(false);
       setSavedFrames([]);
+      setVideoError(null);
       sampleByTime.current.clear();
     }
     let cancelled = false;
@@ -706,7 +750,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
       const anchor = page.items.find((s) => s.meta?.mode === 'video');
       if (anchor) {
         const key = anchor.meta?.video_key;
-        if (typeof key === 'string' && key) getFileUrl(key).then((r) => { if (!cancelled) setVideoUrl(r.url); }).catch((err) => console.warn('[annotation.video] getFileUrl failed', err));
+        if (typeof key === 'string' && key) getFileUrl(key).then((r) => { if (!cancelled) { setVideoUrl(r.url); setVideoError(null); } }).catch((err) => console.warn('[annotation.video] getFileUrl failed', err));
       }
       const frames = page.items.filter((s) => s.meta?.mode === 'frame');
       if (frames.length) {
@@ -744,6 +788,18 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
     video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + delta));
   };
 
+  // 播放失败兜底：原始视频常为浏览器不支持的编码（如工业相机 MPEG-4 Part 2），
+  // 或转码预览版尚未生成（登记后 media_prep 异步处理）。给出明确原因与建议，
+  // 不再静默黑屏。MEDIA_ERR_SRC_NOT_SUPPORTED(4) = 编码/容器浏览器解不了。
+  const handleVideoError = () => {
+    const code = videoRef.current?.error?.code;
+    setVideoError(
+      code === 4
+        ? '该视频编码格式浏览器不支持解码（常见为工业相机的 MPEG-4 Part 2）。系统已在上传后自动转码 H.264 预览版，请稍后重试；若持续失败请将原始视频转码为 H.264 MP4 后重新上传。'
+        : '视频加载失败，请检查网络后重试。',
+    );
+  };
+
   // react-image-annotate 保存（onExit）：把归一化多边形转像素 → 建帧样本 → 保存 kind='polygon'
   // 库的 onExit 把 regions 类型标成 unknown[]，先按宽松签名接参、内部收窄（TS 逆变要求）
   const handleExit = (state: { images?: Array<{ regions?: unknown[] }> }) => {
@@ -778,7 +834,11 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
           <div className="toolbar-actions"><button className="outline-button" onClick={onBack}><ImageIcon size={14} />图像标注</button><button className="primary-button" onClick={handleCapture} disabled={!videoUrl}><Play size={14} />捕获当前帧</button></div>
         </div>
         <div className="signal-stage">
-          <video ref={videoRef} src={videoUrl ?? undefined} controls className="video-annotate-player" onPause={handleCapture} />
+          {videoError ? (
+            <div className="selection-required"><Play size={23} /><h2>视频无法在浏览器中播放</h2><p>{videoError}</p></div>
+          ) : (
+            <video ref={videoRef} src={videoUrl ?? undefined} controls className="video-annotate-player" onPause={handleCapture} onError={handleVideoError} />
+          )}
           <canvas ref={canvasRef} style={{ display: 'none' }} />
         </div>
         <div className="video-annotate-controls">

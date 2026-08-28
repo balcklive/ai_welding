@@ -25,5 +25,7 @@
 
 - `AppShell` 维护全局 `selectedDatasetId` 与 `selectedDataId`；所有侧栏子菜单均可进入，工作区顶部的 `SelectionSwitcher` 负责切换数据集和焊缝。分析/标注业务在未同时选中两者时只显示引导，不执行任务。
 - `Annotation` 图像模式必须从当前焊缝版本的真实图片对象创建 manual 样本；`AnnotationSignal` 只允许 `getSignals().source === 'real'` 的波形进入标注；`AnnotationVideo` 只播放当前版本对象存储中的真实视频。
+- **波形两级加载（性能修复，2026-08-28）**：`AnnotationSignal` 首屏 `getSignals(..., { max_points: 2048 })`（服务端 min-max 抽稀，附 `times` 秒坐标，防 910k 点全量 ~26MB 响应在公网拖 50s）；ECharts series 有 `times` 时按 `[t,v]` 画点（非均匀抽稀勿按序号均分），x 轴恒为绝对时间 `[0, dur]`；`dataZoom` 停止（300ms 防抖）后按可见窗口 `{max_points: 4096, start, end}` 增量取细节、拉回全程取回概览，stale 响应用 `fetchTokenRef` 递增 token 丢弃；缩放视口百分比存 `zoomPct` state，窗口重渲染时写回 dataZoom `start/end` 防视图复位。**坑：`getSignals` 传了 `max_points` 后 api 层不再本地 decimate（点数已由服务端控制）**。
+- **视频预览兜底**：`AnnotationVideo` 的 `<video>` 挂 `onError` → `videoError` state 显示明确原因（`MediaError.code===4` = 编码浏览器不支持，提示 media_prep 转码预览版稍后重试/转 H.264 重传），不再静默黑屏；后端锚点 `video_key` 优先用 media_prep 转码预览 key（`meta.source_video_key` 为原始 key），转码失败回退原始 key。
 - `react-image-annotate` 的 `onExit` 回调把 `regions` 类型标成 `unknown[]`（TS 逆变不允许传更窄参数类型），`AnnotationVideo.handleExit` 用宽松签名接参后在函数体内 `as` 收窄，勿改回窄签名。`react-image-annotate` peer 仅声明 React16，安装需 `--legacy-peer-deps`。
 - 接入后端时：接口走 `src/api/`，相对路径 `/api/v1/...`（契约见 `docs/API接口清单.md`）；开发环境由 `vite.config.ts` 的 `/api` proxy 转发到 `http://localhost:8000`，生产同源。不要重写 `App.tsx`。

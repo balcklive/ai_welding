@@ -27,6 +27,7 @@ aiwelding/  (桶)
 │   ├── align/{asset}                                  # 对齐产物（视频/轨道）
 │   ├── split/{sample_key}.jpg | .npy                  # 切分样本（图像/信号）
 │   ├── signals/{ingest_id}.parquet                    # 真实信号导入的结构化副本（Task 18，signal_ingest 写入）
+│   ├── video/{stem}.preview.mp4                       # 浏览器可播预览版（H.264+faststart，media_prep 登记挂载视频时自动转码）
 │   └── signals/{channel}.csv                          # 信号片段
 ├── features/{extraction_id}.npy | .json               # 特征向量导出
 ├── annotations/{annotation_task_id}/export.json       # 标注导出

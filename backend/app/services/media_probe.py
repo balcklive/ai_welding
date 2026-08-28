@@ -26,6 +26,9 @@ from loguru import logger
 MAX_VIDEO_PROBE_BYTES = 200 * 1024 * 1024
 
 _FFMPEG_TIMEOUT = 30  # 单次 subprocess 超时（秒）
+# 转码超时（秒）。跑在 executor daemon 线程内不能无限等待；长视频转码（veryfast 预设）
+# 可能数分钟，远大于探测超时。注意执行器单线程轮询，转码期间其他 job 会排队等待。
+_TRANSCODE_TIMEOUT = 600
 
 #: JPEG SOI 魔数——校验 ffmpeg 输出确实是 JPG（伪类型/写失败防御）。
 _JPEG_SOI = b"\xff\xd8"
@@ -44,10 +47,15 @@ def get_ffmpeg_exe() -> str:
 
 
 def parse_ffmpeg_info(stderr: str) -> dict:
-    """从 `ffmpeg -i` 的 stderr 解析 {"duration", "fps", "width", "height"}（缺省 None）。"""
+    """从 `ffmpeg -i` 的 stderr 解析 {"duration", "fps", "width", "height", "codec"}（缺省 None）。
+
+    `codec` 取 `Video: <codec>` 流描述行（如 h264/mpeg4/hevc），供浏览器可播性判定
+    （`media_prep` 转码预处理用；Chrome/Firefox `<video>` 不支持 mpeg4 即 MPEG-4 Part 2）。
+    """
     dur_m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", stderr)
     fps_m = re.search(r"(\d+(?:\.\d+)?)\s*fps", stderr)
     dim_m = re.search(r"(\d{2,5})x(\d{2,5})", stderr)
+    codec_m = re.search(r"Video:\s*([a-zA-Z0-9_]+)", stderr)
     duration = None
     if dur_m:
         h, m, s = dur_m.groups()
@@ -57,6 +65,7 @@ def parse_ffmpeg_info(stderr: str) -> dict:
         "fps": float(fps_m.group(1)) if fps_m else None,
         "width": int(dim_m.group(1)) if dim_m else None,
         "height": int(dim_m.group(2)) if dim_m else None,
+        "codec": codec_m.group(1) if codec_m else None,
     }
 
 
@@ -80,6 +89,71 @@ def analyze_video(
         meta = _probe_file(ff, path)
         keyframes = _extract_keyframes(ff, path, event_points, meta["duration"])
     return meta, keyframes
+
+
+#: 浏览器 `<video>` 原生可解码的视频编码（MPEG-4 Part 2 `mpeg4`/HEVC 均不在主流浏览器
+#: 免费解码集合内；工业相机常见输出 mpeg4，需转 H.264 预览版）。
+BROWSER_FRIENDLY_CODECS = {"h264", "vp8", "vp9", "av1"}
+
+
+def has_faststart(data: bytes) -> bool:
+    """探测 MP4 是否 faststart（moov 索引在 mdat 之前）：非 faststart 的文件浏览器
+    必须下完全片才能解析元数据，边下边播首帧极慢。只扫头部 4MB（moov 在尾部时
+    头部必然先见 mdat）。非 MP4（无 ftyp）返回 False 交由转码统一处理。
+    """
+    if b"ftyp" not in data[:64]:
+        return False
+    head = data[: 4 * 1024 * 1024]
+    moov, mdat = head.find(b"moov"), head.find(b"mdat")
+    if moov == -1:
+        return False
+    return mdat == -1 or moov < mdat
+
+
+def transcode_preview(data: bytes) -> tuple[bytes, dict]:
+    """转码浏览器可播预览版：H.264 + `+faststart`（缩到长边 ≤1280、去音频）。
+
+    返回 `(mp4_bytes, metadata)`，metadata 同 `parse_ffmpeg_info`（源视频的编码/分辨率
+    等信息）。源不可解析抛 ValueError；ffmpeg 不可用抛 RuntimeError；转码失败抛
+    RuntimeError。**只做转码，不做浏览器可播性判断**（判断在调用方：已是
+    `BROWSER_FRIENDLY_CODECS` + faststart 的源无需转码）。
+    """
+    if not data:
+        raise ValueError("空视频数据")
+    ff = get_ffmpeg_exe()
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "src.mp4"
+        src.write_bytes(data)
+        meta = _probe_file(ff, src)  # 源不可解析在此抛 ValueError
+        out = Path(tmp) / "preview.mp4"
+        try:
+            # -movflags +faststart：moov 前置（边下边播）；长边 ≤1280 控制体积；
+            # -an 去音频（预览标注不需要，且工业相机音轨常为空/异常）。
+            subprocess.run(
+                [
+                    str(ff), "-y", "-loglevel", "error",
+                    "-i", str(src),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+                    "-vf", "scale='min(1280,iw)':-2",
+                    "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart",
+                    "-an",
+                    str(out),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=_TRANSCODE_TIMEOUT,
+            )
+            result = out.read_bytes()
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"视频转码超时（>{_TRANSCODE_TIMEOUT}s）") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"视频转码失败: {exc.stderr.decode('utf-8', errors='replace')[:300]}"
+            ) from exc
+    if not result or b"ftyp" not in result[:64]:
+        raise RuntimeError("视频转码输出不是合法 MP4")
+    return result, meta
 
 
 def _probe_file(ff: str, path: Path) -> dict:

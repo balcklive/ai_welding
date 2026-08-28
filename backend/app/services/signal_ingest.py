@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import io
 import re
+from collections import OrderedDict
 from datetime import datetime, timezone
 
 import numpy as np
@@ -425,24 +426,69 @@ def to_parquet_bytes(
     return buf.getvalue()
 
 
-def bundle_from_parquet(data: bytes, ingest: SignalIngest, weld_id: str) -> SignalBundle:
-    """从 Parquet 字节还原 SignalBundle（source="real"）。events/anomalies 读 ingest 行。"""
+def _parse_parquet(data: bytes) -> tuple[int, int, dict[str, np.ndarray]]:
+    """Parquet 字节 → (点数, 元数据兜底采样率, {通道 id: float64 数组（可写 master）})。
+
+    master 数组**可写**（pandas 读回可能是只读视图，pywt.dwt 要求可写）；调用方直接把
+    master 交给 DSP 前须自行 `copy()`（缓存 master 被原地修改会跨请求串数据）。
+    """
     table = pq.read_table(io.BytesIO(data))
     pdf = table.to_pandas()
-    fs = ingest.sample_rate or int(table.schema.metadata.get(b"sample_rate", b"1000"))
-    duration = ingest.duration or (len(pdf) / fs if fs else len(pdf) / 1000.0)
-    channels: list[Channel] = []
-    for spec in CHANNEL_SPECS:
-        cid = spec["id"]
-        # np.array(..., copy=True)：pandas/parquet 读回可能是只读视图，pywt.dwt 要求可写
-        values = (
+    n = len(pdf)
+    try:
+        fs_meta = int(table.schema.metadata.get(b"sample_rate", b"1000"))
+    except (TypeError, ValueError):
+        fs_meta = 1000
+    cols: dict[str, np.ndarray] = {}
+    for cid in _SIGNAL_IDS:
+        cols[cid] = (
             np.array(pdf[cid].to_numpy(dtype=float), dtype=float, copy=True)
             if cid in pdf.columns
-            else np.zeros(len(pdf))
+            else np.zeros(n)
         )
+    return n, fs_meta, cols
+
+
+#: 进程内 Parquet 解析 LRU（key=parquet_key）：`load_signal_bundle` 每次请求都重拉
+#: MinIO + 反序列化 910k 点是波形缩放增量取数的最大延迟来源，缓存后往返毫秒级。
+#: 值为 `_parse_parquet` 结果（master 数组），容量 4 条 × ~29MB（910k×4ch float64）。
+_PARQUET_CACHE_MAX = 4
+_PARQUET_CACHE: "OrderedDict[str, tuple[int, int, dict[str, np.ndarray]]]" = OrderedDict()
+
+
+def _cached_parquet(parquet_key: str) -> tuple[int, int, dict[str, np.ndarray]] | None:
+    """按 parquet_key 取缓存解析结果；未命中则下载解析并入缓存。存储/解析失败返回 None。"""
+    hit = _PARQUET_CACHE.get(parquet_key)
+    if hit is not None:
+        _PARQUET_CACHE.move_to_end(parquet_key)
+        return hit
+    try:
+        from app.storage import get_storage  # 延迟导入，测试 monkeypatch
+
+        parsed = _parse_parquet(get_storage().get_object(parquet_key))
+    except Exception:  # noqa: BLE001 - MinIO 读/解析失败交由调用方回退生成
+        return None
+    _PARQUET_CACHE[parquet_key] = parsed
+    while len(_PARQUET_CACHE) > _PARQUET_CACHE_MAX:
+        _PARQUET_CACHE.popitem(last=False)
+    return parsed
+
+
+def _bundle_from_parsed(
+    parsed: tuple[int, int, dict[str, np.ndarray]], ingest: SignalIngest, weld_id: str
+) -> SignalBundle:
+    """`_parse_parquet` 结果 + ingest 行 → SignalBundle（channels 取 master 的可写副本）。"""
+    n, fs_meta, cols = parsed
+    fs = ingest.sample_rate or fs_meta
+    duration = ingest.duration or (n / fs if fs else n / 1000.0)
+    channels: list[Channel] = []
+    for spec in CHANNEL_SPECS:
+        # copy()：master 在缓存中跨请求共享，DSP（pywt/scipy）约定不可原地改输入，
+        # 副本隔离保证缓存不被污染（29MB memcpy ~10ms，可忽略）。
+        values = cols[spec["id"]].copy()
         channels.append(
             Channel(
-                id=cid,
+                id=spec["id"],
                 name=spec["name"],
                 unit=spec["unit"],
                 values=values,
@@ -460,6 +506,11 @@ def bundle_from_parquet(data: bytes, ingest: SignalIngest, weld_id: str) -> Sign
         anomalies=ingest.anomalies or [],
         source="real",
     )
+
+
+def bundle_from_parquet(data: bytes, ingest: SignalIngest, weld_id: str) -> SignalBundle:
+    """从 Parquet 字节还原 SignalBundle（source="real"）。events/anomalies 读 ingest 行。"""
+    return _bundle_from_parsed(_parse_parquet(data), ingest, weld_id)
 
 
 # ── loader（DSP/特征/报告统一入口） ───────────────────────────────────
@@ -481,16 +532,13 @@ def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> Signa
     ).first()
     if ingest is None or not ingest.parquet_key:
         return signals.generate_signals(weld_id)
-    try:
-        from app.storage import get_storage  # 延迟导入，测试 monkeypatch
-
-        data = get_storage().get_object(ingest.parquet_key)
-        return bundle_from_parquet(data, ingest, weld_id)
-    except Exception:  # noqa: BLE001 - MinIO 读失败回退生成，不阻塞分析
+    parsed = _cached_parquet(ingest.parquet_key)
+    if parsed is None:
         logger.opt(exception=True).warning(
             "读取真实信号 Parquet 失败，回退生成信号: {}", ingest.parquet_key
         )
         return signals.generate_signals(weld_id)
+    return _bundle_from_parsed(parsed, ingest, weld_id)
 
 
 # ── handler 领域逻辑 ──────────────────────────────────────────────────

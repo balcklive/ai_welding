@@ -124,6 +124,27 @@ def generate_signals(weld_id: str, sample_rate: int = 1000) -> SignalBundle:
     )
 
 
+def downsample_indices(values: np.ndarray, max_points: int) -> np.ndarray:
+    """min-max 池化选点（Grafana/M3 同思路）：返回保留样本的下标（时间升序）。
+
+    每桶（`max_points//2` 桶）保留 min 与 max 两个点——相对均匀抽样**不丢瞬态尖峰**
+    （焊接缺陷恰表现为瞬时毛刺），且点数有硬上限。`len(values) <= max_points` 或
+    `max_points<=0` 返回全量下标。纯函数、确定性，供 `/signals` 波形预览抽稀使用
+    （DSP 分析端点不吃它，仍用全分辨率数据）。
+    """
+    n = len(values)
+    if max_points <= 0 or n <= max_points:
+        return np.arange(n)
+    k = max(1, max_points // 2)  # 桶数（每桶出 min+max 两点）
+    bucket = np.minimum(np.arange(n) * k // n, k - 1)
+    # 桶内按值排序（值相同按下标稳定）：每个桶取首点(min)与末点(max)
+    order = np.lexsort((np.arange(n), values, bucket))
+    keys = bucket[order]
+    first_pos = np.unique(keys, return_index=True)[1]  # 每桶第一个出现位置 → min
+    last_pos = n - 1 - np.unique(keys[::-1], return_index=True)[1]  # 反向第一个 → max
+    return np.unique(np.concatenate([order[first_pos], order[last_pos]]))
+
+
 def analysis_result(bundle: SignalBundle) -> dict:
     """模拟分析结果（确定性，源自信号生成器的事件/异常区段）。
 

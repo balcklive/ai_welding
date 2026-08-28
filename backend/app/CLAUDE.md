@@ -4,7 +4,7 @@
 
 ## 脚本
 
-- `main.py`：FastAPI 实例 `app`。Task 1 直挂 `GET /api/v1/health`（返回统一信封 `{"code":0,"message":"ok","data":{"status":"ok"}}`）+ `AccessLogMiddleware`；Task 3 `include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并 `register_exception_handlers(app)` 注册全局异常处理器（`RequestValidationError`→42200 / `HTTPException` 按 status 映射 / 兜底 `Exception`→50000）。异常错误码映射见本文件 docstring。Task 5 修复：`setup_logging()` 后检查 `settings.secret_key`/`settings.admin_password` 是否弱默认值（`change-me`/`admin123`），是则 `logger.warning` 提示生产改密。Task 6：lifespan 启动时 `with Session(engine) as s: seed_all(s, demo=settings.seed_demo)`（演示数据由 `SEED_DEMO` 控制、默认 false 不灌入；MySQL 不可达仅告警不阻塞）。
+- `main.py`：FastAPI 实例 `app`。Task 1 直挂 `GET /api/v1/health`（返回统一信封 `{"code":0,"message":"ok","data":{"status":"ok"}}`）+ `AccessLogMiddleware`；另挂 `GZipMiddleware`（minimum_size=2048，波形/信号大 JSON 压缩 3~5x，配合 `/signals` 服务端抽稀把公网首屏从 ~26MB 降到几十 KB）；Task 3 `include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并 `register_exception_handlers(app)` 注册全局异常处理器（`RequestValidationError`→42200 / `HTTPException` 按 status 映射 / 兜底 `Exception`→50000）。异常错误码映射见本文件 docstring。Task 5 修复：`setup_logging()` 后检查 `settings.secret_key`/`settings.admin_password` 是否弱默认值（`change-me`/`admin123`），是则 `logger.warning` 提示生产改密。Task 6：lifespan 启动时 `with Session(engine) as s: seed_all(s, demo=settings.seed_demo)`（演示数据由 `SEED_DEMO` 控制、默认 false 不灌入；MySQL 不可达仅告警不阻塞）。
 - `core/seed.py`：**Task 6**。`seed_all/seed_admin/seed_demo`，详见 `core/CLAUDE.md`。
 - `core/__init__.py`：空。
 - `core/config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`。
@@ -41,7 +41,8 @@
 - `jobs/`：**Task 13 ~ Task 16** Job 执行器 + 各域 handler（`executor.py` DB 轮询 / `run_job`
   同步入口 / handler 注册表；`alignment.py` = 对齐 handler（真实内核）、`split.py` = 切分 handler、
   `annotation.py` = 标注 handler、`dataset_build.py` = 数据集构建 handler、
-  `training.py`/`testing.py`/`inference.py` = **Task 16** 训练/测试/推理 handler；导入本包即完成注册），
+  `training.py`/`testing.py`/`inference.py` = **Task 16** 训练/测试/推理 handler、
+  `media_prep.py` = 登记挂载视频自动转码浏览器可播预览版（H.264+faststart）；导入本包即完成注册），
   详见 `jobs/CLAUDE.md`。
 - `api/`：v1 路由聚合（Task 3 骨架，各域占位）+ `deps.py` 公共依赖 `get_current_user`（Task 5），
   `v1/dashboard.py` 为 **Task 8 已实现**（四端点）、`v1/files.py` 为 **Task 9 已实现**

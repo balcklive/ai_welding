@@ -34,6 +34,7 @@ Task 14：切分/标注（实施边界 §3.1 = 真实异步编排 + 模拟结果
 """
 
 from datetime import datetime, timezone
+import math
 
 from fastapi import APIRouter, Depends, Request
 from loguru import logger
@@ -85,6 +86,30 @@ _VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".webm")
 
 def _is_video_key(key: str) -> bool:
     return key.lower().endswith(_VIDEO_EXTENSIONS)
+
+
+def _browser_friendly_video_key(session: Session, video_key: str) -> str:
+    """视频原始 key → 浏览器可播放的 key（media_prep 转码预览版优先）。
+
+    查该 object_key 最新一条 succeeded 的 media_prep Job（登记挂载视频时自动创建，
+    转码预览版写 `processed/{weld_id}/video/`；结果 JSON 里带 object_key/preview_key）。
+    未转码 / 已转码原始即浏览器友好（preview_key==object_key）/ 查询失败一律回退原始 key。
+    数量级小（每个视频一条 job），结果 JSON 在 Python 侧解析，跨 MySQL/SQLite 可用。
+    """
+    try:
+        preps = session.exec(
+            select(Job)
+            .where(Job.type == "media_prep", Job.status == "succeeded")
+            .order_by(Job.id.desc())
+        ).all()
+    except Exception:  # noqa: BLE001 - 查询异常不阻塞锚点创建，回退原始 key
+        return video_key
+    for prep in preps:
+        result = prep.result or {}
+        if result.get("object_key") == video_key:
+            preview = result.get("preview_key")
+            return preview if isinstance(preview, str) and preview else video_key
+    return video_key
 
 
 class ExtractFeaturesRequest(BaseModel):
@@ -198,19 +223,33 @@ def get_signals(
     filter_type: str | None = None,
     cutoff: float | None = None,
     cutoff2: float | None = None,
+    max_points: int | None = None,
+    start: float | None = None,
+    end: float | None = None,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """多通道时域波形（电流/电压/气体/送丝）。query `channels[]`、滤波参数可选。
 
+    波形预览抽稀（Overview/Detail 两级加载）：`max_points` 给定时按 **min-max 池化**
+    （`signals.downsample_indices`，保留瞬态尖峰）服务端抽稀，且每通道附带 `times[]`
+    （秒，与 values 等长——min-max 选点非均匀，前端须按 [t,v] 画点，勿按序号均分）；
+    `start`/`end`（秒）给定则只取该时间窗（缩放增量取细节）。不传参数返回全分辨率
+    数据（旧调用方/兼容行为不变）。**DSP 分析端点（/analysis/*）不用此抽稀，仍吃全量。**
     滤波给定则对选中通道真实滤波（dsp.filter_signal）。返回
-    `{duration, sample_rate, channels:[{id,name,unit,values[],lo,hi,mean}], events, anomalies}`。
+    `{duration, sample_rate, channels:[{id,name,unit,values[],times?,lo,hi,mean}], events, anomalies}`。
     """
     resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
     if msg := _filter_error(filter_type, cutoff, cutoff2):
         return err(40000, msg, status=400)
+    if max_points is not None and not 2 <= max_points <= 20000:
+        return err(40000, "max_points 须在 2~20000 之间", status=400)
+    if (start is None) != (end is None) or (
+        start is not None and end is not None and not 0 <= start < end
+    ):
+        return err(40000, "start/end 须成对给出且 0 <= start < end", status=400)
 
     bundle = signal_ingest.load_signal_bundle(session, weld_id, version_id)
     channel_ids = _requested_channels(request)
@@ -218,7 +257,15 @@ def get_signals(
         if bundle.channel(cid) is None:
             return err(40000, f"未知通道: {cid}", status=400)
 
-    fs = bundle.sample_rate
+    fs = bundle.sample_rate or 1000
+    n = len(bundle.channels[0].values) if bundle.channels else 0
+    # 时间窗 → 采样下标范围（clamp）；抽稀时每通道附带 times（秒）
+    i0, i1 = 0, n
+    if start is not None and end is not None:
+        i0 = max(0, min(n, int(start * fs)))
+        i1 = max(i0, min(n, math.ceil(end * fs)))
+    downsample = max_points is not None
+
     payload_channels = []
     for chan in bundle.channels:
         if channel_ids and chan.id not in channel_ids:
@@ -226,17 +273,22 @@ def get_signals(
         values = chan.values
         if filter_type:
             values = dsp.filter_signal(values, fs, filter_type, cutoff, cutoff2)
-        payload_channels.append(
-            {
-                "id": chan.id,
-                "name": chan.name,
-                "unit": chan.unit,
-                "values": values.tolist(),
-                "lo": chan.lo,
-                "hi": chan.hi,
-                "mean": chan.mean,
-            }
-        )
+        values = values[i0:i1]
+        item = {
+            "id": chan.id,
+            "name": chan.name,
+            "unit": chan.unit,
+            "lo": chan.lo,
+            "hi": chan.hi,
+            "mean": chan.mean,
+        }
+        if downsample:
+            sel = signals.downsample_indices(values, max_points or 0)
+            item["values"] = values[sel].tolist()
+            item["times"] = ((i0 + sel) / fs).round(6).tolist()
+        else:
+            item["values"] = values.tolist()
+        payload_channels.append(item)
 
     return ok(
         {
@@ -671,7 +723,11 @@ def create_annotation_task(
         video_anchor = {
             "weld_id": record.weld_id if record is not None else None,
             "version_id": body.version_id,
-            "video_key": video_key,
+            # 原始视频常为浏览器不可解码编码（如 mpeg4）：媒体预处理（media_prep job）
+            # 转出的 H.264+faststart 预览版优先；未转码/转码失败回退原始 key
+            # （前端 <video> onError 有明确不可播提示）。
+            "video_key": _browser_friendly_video_key(session, video_key),
+            "source_video_key": video_key,
         }
 
     job = create_job(session, type="annotation")

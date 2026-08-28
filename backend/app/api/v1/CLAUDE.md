@@ -21,7 +21,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `POST /registrations` 在生成编号前先抢占同 payload 的自然幂等锁（MySQL `GET_LOCK` / SQLite 进程内锁），
     正在提交中的重复请求直接 `40900`（`重复登记请求：相同表单正在提交`），避免 MySQL 顺序编号锁把双击/重放串行成两条 200；
   - `POST /registrations/{registration_id}/raw-files`（body `{object_keys[], storage_bytes?}`，
-    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务。**Task 5 P2 修复**：若请求中的任一 CSV 已有 `signal_ingests` 行，则整个挂载直接 `40900`，并保持容量不重复累计）；
+    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务。**Task 5 P2 修复**：若请求中的任一 CSV 已有 `signal_ingests` 行，则整个挂载直接 `40900`，并保持容量不重复累计。**视频预处理**：本次挂载含**新**视频扩展名 key 时为每个建 `media_prep` Job（同事务，探测编码→非浏览器友好转 H.264+faststart 预览版；同 key 已有 pending/running/succeeded job 不重复建））；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
     `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
@@ -57,7 +57,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     sample_count 以 split_tasks 行为准合并）。
   - **Task 14 标注**（`app.services.annotation` 领域逻辑）：
     `GET /label-categories`（模型口径 5 类）；`POST /annotation-tasks`（body
-    `{source(split_task|manual|signal|video), split_task_id?, version_id?, name?}`（`signal`/`video` 需 `version_id`：signal 同步生成 1 个 `meta.mode='signal'` 信号锚点样本供波形区间标注；video 同步生成 1 个 `meta.mode='video'` 视频锚点样本含 `video_key` 供多边形区域标注），异步 Job type=annotation +
+    `{source(split_task|manual|signal|video), split_task_id?, version_id?, name?}`（`signal`/`video` 需 `version_id`：signal 同步生成 1 个 `meta.mode='signal'` 信号锚点样本供波形区间标注；video 同步生成 1 个 `meta.mode='video'` 视频锚点样本含 `video_key` 供多边形区域标注——`video_key` 经 `_browser_friendly_video_key` 优先取 media_prep 转码预览 key，`meta.source_video_key` 保留原始 key，未转码/失败回退原始），异步 Job type=annotation +
     `annotation_tasks` 行 → `{job_id}`，成功后 handler 把来源切分样本归属到本任务）；
     `GET /annotation-tasks/{task_id}`（Job 信封）；`POST /annotation-tasks/{task_id}/import`
     （`{source(files|split_task), object_keys[]?, split_task_id?}` → `{imported}`）；
@@ -81,8 +81,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /welds/{weld_id}/versions/{version_id}/signals`：query `channels[]`（兼容 `channels=`
     写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
     **Task 4 修复：非管理员按焊缝 stable owner(user_id) 做 ownership ACL**，
-    写法，`request.query_params.getlist` 手读合并）、`filter_type/cutoff/cutoff2`（可选，真实滤波），
-    返回 `{duration, sample_rate, channels:[{id,name,unit,values[],lo,hi,mean}], events, anomalies}`；
+    **波形预览两级加载**：`max_points`(2~20000，越界 400) 触发服务端 `signals.downsample_indices`
+    min-max 池化抽稀 + 每通道附 `times[]`（秒，非均匀，前端按 [t,v] 画点）；`start/end`(秒) 时间窗
+    切片（缩放增量取细节；不成对或 start>=end → 400）。不传参数返回全分辨率（兼容旧调用方），
+    返回 `{duration, sample_rate, channels:[{id,name,unit,values[],times?,lo,hi,mean}], events, anomalies, source}`；
   - `GET …/analysis/{mode}`：mode ∈ psd|stft|dwt|wavelet|phase|pdd，query `channel`（默认 cur）+
     滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；
   - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常，**Task 4 修复：非管理员按焊缝 stable owner(user_id) 做 ownership ACL**）。

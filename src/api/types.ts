@@ -312,6 +312,8 @@ export interface SignalChannel {
   name: string;
   unit: string;
   values: number[];
+  /** 服务端抽稀（max_points）时返回：每个采样点的秒时刻（min-max 选点非均匀，须按 [t,v] 画点）。 */
+  times?: number[];
   lo: number;
   hi: number;
   mean: number;
@@ -469,6 +471,11 @@ export interface SignalQuery {
   filter_type?: string;
   cutoff?: number;
   cutoff2?: number;
+  /** 波形预览服务端 min-max 抽稀点数上限（2~20000）；DSP 分析端点不受影响。 */
+  max_points?: number;
+  /** 时间窗（秒）：缩放增量取细节时按窗口请求高分辨率数据。 */
+  start?: number;
+  end?: number;
 }
 
 export interface SplitRules {

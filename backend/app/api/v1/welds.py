@@ -21,6 +21,7 @@ from app.core.db import get_session
 from app.models.analysis import SignalIngest
 from app.models.data import User
 from app.models.datasets import Dataset
+from app.models.jobs import Job
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
 from app.services.jobs import create_job
@@ -375,6 +376,37 @@ def attach_raw_files(
                             status="pending",
                             created_at=datetime.now(timezone.utc),
                         )
+                    )
+            # 视频可播性预处理：本次挂载含**新**视频 key 时为每个建 media_prep Job
+            # （探测编码 → 非浏览器友好（如 mpeg4）则转 H.264+faststart 预览版，
+            # 写 processed/{weld_id}/video/；已是 h264+faststart 直接标记免转）。
+            # 同 key 已有 pending/running/succeeded 的 media_prep job 则不重复建。
+            video_keys = [
+                key
+                for key in new_object_keys
+                if key.lower().endswith(svc._VIDEO_EXTS + (".webm",))
+            ]
+            if video_keys:
+                existing_prep = {
+                    (prep.result or {}).get("object_key")
+                    for prep in session.exec(
+                        select(Job).where(
+                            Job.type == "media_prep",
+                            Job.status.in_(["pending", "running", "succeeded"]),
+                        )
+                    ).all()
+                }
+                for key in video_keys:
+                    if key in existing_prep:
+                        continue
+                    create_job(
+                        session,
+                        "media_prep",
+                        result={
+                            "weld_id": record.weld_id,
+                            "version_id": version.id,
+                            "object_key": key,
+                        },
                     )
             session.commit()
             return ok(svc.version_payload(version))

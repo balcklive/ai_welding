@@ -63,7 +63,10 @@
   currentAmp/voltVal/gasVal/wireVal（起弧 ramp → 稳态 → 收弧 ramp + 两个异常区段低频
   正弦噪声），duration 5.42s、events `{arc:0.42, weld_segment:[0.78,4.28], tail:4.86}`、
   anomalies `[1.92,2.34 电弧不稳, 3.58,3.86 飞溅倾向]`。`analysis_result(bundle)` 返回确定性
-  模拟结果（stability≈96.8、segments 由异常时长占比算出）。**坑：种子用 `zlib.crc32(weld_id)`，
+  模拟结果（stability≈96.8、segments 由异常时长占比算出）。`downsample_indices(values, max_points)`
+  **min-max 池化抽稀**（Grafana/M3 同思路）：每桶（max_points//2 桶）保 min+max 两点——相对均匀
+  抽样不丢瞬态尖峰（焊接缺陷恰表现为瞬时毛刺），910k 点 ~300ms；供 `/signals` 波形预览
+  `max_points` 参数用（DSP 分析端点不吃它）。**坑：种子用 `zlib.crc32(weld_id)`，
   不要用内置 `hash()`——Python 对 str 的 hash 每次进程随机（PYTHONHASHSEED），跨进程不可复现。**
 - `features.py`：**Task 12**。多模态特征提取（真实计算，非罐头数字），供 `POST /features/extract`：
   `ts_features(x, fs=1000)` 8 维（均值/方差/峰值/偏度/峰度/RMS + FFT 主频 + 小波细节能量）；
@@ -109,7 +112,12 @@
   `-ss` 抽不到帧，钳制会静默产出错误时刻的帧）。
 - `media_probe.py`：**对齐真实化新增**。ffmpeg 媒体探测（imageio-ffmpeg 自带二进制，
   无 ffprobe——元数据从 `ffmpeg -i` stderr 解析）：`get_ffmpeg_exe()`（懒加载，失败
-  RuntimeError）、`parse_ffmpeg_info(stderr)`（纯函数，Duration/fps/WxH，缺省 None）、
+  RuntimeError）、`parse_ffmpeg_info(stderr)`（纯函数，Duration/fps/WxH/**codec**，缺省 None；
+  codec 取 `Video: <codec>` 行，供浏览器可播性判定）、`BROWSER_FRIENDLY_CODECS`
+  （h264/vp8/vp9/av1——mpeg4 即 MPEG-4 Part 2 主流浏览器 `<video>` 解不了）、
+  `has_faststart(data)`（头部 4MB 内 moov 是否先于 mdat，非 MP4 返回 False）、
+  `transcode_preview(data)`（H.264 `veryfast`+crf26、长边 ≤1280、`+faststart`、去音频；
+  超时 600s 抛 RuntimeError；**只转码不做可播性判断**，判断在 `jobs/media_prep`）、
   `analyze_video(data, event_points)`（临时文件只写一次：探测 + 逐事件
   `ffmpeg -ss {t} -i in -frames:v 1 -q:v 2 out.jpg` 抽关键帧，返回
   `(metadata, keyframes=[{event,t,bytes(JPEG SOI)}])`）。失败以异常表达
@@ -234,6 +242,11 @@
     `t,cur,vol,gas,wir` + 文件级元数据（weld_id/sample_rate/duration/channel_ids/...）；
     还原时 `np.array(copy=True)` 保证数组**可写**（pandas/parquet 读回是只读视图，pywt.dwt 会炸）。
     events/anomalies 只存 `signal_ingests` 行 JSON，不在 Parquet 重复。
+    **Task 18+ 重构**：`_parse_parquet(data) -> (n, fs_meta, {cid: 可写 master 数组})` 统一解析，
+    `bundle_from_parquet` 变其薄封装；`_cached_parquet(parquet_key)` 进程内 **OrderedDict LRU
+    （4 条）**缓存解析结果——波形缩放增量取数每次请求都拉 MinIO + 反序列化 910k 点曾是最大延迟
+    来源，缓存后往返毫秒级。`load_signal_bundle` → `_bundle_from_parsed`（channels 取 master 的
+    **copy()**，隔离 DSP 侧误改，29MB memcpy ~10ms 可忽略）。
   - `load_signal_bundle(session, weld_id, version_id) -> SignalBundle`：**DSP/特征/报告统一入口**——
     命中 succeeded Parquet → 读回还原（source="real"）；无/读失败 → 回退 `signals.generate_signals`
     （source="generated"）。analysis.py 四处（signals/result/mode/features）+ reports.py `_build_analysis`
