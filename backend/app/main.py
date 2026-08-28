@@ -3,8 +3,8 @@
 - Task 1：日志中间件（`AccessLogMiddleware`）+ 健康检查。
 - Task 3：挂载 v1 路由聚合（`/api/v1` 前缀在此添加）+ 全局异常处理器
   （统一返回 `{code,message,detail?}` 信封，见 `schemas/common.py`）。
-- Task 6：lifespan 启动时执行 `seed_all`（管理员 + 演示数据，幂等）；
-  MySQL 不可达时仅告警不阻塞启动（见 `core/seed.py`）。
+- Task 6：lifespan 启动时执行 `seed_all`（管理员必 seed；演示数据由 `SEED_DEMO`
+  控制，默认 false 不灌入，见 `core/seed.py`）；MySQL 不可达时仅告警不阻塞启动。
 - Task 13：lifespan 启动 `executor.start()`（后台 DB 轮询执行器，处理对齐等异步 Job）、
   关闭 `executor.stop()`（见 `app/jobs/`）。
 
@@ -43,15 +43,18 @@ if settings.secret_key in ("change-me", "") or settings.admin_password in ("admi
 async def lifespan(app: FastAPI):
     """启动时 seed + 启动 Job 执行器；关闭时停止执行器。
 
-    1. seed（管理员 + 演示数据，幂等）：MySQL 不可达时仅 `logger.warning` 后跳过，
-       避免启动直接崩溃（本地演示可容忍）。
+    1. seed（管理员 + 按 `SEED_DEMO` 决定是否灌演示数据，幂等）：MySQL 不可达时仅
+       `logger.warning` 后跳过，避免启动直接崩溃（本地演示可容忍）。
     2. `executor.start()`：后台线程每 ~1s 轮询 pending 的 Job 并 dispatch 到对应 handler
        （Task 13，见 `app/jobs/executor.py`）。
     """
     try:
         with Session(engine) as session:
-            seed_all(session)
-        logger.info("启动 seed 完成：管理员 + 演示数据已就绪")
+            seed_all(session, demo=settings.seed_demo)
+        if settings.seed_demo:
+            logger.info("启动 seed 完成：管理员 + 演示数据已就绪")
+        else:
+            logger.info("启动 seed 完成：仅管理员（SEED_DEMO=false，未灌演示数据）")
     except Exception:  # noqa: BLE001 - 启动期数据库不可达不应阻塞服务启动
         logger.opt(exception=True).warning(
             "启动 seed 失败（数据库不可达？），跳过 seed，服务继续启动"

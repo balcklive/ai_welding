@@ -349,10 +349,15 @@ def seed_demo(session: Session) -> None:
     _seed_models(session)
 
 
-def seed_all(session: Session) -> None:
-    """管理员 + 演示数据，末尾统一 commit。幂等：已存在则跳过。"""
+def seed_all(session: Session, *, demo: bool = True) -> None:
+    """管理员 + 演示数据，末尾统一 commit。幂等：已存在则跳过。
+
+    demo=False 时只 seed 管理员（线上默认走此路径，避免演示数据污染真实库）；
+    测试仍用默认 demo=True 造演示数据。
+    """
     seed_admin(session)
-    seed_demo(session)
+    if demo:
+        seed_demo(session)
     session.commit()
 
 

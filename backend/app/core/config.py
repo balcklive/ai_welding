@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 1440
     admin_username: str = "admin"
     admin_password: str = "admin123"
+    # 启动是否灌入演示数据（默认 false：线上/演示数据曾污染真实库，勿随意打开）
+    seed_demo: bool = False
     # API log
     api_log_dir: str = "logs"
     api_log_rotation: str = "10 MB"

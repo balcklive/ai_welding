@@ -8,7 +8,7 @@
 - `.python-version`：`3.12`（uv 据此选/下载解释器）。
 - `uv.lock`：`uv sync` 生成的锁文件，勿手改。
 - `app/`：应用代码（见 `app/CLAUDE.md`）。`app/models/` 含全部 24 张表类（含 Task 18 的 `signal_ingests`），`app/core/db.py` 提供引擎与会话。
-- `app/core/seed.py`：**Task 6**。启动 seed——`seed_all(session)`（幂等，末尾统一 commit）/ `seed_admin` / `seed_demo`。演示数据数值对齐前端 mock（App.tsx weldRows/VersionPanel/Validation/datasetRows/ModelRepository/Annotation）；ORM 写库，SQLite 测试与 MySQL 启动均可用。详见 `app/core/CLAUDE.md`。
+- `app/core/seed.py`：**Task 6**。启动 seed——`seed_all(session, *, demo=True)`（幂等，末尾统一 commit；`main.py` 传 `SEED_DEMO`（默认 false），仅测试默认灌演示数据）/ `seed_admin` / `seed_demo`。演示数据数值对齐前端 mock（App.tsx weldRows/VersionPanel/Validation/datasetRows/ModelRepository/Annotation）；ORM 写库，SQLite 测试与 MySQL 启动均可用。详见 `app/core/CLAUDE.md`。
 - `alembic/`：迁移（见 `alembic/CLAUDE.md`；`0001_initial` 手写，datetime 统一 `DATETIME(6)`；Task 18 新增 `0002_signal_ingests`）。
 - `tests/`：pytest 测试（`uv run pytest`，SQLite 内存 + TestClient，不连远程库）。`test_welds.py` 为 Task 10（Welds CRUD），覆盖登记事务/编号递增/列表筛选分页/版本链/核验级联/401；`test_dsp.py` + `test_analysis.py` 为 Task 11（真实 DSP 纯函数 + analysis 端点：candidates/signals/六 mode/result/401）、`test_alignment.py` 为 Task 13（对齐真实化内核：创建→run_job→succeeded + 自动时间对齐版本 / **generated 回退 + 真实信号 ingest + 真实视频 ffmpeg 探测/关键帧** / 失败→failed / 404 / 401）、`test_media_probe.py` 为 **ffmpeg 媒体探测/关键帧单测**（不连 DB）、`test_datasets.py` 为 Task 15（数据集 CRUD / dimensions/readiness / 版本 / **版本成员分页接口 items（total/页切片/真实跨数据集版本→40402）** / 构建任务→按焊缝分组防泄漏 / lineage / 404 / 401）、`test_models.py` 为 Task 2 模型建表/索引一致性 + **Task 16 模型中心 API**（列表汇总/详情/新建 409/状态流转/训练→自动生成实验版本 + weights.pt / 测试→混淆矩阵 / 推理→boxes / 日志 / 404 / 401）、`test_reports.py` 为 **Task 17 通用导出**（validation json→score 93.3 + 15 条规则 / validation pdf→`%PDF` 头 / data-list 全量+按标识过滤 / analysis 通用模板 / 未知 type·format 400 / 实体缺失 404 / 401，monkeypatch `app.storage.get_storage` → FakeStorage）。
 
@@ -25,4 +25,5 @@
 - **访问日志**：loguru 写 `backend/logs/api.log`；`API_LOG_DIR` 为相对值时自动锚定到 `backend/` 下（保证 cwd 无关）。`backend/logs/`、`backend/.venv/` 已被根 `.gitignore` 忽略。
 - **中间件只覆盖 `/api/v1`** 路由（开发规范 §2.1）；非 API 路径直接透传不记日志。
 - **管理员 seed**：`ADMIN_USERNAME`/`ADMIN_PASSWORD` 在根 `.env`（Task 6 已实现，`app/core/seed.py` 读取）；当前是本地演示默认值 `admin`/`admin123`，生产必须改。
+- **演示数据 seed 默认关闭**：`SEED_DEMO`（默认 false）控制启动是否灌演示数据集/焊缝/模型。seed 的演示数据集是假账（版本 `item_count=5680` 但 `dataset_items` 无成员行），且按业务键幂等——清库后重启会原样回灌，曾污染线上库；要本地看演示才临时打开。
 - pytest 能 import `app` 依赖 `tests/__init__.py`（使 backend/ 进入 sys.path）。
