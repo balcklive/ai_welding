@@ -165,10 +165,34 @@ export interface FeatureExtraction {
   format: string;
   created_at: string | null;
   modality_status?: {
-    timeseries?: 'real' | 'generated' | 'missing';
-    vision?: 'real' | 'generated' | 'missing';
-    audio?: 'real' | 'generated' | 'missing';
+    timeseries?: 'real' | 'generated' | 'missing' | 'heuristic';
+    vision?: 'real' | 'generated' | 'missing' | 'heuristic';
+    audio?: 'real' | 'generated' | 'missing' | 'heuristic';
   };
+  status?: 'succeeded' | 'partial' | 'failed';
+  source_by_modality?: Record<string, string>;
+  input_object_keys?: string[];
+  algorithm_version?: string;
+  pipeline_version?: string;
+  sample_rate?: number | null;
+  sample_count?: number | null;
+  duration?: number | null;
+  missing_modalities?: string[];
+  warnings?: string[];
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface FeatureExtractionHistoryItem {
+  id: number;
+  status: string;
+  normalization: string;
+  format: string;
+  algorithm_version: string;
+  pipeline_version: string;
+  source_by_modality: Record<string, string>;
+  created_at: string | null;
+  finished_at: string | null;
 }
 
 export interface DatasetQuality {
@@ -423,7 +447,7 @@ export interface AlignmentResult {
 
 export interface SplitResult {
   sample_count: number;
-  rules: { fixed_rate: number; stride?: number; keep_event_buffer: number };
+  rules: { fixed_rate: number; stride?: number; keep_event_buffer: number; event_bounds?: [number, number] };
   task_format: string;
   samples: {
     id: number;
@@ -488,6 +512,15 @@ export interface SplitRules {
   stride?: number;
   keep_event_buffer?: number;
   task_format?: string;
+  event_start?: number;
+  event_end?: number;
+}
+
+export interface SplitPreview {
+  input: { version_id: number; duration: number; sample_rate: number; source: 'real' };
+  events: WeldEvent;
+  summary: { sample_count: number; effective_start: number; effective_end: number; window_seconds: number; stride_seconds: number };
+  windows: { index: number; start: number; end: number; frame_start: number; frame_end: number }[];
 }
 
 export interface FeatureExtractRequest {

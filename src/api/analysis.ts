@@ -15,6 +15,7 @@ import type {
   DataRecord,
   FeatureExtractRequest,
   FeatureExtraction,
+  FeatureExtractionHistoryItem,
   Job,
   LabelCategory,
   LabelItem,
@@ -23,6 +24,7 @@ import type {
   SignalData,
   SignalQuery,
   SplitResult,
+  SplitPreview,
   SplitRules,
 } from './types';
 
@@ -242,11 +244,45 @@ export async function extractFeatures(
   });
 }
 
+/** 生产样本分段预览；只读，不创建任务。 */
+export async function previewSplitTask(
+  weldId: string,
+  versionId: string,
+  rules: SplitRules,
+): Promise<SplitPreview> {
+  return request<SplitPreview>(
+    `/welds/${weldId}/versions/${versionId}/split-preview`,
+    { method: 'POST', body: rules },
+  );
+}
+
+/** 创建异步特征提取任务。 */
+export async function createFeatureExtractionTask(
+  body: FeatureExtractRequest,
+): Promise<{ job_id: string }> {
+  return request<{ job_id: string }>('/features/extract-tasks', { method: 'POST', body });
+}
+
 /** 当前数据版本最近一次特征提取结果；无结果时返回 null。 */
 export async function getLatestFeatureExtraction(
   versionId: number,
 ): Promise<FeatureExtraction | null> {
   return request<FeatureExtraction | null>(`/features/latest/${versionId}`);
+}
+
+export async function getFeatureExtractionHistory(
+  versionId: number,
+): Promise<FeatureExtractionHistoryItem[]> {
+  return request<FeatureExtractionHistoryItem[]>(`/features/history/${versionId}`);
+}
+
+export async function downloadFeatureExtraction(
+  id: number,
+  format: string,
+): Promise<{ format: string; object_key: string; url: string }> {
+  return request<{ format: string; object_key: string; url: string }>(`/features/${id}/download`, {
+    method: 'POST', body: { format },
+  });
 }
 
 /** 特征提取结果（导出时使用）。 */

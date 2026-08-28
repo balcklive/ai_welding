@@ -1,8 +1,8 @@
 """analysis 域路由（Task 11 ~ Task 14）：分析候选 / 多通道信号 / 真实 DSP 六模式 /
-分析结果 / 特征提取 / 对齐任务 / 切分任务 / 标注。
+分析结果 / 特征提取 / 对齐任务 / 样本分段任务 / 标注。
 
 端点契约见 `docs/API接口清单.md` §3.4；全部需登录（router 级 `Depends(get_current_user)`），
-返回统一 `ok(...)` / `err(...)` 信封；信号由 `app.services.signals` 确定性生成、
+返回统一 `ok(...)` / `err(...)` 信封；信号必须来自成功导入的真实数据、
 DSP 由 `app.services.dsp` 真实计算（scipy/pywt/numpy，非罐头数字）。
 
 Task 13：对齐任务走异步 Job——`POST …/alignment-tasks` 建 pending Job + `alignment_tasks`
@@ -10,7 +10,7 @@ Task 13：对齐任务走异步 Job——`POST …/alignment-tasks` 建 pending 
 （`app.jobs.alignment`，模拟对齐 + 自动生成「时间对齐」版本 + 更新 latest_version_id）；
 `GET /alignment-tasks/{task_id}` 返回 Job 信封（result 内嵌 events/tracks/assets）。
 
-Task 14：切分/标注（实施边界 §3.1 = 真实异步编排 + 模拟结果）：
+样本分段/标注：真实异步编排和真实输入校验：
 - 切分 `POST …/split-tasks` 建 pending Job + `split_tasks` 行 → `{job_id}`；
   handler（`app.jobs.split`）按规则生成 `samples` 行 + 回填 sample_count；
   `GET /split-tasks/{task_id}` 返回 Job 信封（result 内嵌 sample_count + samples 前 50 条预览）。
@@ -34,6 +34,9 @@ Task 14：切分/标注（实施边界 §3.1 = 真实异步编排 + 模拟结果
 """
 
 from datetime import datetime, timezone
+import hashlib
+from io import BytesIO
+import json
 import math
 
 from fastapi import APIRouter, Depends, Request
@@ -58,7 +61,7 @@ from app.models.analysis import (
 )
 from app.models.data import User
 from app.schemas.common import err, ok, paginate
-from app.services import annotation, dsp, features, signal_ingest, signals
+from app.services import annotation, dsp, features, signal_ingest, signals, splitting
 from app.services import welds as svc
 from app.services.jobs import (
     _iso_utc,
@@ -75,10 +78,15 @@ _DEFAULT_SAMPLE_RATE = 1000
 _NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
 _FORMATS = {"NPY", "CSV", "JSON", "PT"}
 #: 切分任务格式 / 标注来源 / 导入来源白名单（契约 §3.4）。
-_SPLIT_FORMATS = {"目标检测", "图像分类", "语义分割", "时序分类"}
+_SPLIT_FORMATS = {"目标检测", "时序分类"}
 #: 标注来源：split_task=切分样本 / manual=手动 / signal=时序信号（信号锚点样本，供波形区间标注）/
 #: video=熔池视频（视频锚点样本 + 帧样本，供多边形区域标注）。
 _ANNOTATION_SOURCES = {"split_task", "manual", "signal", "video"}
+
+
+def _feature_request_key(body: "ExtractFeaturesRequest") -> str:
+    raw = json.dumps({"weld_id": body.weld_id, "version_id": body.version_id, "normalization": body.normalization, "format": body.format}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 _IMPORT_SOURCES = {"files", "split_task"}
 #: 视频扩展名（识别版本 object_keys 里的可标注视频）。
 _VIDEO_EXTENSIONS = (".mp4", ".avi", ".mkv", ".mov", ".webm")
@@ -121,6 +129,10 @@ class ExtractFeaturesRequest(BaseModel):
     format: str = "JSON"
 
 
+class FeatureDownloadRequest(BaseModel):
+    format: str = "JSON"
+
+
 class AlignmentTaskCreate(BaseModel):
     """POST …/alignment-tasks 请求体（契约 §3.4）。`modalities[]` 空时由服务端按焊缝登记模态兜底。"""
 
@@ -137,6 +149,12 @@ class SplitTaskCreate(BaseModel):
     stride: int | None = None
     keep_event_buffer: float = 0.0
     task_format: str = "目标检测"
+    event_start: float | None = None
+    event_end: float | None = None
+
+
+class SplitPreviewRequest(SplitTaskCreate):
+    """生产样本分段预览参数。"""
 
 
 class AnnotationTaskCreate(BaseModel):
@@ -389,6 +407,38 @@ def get_analysis_mode(
 # ── 特征提取（Task 12：真实多模态特征） ────────────────────────────────
 
 
+@router.post("/features/extract-tasks")
+def create_feature_extraction_task(
+    body: ExtractFeaturesRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """创建异步特征提取任务；相同输入在运行中/已完成时幂等复用。"""
+    if body.normalization not in _NORMALIZATIONS:
+        return err(40000, f"normalization 需为 {'/'.join(sorted(_NORMALIZATIONS))}", status=400)
+    if body.format not in _FORMATS:
+        return err(40000, f"format 需为 {'/'.join(sorted(_FORMATS))}", status=400)
+    resolved = _resolve_weld_version(session, body.weld_id, body.version_id, current_user)
+    if resolved is not None:
+        return resolved
+    key = _feature_request_key(body)
+    existing = session.exec(select(Job).where(Job.type == "feature_extraction", Job.request_key == key).order_by(Job.id.desc())).first()
+    if existing is not None and existing.status in {"pending", "running", "succeeded"}:
+        return ok({"job_id": existing.job_uid})
+    job = create_job(session, "feature_extraction", {"request": body.model_dump(), "user_id": current_user.id})
+    job.request_key = key
+    write_audit(session, current_user.id, "create", "feature_extraction_job", job.job_uid, body.model_dump())
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.exec(select(Job).where(Job.type == "feature_extraction", Job.request_key == key).order_by(Job.id.desc())).first()
+        if existing is not None and existing.status in {"pending", "running", "succeeded"}:
+            return ok({"job_id": existing.job_uid})
+        return err(40900, "相同特征提取任务正在创建，请稍后重试", status=409)
+    return ok({"job_id": job.job_uid})
+
+
 @router.post("/features/extract")
 def extract_features(
     body: ExtractFeaturesRequest,
@@ -475,6 +525,89 @@ def get_latest_feature_extraction(
         .order_by(FeatureExtraction.id.desc())
     ).first()
     return ok(_extraction_payload(extraction, record=record, version=version) if extraction else None)
+
+
+@router.get("/features/history/{version_id}")
+def get_feature_extraction_history(
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """返回数据版本的特征提取历史摘要，供审计/重现选择使用。"""
+    version = session.get(DataVersion, version_id)
+    if version is None:
+        return err(40402, "数据版本不存在", status=404)
+    record = session.get(DataRecord, version.record_id)
+    if record is None:
+        return err(40401, "焊缝数据不存在", status=404)
+    try:
+        forbid_unless_record_owned(session, current_user, record)
+    except Exception:
+        return err(40300, "无权限", status=403)
+    rows = session.exec(select(FeatureExtraction).where(FeatureExtraction.version_id == version_id).order_by(FeatureExtraction.id.desc())).all()
+    return ok([{
+        "id": row.id,
+        "status": row.status,
+        "normalization": row.normalization,
+        "format": row.format,
+        "algorithm_version": row.algorithm_version,
+        "pipeline_version": row.pipeline_version,
+        "source_by_modality": row.source_by_modality or {},
+        "created_at": _iso_utc(row.created_at),
+        "finished_at": _iso_utc(row.finished_at),
+    } for row in rows])
+
+
+@router.post("/features/{extraction_id}/download")
+def download_feature_extraction(
+    extraction_id: int,
+    body: FeatureDownloadRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """将统一向量序列化为真实 JSON/CSV/NPY 文件并返回预签名 URL。"""
+    if body.format not in {"JSON", "CSV", "NPY", "PT"}:
+        return err(40000, "format 需为 JSON、CSV、NPY 或 PT", status=400)
+    extraction = session.get(FeatureExtraction, extraction_id)
+    if extraction is None:
+        return err(40401, "特征提取记录不存在", status=404)
+    version = session.get(DataVersion, extraction.version_id)
+    record = session.get(DataRecord, version.record_id) if version else None
+    if record is None:
+        return err(40401, "焊缝数据不存在", status=404)
+    try:
+        forbid_unless_record_owned(session, current_user, record)
+    except Exception:
+        return err(40300, "无权限", status=403)
+    values = (extraction.unified_vector or {}).get("values", [])
+    if body.format == "JSON":
+        content = json.dumps(_extraction_payload(extraction, record=record, version=version), ensure_ascii=False).encode("utf-8")
+        suffix, content_type = "json", "application/json"
+    elif body.format == "CSV":
+        lines = ["index,value"] + [f"{index},{value}" for index, value in enumerate(values)]
+        content, suffix, content_type = ("\n".join(lines) + "\n").encode("utf-8"), "csv", "text/csv"
+    elif body.format == "NPY":
+        buffer = BytesIO()
+        import numpy as np
+
+        np.save(buffer, np.asarray(values, dtype=np.float32))
+        content, suffix, content_type = buffer.getvalue(), "npy", "application/octet-stream"
+    else:
+        try:
+            import torch
+        except ImportError:
+            return err(50300, "PT 导出需要部署 PyTorch 运行时", status=503)
+        buffer = BytesIO()
+        torch.save({"values": torch.tensor(values, dtype=torch.float32), "extraction_id": extraction.id}, buffer)
+        content, suffix, content_type = buffer.getvalue(), "pt", "application/octet-stream"
+    from app.storage import get_storage
+
+    key = f"processed/{record.weld_id}/features/{extraction.id}.{suffix}"
+    storage = get_storage()
+    storage.upload_stream(key, BytesIO(content), len(content), content_type)
+    write_audit(session, current_user.id, "export", "feature_extraction", str(extraction.id), {"format": body.format, "object_key": key})
+    session.commit()
+    return ok({"format": body.format, "object_key": key, "url": storage.presign_get(key)})
 
 
 @router.get("/features/{extraction_id}")
@@ -591,7 +724,102 @@ def get_alignment_task(
     return ok(payload)
 
 
+@router.get("/welds/{weld_id}/versions/{version_id}/alignment-tasks/latest")
+def get_latest_alignment_task(
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """恢复指定焊缝版本最近一次对齐任务，供页面刷新/重新进入时恢复状态。"""
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    try:
+        forbid_unless_record_owned(session, current_user, record)
+    except Exception:
+        return err(40300, "无权限", status=403)
+    version = svc.get_version(session, version_id)
+    if version is None or version.record_id != record.id:
+        return err(40402, "版本不存在", status=404)
+
+    row = session.exec(
+        select(AlignmentTask, Job)
+        .join(Job, Job.id == AlignmentTask.job_id)
+        .where(AlignmentTask.version_id == version_id)
+        .order_by(AlignmentTask.id.desc())
+    ).first()
+    if row is None:
+        return ok(None)
+
+    task, job = row
+    payload = to_job_payload(job)
+    if task.events is not None:
+        result = dict(payload.get("result") or {})
+        result["events"] = task.events
+        result["tracks"] = task.tracks
+        result["assets"] = task.assets
+        payload["result"] = result
+    return ok(payload)
+
+
 # ── 切分任务（Task 14：异步 Job，handler 按规则生成样本） ───────────────
+
+
+@router.post("/welds/{weld_id}/versions/{version_id}/split-preview")
+def preview_split_task(
+    weld_id: str,
+    version_id: int,
+    body: SplitPreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """使用生产规则计算预览；不创建任务、不写入样本。"""
+    if body.fixed_rate < 1:
+        return err(40000, "fixed_rate 需为 >=1 的整数（帧/样本）", status=400)
+    stride = body.stride or body.fixed_rate
+    if stride < 1:
+        return err(40000, "stride 需为 >=1 的整数（帧）", status=400)
+    if body.task_format not in _SPLIT_FORMATS:
+        return err(40000, f"task_format 需为 {'/'.join(sorted(_SPLIT_FORMATS))}", status=400)
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
+    if resolved is not None:
+        return resolved
+    record = svc.get_record_by_weld_id(session, weld_id)
+    version = svc.get_version(session, version_id)
+    assert record is not None and version is not None
+    try:
+        bundle = splitting.load_input(session, record, version)
+        bounds = splitting.event_bounds(
+            bundle, body.event_start, body.event_end,
+            body.keep_event_buffer,
+        )
+        windows = splitting.build_windows(
+            duration=bundle.duration,
+            sample_rate=bundle.sample_rate,
+            window_frames=body.fixed_rate,
+            stride_frames=stride,
+            event_bounds=bounds,
+        )
+    except splitting.SplitInputError as exc:
+        return err(40000, str(exc), status=400)
+    return ok({
+        "input": {
+            "version_id": version.id,
+            "duration": bundle.duration,
+            "sample_rate": bundle.sample_rate,
+            "source": "real",
+        },
+        "events": {**(bundle.events or {}), "weld_segment": list(bounds)},
+        "summary": {
+            "sample_count": len(windows),
+            "effective_start": bounds[0],
+            "effective_end": bounds[1],
+            "window_seconds": body.fixed_rate / bundle.sample_rate,
+            "stride_seconds": stride / bundle.sample_rate,
+        },
+        "windows": [window.__dict__ for window in windows[:100]],
+    })
 
 
 @router.post("/welds/{weld_id}/versions/{version_id}/split-tasks")
@@ -618,7 +846,7 @@ def create_split_task(
             f"task_format 需为 {'/'.join(sorted(_SPLIT_FORMATS))}",
             status=400,
         )
-    resolved = _resolve_weld_version(session, weld_id, version_id)
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
 
@@ -628,11 +856,24 @@ def create_split_task(
     assert version is not None  # resolved above
     if msg := _split_input_error(record, version):
         return err(40000, msg, status=400)
+    try:
+        bundle = splitting.load_input(session, record, version)
+        bounds = splitting.event_bounds(
+            bundle, body.event_start, body.event_end,
+            body.keep_event_buffer,
+        )
+    except splitting.SplitInputError as exc:
+        return err(40000, str(exc), status=400)
 
     rules = {
         "fixed_rate": body.fixed_rate,
         "stride": stride,
         "keep_event_buffer": body.keep_event_buffer,
+        "event_bounds": list(bounds),
+        "event_start": body.event_start,
+        "event_end": body.event_end,
+        "sample_rate": bundle.sample_rate,
+        "duration": bundle.duration,
     }
     request_key = _split_request_key(version_id, rules, body.task_format)
     existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
@@ -1151,6 +1392,20 @@ def _extraction_payload(
         "normalization": e.normalization,
         "format": e.format,
         "created_at": _iso_utc(e.created_at),
+        "status": e.status,
+        "source_by_modality": e.source_by_modality or (e.unified_vector or {}).get("modality_status", {}),
+        "input_object_keys": e.input_object_keys or [],
+        "algorithm_version": e.algorithm_version,
+        "pipeline_version": e.pipeline_version,
+        "sample_rate": e.sample_rate,
+        "sample_count": e.sample_count,
+        "duration": e.duration,
+        "channel_mapping": e.channel_mapping or {},
+        "missing_modalities": e.missing_modalities or [],
+        "warnings": e.warnings or [],
+        "error_message": e.error_message,
+        "started_at": _iso_utc(e.started_at),
+        "finished_at": _iso_utc(e.finished_at),
     }
     stored_status = (e.unified_vector or {}).get("modality_status")
     if isinstance(stored_status, dict):
@@ -1163,6 +1418,7 @@ def _extraction_payload(
 def _load_real_vision_features(version: DataVersion) -> tuple[dict, str]:
     """优先读取真实图片/视频关键帧；不可用时返回空特征并明确标记。"""
     from app.storage import get_storage
+    from app.core.config import settings
 
     keys = version.object_keys or []
     image_key = next((k for k in keys if k.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".webp"))), None)
@@ -1170,13 +1426,19 @@ def _load_real_vision_features(version: DataVersion) -> tuple[dict, str]:
     try:
         storage = get_storage()
         if image_key:
-            return features.vision_features_from_image(storage.get_object(image_key)), "real"
+            data = storage.get_object(image_key)
+            if settings.feature_vision_provider_url:
+                return features.vision_features_from_provider(data, settings.feature_vision_provider_url), "real"
+            return features.vision_features_from_image(data), "heuristic"
         if video_key:
             from app.services.media_probe import analyze_video
 
             _, frames = analyze_video(storage.get_object(video_key), [("first", 0.0)])
             if frames:
-                return features.vision_features_from_image(frames[0]["bytes"]), "real"
+                data = frames[0]["bytes"]
+                if settings.feature_vision_provider_url:
+                    return features.vision_features_from_provider(data, settings.feature_vision_provider_url), "real"
+                return features.vision_features_from_image(data), "heuristic"
     except Exception as exc:  # noqa: BLE001 - 单模态失败不应吞掉其它结果
         logger.warning("vision feature extraction unavailable: {}", exc)
     return {key: 0.0 for key in features.VISION_GEOMETRY_KEYS + features.VISION_TEXTURE_KEYS}, "missing"
@@ -1237,12 +1499,21 @@ def _derive_modalities_from_keys(object_keys: list[str]) -> list[str]:
 
 
 def _feature_modality_status(*, record, version: DataVersion | None, bundle_source: str | None) -> dict:
+    from app.core.config import settings
+
     available = set(record.modalities or []) if record is not None else set()
     if version is not None:
         available |= set(_derive_modalities_from_keys(version.object_keys or []))
     return {
         "timeseries": "real" if bundle_source == "real" else "generated",
-        "vision": "real" if "video" in available or "infrared" in available else "missing",
+        # 历史同步记录无法证明已调用正式视觉模型；没有 provider 配置时必须诚实标为启发式。
+        "vision": (
+            "real"
+            if settings.feature_vision_provider_url and ("video" in available or "infrared" in available)
+            else "heuristic"
+            if "video" in available or "infrared" in available
+            else "missing"
+        ),
         "audio": "real" if "audio" in available else "missing",
     }
 
@@ -1342,42 +1613,3 @@ def _filter_error(filter_type: str | None, cutoff: float | None, cutoff2: float 
         if cutoff >= cutoff2:
             return "cutoff 需小于 cutoff2"
     return None
-@router.get("/welds/{weld_id}/versions/{version_id}/alignment-tasks/latest")
-def get_latest_alignment_task(
-    weld_id: str,
-    version_id: int,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-) -> dict:
-    """恢复指定焊缝版本最近一次对齐任务，供页面刷新/重新进入时恢复状态。"""
-    record = svc.get_record_by_weld_id(session, weld_id)
-    if record is None:
-        return err(40401, "焊缝不存在", status=404)
-    try:
-        forbid_unless_record_owned(session, current_user, record)
-    except Exception:
-        return err(40300, "无权限", status=403)
-    version = svc.get_version(session, version_id)
-    if version is None or version.record_id != record.id:
-        return err(40402, "版本不存在", status=404)
-
-    row = session.exec(
-        select(AlignmentTask, Job)
-        .join(Job, Job.id == AlignmentTask.job_id)
-        .where(AlignmentTask.version_id == version_id)
-        .order_by(AlignmentTask.id.desc())
-    ).first()
-    if row is None:
-        return ok(None)
-
-    task, job = row
-    payload = to_job_payload(job)
-    if task.events is not None:
-        result = dict(payload.get("result") or {})
-        result["events"] = task.events
-        result["tracks"] = task.tracks
-        result["assets"] = task.assets
-        payload["result"] = result
-    return ok(payload)
-
-

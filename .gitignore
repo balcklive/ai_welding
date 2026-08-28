@@ -23,6 +23,7 @@ dist-ssr
 *.sw?
 .env
 .superpowers/
+.impeccable/
 .playwright-cli/
 .claude/
 .remote
