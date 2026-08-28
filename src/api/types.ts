@@ -527,7 +527,7 @@ export interface RegistrationForm {
 }
 
 export interface AnnotationTaskCreate {
-  source: 'split_task' | 'manual' | 'signal';
+  source: 'split_task' | 'manual' | 'signal' | 'video';
   split_task_id?: string;
   version_id?: number;
   name?: string;

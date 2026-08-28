@@ -9,6 +9,7 @@ import {
   Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
 } from 'lucide-react';
 import * as echarts from 'echarts';
+import ImageAnnotate from 'react-image-annotate';
 import { getToken } from './api/client';
 import { getDashboardData } from './api/dashboard';
 import type { DashboardData } from './api/dashboard';
@@ -37,6 +38,7 @@ import {
 import {
   aiPretag,
   createAlignmentTask,
+  createAnnotationFrame,
   createAnnotationTask,
   createSplitTask,
   extractFeatures,
@@ -387,7 +389,7 @@ const mockLabelCategories: LabelCategory[] = [
   { id: 5, name: '正常', color: null },
 ];
 function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
-  const [mode, setMode] = useState<'image' | 'signal'>('image');
+  const [mode, setMode] = useState<'image' | 'signal' | 'video'>('image');
   const [saved, setSaved] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState(['焊瘤', '气孔']);
   const [labels, setLabels] = useState<LabelCategory[]>(mockLabelCategories);
@@ -449,7 +451,7 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
   };
   const frameLabel = sample?.frame_no != null ? String(sample.frame_no).padStart(4, '0') : '0248';
   const confidence = sample?.confidence != null ? `${(sample.confidence * 100).toFixed(1)}%` : '94.2%';
-  return <div className={embedded ? 'embedded-page' : 'page-wrap'}><PageIntro eyebrow="数据生产线" title="数据标注" description="为模型准备高质量训练样本，支持多模态协同标注。" action={<><button className="outline-button"><Upload size={16} />导入数据</button><button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button></>} /><div className="annotation-mode-bar"><button className={mode === 'signal' ? 'selected' : ''} onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button className={mode === 'image' ? 'selected' : ''} onClick={() => setMode('image')}><ImageIcon size={14} />图像标注</button></div>{mode === 'signal' ? <AnnotationSignal dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : <div className="annotation-layout"><section className="panel annotation-board"><div className="board-toolbar"><div><span className="file-badge"><Archive size={15} />样本 {frameLabel} / {totalSamples.toLocaleString()}</span><h2>焊接件 · 视觉质检样本</h2></div><div className="toolbar-actions"><button className="icon-button" onClick={handleAiPretag} title="AI 预标注"><SlidersHorizontal size={17} /></button><button className="select-button">图像标注 <ChevronDown size={14} /></button></div></div><div className="image-stage"><img src={sampleImg} alt="待标注焊接样本" />{aiBoxes.length ? aiBoxes.map((a, i) => { const [bx, by, bw, bh] = a.box.length === 4 ? a.box : [128, 182, 186, 106]; return <div key={a.id ?? i} className="annotation-box" style={{ left: `${(bx / 640) * 100}%`, top: `${(by / 480) * 100}%`, width: `${(bw / 640) * 100}%`, height: `${(bh / 480) * 100}%` }}><span>{a.category} {a.confidence != null ? <b>{a.confidence.toFixed(2)}</b> : null}</span></div>; }) : <><div className="annotation-box box-one"><span>焊瘤 <b>0.94</b></span></div><div className="annotation-box box-two"><span>气孔 <b>0.88</b></span></div></>}<div className="stage-tip"><Sparkles size={14} />AI 已预标注 {aiBoxes.length || 2} 个区域</div></div><div className="board-footer"><div className="thumb-strip"><img src={detailImage} alt="样本缩略图" /><img className="thumb-active" src={sampleImg} alt="当前样本缩略图" /><img src={modelImage} alt="样本缩略图" /><span>+ 9</span></div><div className="pagination"><button>‹</button><span>1 / 12</span><button>›</button></div></div></section><aside className="annotation-side"><section className="panel label-panel"><div className="panel-heading"><div><h2>标签类别</h2><p>选择需要应用的缺陷标签</p></div><button className="more-button"><MoreHorizontal size={18} /></button></div><div className="label-options">{labels.map((label, index) => <button className={`label-chip ${selectedLabels.includes(label.name) ? 'chosen' : ''}`} onClick={() => toggleLabel(label.name)} key={label.name}><i className={`chip-dot chip-${index % 5}`} />{label.name}<span>{selectedLabels.includes(label.name) ? <Check size={14} /> : '+'}</span></button>)}</div></section><section className="panel annotation-info"><div className="panel-heading"><div><h2>标注信息</h2><p>当前样本的详细信息</p></div></div><InfoRow label="数据来源" value="产线相机 · 03 号" /><InfoRow label="采集时间" value="2026-08-14 18:32" /><InfoRow label="标注人员" value="林工（我）" /><InfoRow label="置信度" value={confidence} accent /></section><div className="ai-card"><div className="ai-card-icon"><Zap size={17} /></div><div><strong>智能标注建议</strong><p>已为你识别 {aiBoxes.length || 2} 个疑似缺陷区域，建议确认后提交。</p></div></div></aside></div>}</div>;
+  return <div className={embedded ? 'embedded-page' : 'page-wrap'}><PageIntro eyebrow="数据生产线" title="数据标注" description="为模型准备高质量训练样本，支持多模态协同标注。" action={<><button className="outline-button"><Upload size={16} />导入数据</button><button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button></>} /><div className="annotation-mode-bar"><button className={mode === 'signal' ? 'selected' : ''} onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button className={mode === 'video' ? 'selected' : ''} onClick={() => setMode('video')}><Play size={14} />视频标注</button><button className={mode === 'image' ? 'selected' : ''} onClick={() => setMode('image')}><ImageIcon size={14} />图像标注</button></div>{mode === 'signal' ? <AnnotationSignal dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : mode === 'video' ? <AnnotationVideo dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : <div className="annotation-layout"><section className="panel annotation-board"><div className="board-toolbar"><div><span className="file-badge"><Archive size={15} />样本 {frameLabel} / {totalSamples.toLocaleString()}</span><h2>焊接件 · 视觉质检样本</h2></div><div className="toolbar-actions"><button className="icon-button" onClick={handleAiPretag} title="AI 预标注"><SlidersHorizontal size={17} /></button><button className="select-button">图像标注 <ChevronDown size={14} /></button></div></div><div className="image-stage"><img src={sampleImg} alt="待标注焊接样本" />{aiBoxes.length ? aiBoxes.map((a, i) => { const [bx, by, bw, bh] = a.box.length === 4 ? a.box : [128, 182, 186, 106]; return <div key={a.id ?? i} className="annotation-box" style={{ left: `${(bx / 640) * 100}%`, top: `${(by / 480) * 100}%`, width: `${(bw / 640) * 100}%`, height: `${(bh / 480) * 100}%` }}><span>{a.category} {a.confidence != null ? <b>{a.confidence.toFixed(2)}</b> : null}</span></div>; }) : <><div className="annotation-box box-one"><span>焊瘤 <b>0.94</b></span></div><div className="annotation-box box-two"><span>气孔 <b>0.88</b></span></div></>}<div className="stage-tip"><Sparkles size={14} />AI 已预标注 {aiBoxes.length || 2} 个区域</div></div><div className="board-footer"><div className="thumb-strip"><img src={detailImage} alt="样本缩略图" /><img className="thumb-active" src={sampleImg} alt="当前样本缩略图" /><img src={modelImage} alt="样本缩略图" /><span>+ 9</span></div><div className="pagination"><button>‹</button><span>1 / 12</span><button>›</button></div></div></section><aside className="annotation-side"><section className="panel label-panel"><div className="panel-heading"><div><h2>标签类别</h2><p>选择需要应用的缺陷标签</p></div><button className="more-button"><MoreHorizontal size={18} /></button></div><div className="label-options">{labels.map((label, index) => <button className={`label-chip ${selectedLabels.includes(label.name) ? 'chosen' : ''}`} onClick={() => toggleLabel(label.name)} key={label.name}><i className={`chip-dot chip-${index % 5}`} />{label.name}<span>{selectedLabels.includes(label.name) ? <Check size={14} /> : '+'}</span></button>)}</div></section><section className="panel annotation-info"><div className="panel-heading"><div><h2>标注信息</h2><p>当前样本的详细信息</p></div></div><InfoRow label="数据来源" value="产线相机 · 03 号" /><InfoRow label="采集时间" value="2026-08-14 18:32" /><InfoRow label="标注人员" value="林工（我）" /><InfoRow label="置信度" value={confidence} accent /></section><div className="ai-card"><div className="ai-card-icon"><Zap size={17} /></div><div><strong>智能标注建议</strong><p>已为你识别 {aiBoxes.length || 2} 个疑似缺陷区域，建议确认后提交。</p></div></div></aside></div>}</div>;
 }
 /** 时序标注模式：ECharts 波形 + 点击设起点/终点选缺陷区间（kind=segment）+ 区间列表 + 保存。
  *
@@ -631,6 +633,164 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
       <aside className="annotation-signal-side">
         <section className="panel label-panel"><div className="panel-heading"><div><h2>焊缝图片参考</h2><p>当前版本视觉样本</p></div></div><img src={weldImg} alt="焊缝图片参考" className="signal-weld-img" /></section>
         <section className="panel annotation-info"><div className="panel-heading"><div><h2>缺陷区间</h2><p>{segments.length} 段</p></div></div>{segments.length === 0 ? <p className="signal-empty">尚无区间标注。在波形上点击起点与终点添加。</p> : segments.map((s) => <div className="signal-seg-row" key={s.id}><span className="signal-seg-cat">{s.category}</span><span className="signal-seg-time">{fmtT(s.start_time)}–{fmtT(s.end_time)}</span><button className="ghost-button" onClick={() => removeSegment(s.id)}>删</button></div>)}</section>
+      </aside>
+    </div>
+  );
+}
+/** 视频标注模式：熔池视频播放器 + 帧捕获 → react-image-annotate 画多边形（kind='polygon'）。
+ *
+ * 流程：选中焊缝 → getWeld 取最新版本 → createAnnotationTask(source='video', version_id)
+ * → useJob 成功 → 取视频锚点样本（meta.video_key → getFileUrl 播放）→ 播放/定位 → 捕获当前帧
+ * （canvas 按视频自然分辨率取帧）→ react-image-annotate 画多边形（归一化坐标，`key` 变化重挂载
+ * 重置每帧）→ 点标注器自带保存（onExit）→ 归一化 × 帧宽高转像素 → createAnnotationFrame 建帧样本
+ * → saveAnnotation(kind='polygon', category='熔池')。已标注帧在侧栏展示。
+ */
+function AnnotationVideo({ embedded = false, dataId, onBack }: { embedded?: boolean; dataId?: string; onBack: () => void }) {
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [versionId, setVersionId] = useState<number | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [frameImage, setFrameImage] = useState<string | null>(null);
+  const [frameW, setFrameW] = useState(1280);
+  const [frameH, setFrameH] = useState(720);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [saved, setSaved] = useState(false);
+  const [savedFrames, setSavedFrames] = useState<{ timestamp: number; sample_id: number; count: number }[]>([]);
+  const [captureKey, setCaptureKey] = useState(0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const taskCreatedRef = useRef(false);
+  const sampleByTime = useRef<Map<number, number>>(new Map());
+  const { status: jobStatus } = useJob<unknown>(taskId);
+
+  // 解析选中焊缝最新版本并创建 video 标注任务（best-effort；StrictMode 双执行闸门放异步 resolve 后）
+  useEffect(() => {
+    if (!dataId) return;
+    let cancelled = false;
+    getWeld(dataId).then((w) => {
+      if (cancelled) return;
+      const vid = w.latest_version_id;
+      if (vid == null) return;
+      setVersionId(vid);
+      if (taskCreatedRef.current) return;
+      taskCreatedRef.current = true;
+      createAnnotationTask({ source: 'video', version_id: vid, name: 'AN-视频' }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => console.warn('[annotation.video] createAnnotationTask failed', err));
+    }).catch((err) => console.warn('[annotation.video] getWeld failed', err));
+    return () => { cancelled = true; };
+  }, [dataId]);
+
+  // 任务成功后：加载视频锚点样本（video_url）+ 已标注帧
+  useEffect(() => {
+    if (!taskId || jobStatus !== 'succeeded') return;
+    let cancelled = false;
+    listAnnotationSamples(taskId, 1).then((page) => {
+      if (cancelled) return;
+      const anchor = page.items.find((s) => s.meta?.mode === 'video');
+      if (anchor) {
+        const key = anchor.meta?.video_key;
+        if (typeof key === 'string' && key) getFileUrl(key).then((r) => { if (!cancelled) setVideoUrl(r.url); }).catch((err) => console.warn('[annotation.video] getFileUrl failed', err));
+      }
+      const frames = page.items.filter((s) => s.meta?.mode === 'frame');
+      if (frames.length) {
+        const done = frames.map((f) => ({
+          timestamp: (f.meta?.timestamp as number) ?? 0,
+          sample_id: f.id,
+          count: (f.annotations ?? []).length,
+        }));
+        setSavedFrames(done);
+        done.forEach((d) => sampleByTime.current.set(d.timestamp, d.sample_id));
+      }
+    }).catch((err) => console.warn('[annotation.video] listAnnotationSamples failed', err));
+    return () => { cancelled = true; };
+  }, [taskId, jobStatus]);
+
+  // 捕获当前帧：canvas 按视频自然分辨率取帧 → dataURL 喂标注器
+  const handleCapture = () => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    if (video.readyState < 2) { console.warn('[annotation.video] 视频尚未可解码'); return; }
+    const w = video.videoWidth || 1280;
+    const h = video.videoHeight || 720;
+    canvas.width = w; canvas.height = h;
+    canvas.getContext('2d')?.drawImage(video, 0, 0, w, h);
+    setFrameW(w); setFrameH(h);
+    setCurrentTime(Math.round(video.currentTime * 1000) / 1000);
+    setFrameImage(canvas.toDataURL('image/jpeg', 0.9));
+    setSaved(false);
+    setCaptureKey((k) => k + 1);
+  };
+  const stepFrame = (delta: number) => {
+    const video = videoRef.current;
+    if (!video || !video.duration) return;
+    video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + delta));
+  };
+
+  // react-image-annotate 保存（onExit）：把归一化多边形转像素 → 建帧样本 → 保存 kind='polygon'
+  const handleExit = (state: { images?: Array<{ regions?: Array<{ type?: string; points?: number[][]; cls?: string; open?: boolean }> }> }) => {
+    const regions = state.images?.[0]?.regions ?? [];
+    // 全部闭合多边形都保存（单类熔池，可一帧多区域），空画布不误报已保存
+    const polys = regions.filter((r) => (r.points?.length ?? 0) >= 3 && r.open !== true);
+    if (!polys.length || !taskId || !frameImage) return;
+    const labels: LabelItem[] = polys.map((p) => ({
+      category: p.cls ?? '熔池',
+      kind: 'polygon',
+      points: (p.points ?? []).map(([nx, ny]) => [Math.round(nx * frameW), Math.round(ny * frameH)]),
+    }));
+    const existing = sampleByTime.current.get(currentTime);
+    const create = existing != null
+      ? Promise.resolve(existing)
+      : createAnnotationFrame(taskId, currentTime, frameW, frameH).then((r) => { sampleByTime.current.set(currentTime, r.sample_id); return r.sample_id; });
+    create
+      .then((sid) => saveAnnotation(taskId, String(sid), labels))
+      .then(() => {
+        setSaved(true);
+        const realSid = sampleByTime.current.get(currentTime) ?? 0;
+        setSavedFrames((cur) => [...cur.filter((f) => Math.abs(f.timestamp - currentTime) > 0.001), { timestamp: currentTime, sample_id: realSid, count: labels.length }]);
+      })
+      .catch((err) => console.warn('[annotation.video] saveAnnotation failed', err));
+  };
+
+  return (
+    <div className="annotation-signal-layout">
+      <section className="panel annotation-signal-board">
+        <div className="board-toolbar">
+          <div><span className="file-badge"><ImageIcon size={15} />视频标注 · {dataId ?? '未选择'}</span><h2>{videoUrl ? '熔池视频 · 播放/定位后捕获帧画多边形' : '加载视频中…'}</h2></div>
+          <div className="toolbar-actions"><button className="outline-button" onClick={onBack}><ImageIcon size={14} />图像标注</button><button className="primary-button" onClick={handleCapture} disabled={!videoUrl}><Play size={14} />捕获当前帧</button></div>
+        </div>
+        <div className="signal-stage">
+          <video ref={videoRef} src={videoUrl ?? undefined} controls className="video-annotate-player" onPause={handleCapture} />
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
+        </div>
+        <div className="video-annotate-controls">
+          <button className="ghost-button" onClick={() => stepFrame(-1 / 30)}>‹ 上一帧</button>
+          <span className="signal-seg-time">{fmt(currentTime)}</span>
+          <button className="ghost-button" onClick={() => stepFrame(1 / 30)}>下一帧 ›</button>
+        </div>
+        {frameImage ? (
+          <div className="video-annotate-editor">
+            <ImageAnnotate
+              key={captureKey}
+              images={[{ src: frameImage, regions: [] }]}
+              enabledTools={['create-polygon']}
+              selectedTool="create-polygon"
+              regionClsList={['熔池']}
+              onExit={handleExit}
+            />
+          </div>
+        ) : <div className="signal-stage-tip">播放/定位到要标注的时间点，点「捕获当前帧」后画多边形（点若干顶点、双击闭合），再点标注器自带的保存按钮。</div>}
+        <div className="signal-stage-tip">{saved ? <><Check size={14} />已保存 </> : null}已标注 {savedFrames.length} 帧</div>
+      </section>
+      <aside className="annotation-signal-side">
+        <section className="panel annotation-info">
+          <div className="panel-heading"><div><h2>已标注帧</h2><p>{savedFrames.length} 帧 · 熔池区域</p></div></div>
+          {savedFrames.length === 0 ? <p className="signal-empty">尚无标注。捕获帧 → 画多边形 → 保存。</p> : savedFrames.map((f) => (
+            <div className="signal-seg-row" key={f.timestamp}>
+              <span className="signal-seg-cat">熔池</span>
+              <span className="signal-seg-time">{fmt(f.timestamp)}</span>
+              <span className="signal-seg-count">×{f.count}</span>
+            </div>
+          ))}
+        </section>
       </aside>
     </div>
   );

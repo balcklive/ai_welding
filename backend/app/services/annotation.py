@@ -358,8 +358,9 @@ def simulate_annotation(session: Session, task: AnnotationTask, job: Job) -> dic
             s.annotation_task_id = task.id
             session.add(s)
         reassigned = len(samples)
-    elif task.source == "signal":
-        # 信号锚点样本在任务创建时同步生成（route），这里只统计数量回填 result。
+    elif task.source in ("signal", "video"):
+        # 信号/视频锚点样本在任务创建时同步生成（route），帧样本经 …/frames 追加，
+        # 这里只统计任务样本数回填 result。
         reassigned = int(
             session.exec(
                 select(func.count(Sample.id)).where(Sample.annotation_task_id == task.id)
@@ -373,3 +374,135 @@ def simulate_annotation(session: Session, task: AnnotationTask, job: Job) -> dic
     }
     mark_succeeded(session, job, result)
     return result
+
+
+# ── 标注产物导出（P3：视频掩膜 / 时序 segment JSON） ─────────────────────
+
+
+def export_annotations(session: Session, task: AnnotationTask, storage) -> dict:
+    """把标注结果导出为模型可消费的产物，按任务来源分发：
+
+    - `video`：每个 polygon 标注帧 → ffmpeg 抽帧 JPEG + Pillow 多边形填充掩膜 PNG，
+      写 MinIO `processed/{weld_id}/annotate/{sample_id}.jpg|.png`；
+    - `signal`：segment 区间 → JSON 标签文件（`segments_{task.id}.json`）。
+
+    返回 `{"type", "count", "items"}`；存储写失败抛错（导出必须拿到 URL）。
+    存储/ffmpeg 延迟导入（测试 monkeypatch `app.storage.get_storage` / `media_probe`）。
+    """
+    if task.source == "video":
+        return _export_video_masks(session, task, storage)
+    if task.source == "signal":
+        return _export_segment_labels(session, task, storage)
+    raise ValueError(f"来源 {task.source!r} 暂不支持标注导出")
+
+
+def _task_meta_anchor(
+    session: Session, task: AnnotationTask, mode: str
+) -> tuple[list[Sample], dict]:
+    """任务全部样本 + 指定 mode 的锚点 meta（signal/video 锚点）。"""
+    samples = session.exec(
+        select(Sample).where(Sample.annotation_task_id == task.id)
+    ).all()
+    anchor = next((s for s in samples if (s.meta or {}).get("mode") == mode), None)
+    return samples, (anchor.meta or {}) if anchor else {}
+
+
+def _export_video_masks(session: Session, task: AnnotationTask, storage) -> dict:
+    """视频多边形标注 → 每帧 `frame.jpg` + `mask.png`（ffmpeg 抽帧 + Pillow 填充）。"""
+    import io
+
+    from PIL import Image, ImageDraw  # noqa: PLC0415
+    from app.services import media_probe  # noqa: PLC0415
+
+    samples, anchor_meta = _task_meta_anchor(session, task, "video")
+    video_key = anchor_meta.get("video_key")
+    weld_id = anchor_meta.get("weld_id") or f"task_{task.id}"
+    if not video_key:
+        return {"type": "video", "count": 0, "items": [], "reason": "无视频对象键"}
+    video_bytes = storage.get_object(video_key)
+    items: list[dict] = []
+    for sample in samples:
+        if (sample.meta or {}).get("mode") != "frame":
+            continue
+        anns = session.exec(
+            select(Annotation).where(Annotation.sample_id == sample.id)
+        ).all()
+        polys = [a for a in anns if a.kind == "polygon" and a.points]
+        if not polys:
+            continue
+        ts = (sample.meta or {}).get("timestamp")
+        if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+            continue
+        try:
+            # event_points 需 [(event, t)] 元组列表（media_probe 逐事件抽帧解包）
+            _meta, keyframes = media_probe.analyze_video(video_bytes, [("frame", float(ts))])
+        except Exception:  # noqa: BLE001 - 单帧抽帧失败跳过该帧，不阻塞整体导出
+            continue
+        if not keyframes:
+            continue
+        jpg = keyframes[0]["bytes"]
+        img = Image.open(io.BytesIO(jpg)).convert("RGB")
+        w, h = img.size
+        fw = (sample.meta or {}).get("frame_width") or w
+        fh = (sample.meta or {}).get("frame_height") or h
+        mask = Image.new("L", (w, h), 0)
+        draw = ImageDraw.Draw(mask)
+        for a in polys:
+            pts = [(x * w / fw, y * h / fh) for x, y in (a.points or [])]
+            if len(pts) >= 3:
+                draw.polygon(pts, fill=255)
+        mask_buf = io.BytesIO()
+        mask.save(mask_buf, format="PNG")
+        base = f"processed/{weld_id}/annotate/{sample.id}"
+        storage.upload_stream(f"{base}.jpg", io.BytesIO(jpg), len(jpg), "image/jpeg")
+        storage.upload_stream(
+            f"{base}.png", io.BytesIO(mask_buf.getvalue()), mask_buf.tell(), "image/png"
+        )
+        items.append(
+            {
+                "sample_id": sample.id,
+                "timestamp": ts,
+                "category": polys[0].category,
+                "frame_url": storage.presign_get(f"{base}.jpg"),
+                "mask_url": storage.presign_get(f"{base}.png"),
+            }
+        )
+    return {"type": "video", "count": len(items), "items": items}
+
+
+def _export_segment_labels(session: Session, task: AnnotationTask, storage) -> dict:
+    """时序 segment 标注 → JSON 标签文件（写 MinIO）。"""
+    import io
+    import json
+
+    samples, anchor_meta = _task_meta_anchor(session, task, "signal")
+    weld_id = anchor_meta.get("weld_id") or f"task_{task.id}"
+    labels: list[dict] = []
+    for sample in samples:
+        anns = session.exec(
+            select(Annotation).where(Annotation.sample_id == sample.id)
+        ).all()
+        for a in anns:
+            if a.kind == "segment":
+                labels.append(
+                    {
+                        "category": a.category,
+                        "start_time": a.start_time,
+                        "end_time": a.end_time,
+                        "confidence": (
+                            float(a.confidence) if a.confidence is not None else None
+                        ),
+                        "annotator": a.annotator,
+                    }
+                )
+    labels.sort(key=lambda l: (l["start_time"] or 0))
+    data = {"weld_id": weld_id, "task_id": task.id, "labels": labels, "count": len(labels)}
+    key = f"processed/{weld_id}/annotate/segments_{task.id}.json"
+    blob = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    storage.upload_stream(key, io.BytesIO(blob), len(blob), "application/json")
+    return {
+        "type": "signal",
+        "count": len(labels),
+        "labels": labels,
+        "labels_url": storage.presign_get(key),
+    }

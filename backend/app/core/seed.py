@@ -49,13 +49,15 @@ def _t(y: int, mo: int, d: int, hh: int, mi: int, ss: int = 0) -> datetime:
     return datetime(y, mo, d, hh, mi, ss, tzinfo=timezone.utc)
 
 
-# ── 标签类别（前端 Annotation 组件的 5 个 chip；展示色取自前端缺陷色板） ──
+# ── 标签类别（前端 Annotation 组件的 chip；展示色取自前端缺陷色板） ──
+# 5 类缺陷（图像/时序标注）+ "熔池"（视频语义分割标注单类）。
 LABEL_CATEGORIES: list[tuple[str, str]] = [
     ("焊瘤", "#5fb8a6"),
     ("气孔", "#2c9caf"),
     ("未熔合", "#f0a34a"),
     ("咬边", "#7ba7c4"),
     ("正常", "#b0c4b8"),
+    ("熔池", "#e88d6c"),
 ]
 
 # ── 核验规则明细（与 App.tsx Validation 组件 15 项逐字一致；第 9 项「视频帧率稳定性」= 警告） ──

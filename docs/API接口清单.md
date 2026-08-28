@@ -171,12 +171,14 @@
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交数据切分任务（**异步**） | body: `fixed_rate`(帧/样本), `keep_event_buffer`(±s), `task_format`(目标检测/图像分类/语义分割/时序分类) |
 | GET | `/api/v1/split-tasks/{task_id}` | 切分任务状态/结果（生成样本数） | 轮询（Job 结构） |
 | GET | `/api/v1/label-categories` | 缺陷标签类别（焊瘤/气孔/未熔合/咬边/正常） | 需登录 |
-| POST | `/api/v1/annotation-tasks` | 创建标注任务（**异步**：从切分样本/手动选样生成，返回 `{ job_id }`） | body: `source`(`split_task` / `manual`), `split_task_id?`, `name?` |
+| POST | `/api/v1/annotation-tasks` | 创建标注任务（**异步**：从切分样本/手动选样/时序信号/熔池视频生成，返回 `{ job_id }`） | body: `source`(`split_task` / `manual` / `signal` / `video`), `split_task_id?`, `version_id?`(signal/video 必填), `name?` |
 | POST | `/api/v1/annotation-tasks/{task_id}/import` | 导入额外样本到标注任务（补充文件或其它切分任务样本） | body: `source`(`files` / `split_task`), `object_keys[]?`, `split_task_id?` |
 | GET | `/api/v1/annotation-tasks/{task_id}/samples` | 标注样本列表（分页，如样本 0248/1209） | query: `page`, `page_size` |
 | GET | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}` | 单个样本详情（图像/信号 + 现有标注）；返回样本级 `confidence`（AI 预标注平均置信度，人工修正后为最新值，供标注信息面板展示） | — 需登录 |
 | POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/ai-pretag` | AI 预标注（同步）：返回疑似缺陷区域+置信度 | 需登录 |
 | POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/labels` | 保存/更新标注（同步） | body: `labels[]`（类别 + `kind`(`box`/`segment`/`polygon`)；`box`=[x,y,w,h] / `start_time,end_time`=区间秒 / `points`=多边形顶点，按 kind 分支校验） |
+| POST | `/api/v1/annotation-tasks/{task_id}/frames` | 视频标注：创建帧样本锚点（`meta.mode='frame'`，weld/version/video_key 从任务视频锚点继承） | body: `timestamp`(秒, 非负), `frame_width?`, `frame_height?`（捕获帧像素尺寸，导出掩膜缩放用） |
+| POST | `/api/v1/annotation-tasks/{task_id}/export` | 标注产物导出（**同步**）：video → 帧图+熔池掩膜 PNG；signal → segment JSON 标签，写 MinIO `processed/{weld_id}/annotate/` | 需登录 |
 | GET | `/api/v1/annotation-tasks/{task_id}` | 标注任务整体状态（进度/当前样本） | 轮询（Job 结构） |
 | POST | `/api/v1/features/extract` | 执行特征提取（**同步**）：时序/视觉/声音特征 + 统一向量 | body: `weld_id`, `version_id`, `normalization`(Z-Score/Min-Max/L2/无), `format`(NPY/CSV/JSON/PT) |
 | GET | `/api/v1/features/{extraction_id}` | 特征提取结果（导出时使用） | — 需登录 |

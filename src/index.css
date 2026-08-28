@@ -303,6 +303,12 @@ button { border: 0; cursor: pointer; }
 .signal-seg-cat { padding:3px 8px; color:#277d7a; background:#eef9f5; border-radius:4px; font-size:10px; }
 .signal-seg-time { margin-left:auto; color:#456167; font:10px 'DM Mono',monospace; }
 @media (max-width:1000px) { .annotation-signal-layout { grid-template-columns:1fr; } }
+/* ── 视频标注（AnnotationVideo） ── */
+.video-annotate-player { width:100%; max-height:360px; background:#0d2226; border-radius:6px; }
+.video-annotate-controls { display:flex; align-items:center; justify-content:center; gap:14px; margin:10px 0; }
+.video-annotate-editor { min-height:420px; border-radius:8px; overflow:hidden; border:1px solid #e4edeb; background:#f6faf9; }
+.video-annotate-editor > div { min-height:420px; }
+.signal-seg-count { margin-left:auto; color:#9aadae; font:10px 'DM Mono',monospace; }
 
 /* ── 对齐页真实数据渲染（对齐真实化） ───────────────────────────────────── */
 .alignment-video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#0d2226; }
