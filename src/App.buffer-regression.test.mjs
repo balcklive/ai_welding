@@ -22,3 +22,12 @@ test('version view buttons open the appropriate detail drawer', () => {
   assert.match(source, /<VersionDetailDrawer mode="dataset"/);
   assert.match(source, /onClick=\{\(\) => setSelectedVersion\(v\)\}/);
 });
+
+test('data version panel exposes create and validation actions backed by APIs', () => {
+  const panel = source.slice(source.indexOf('function VersionPanel('), source.indexOf('function VersionCreateDialog('));
+  assert.match(panel, /createVersion\(dataId/);
+  assert.match(panel, /presignUpload\([\s\S]*prefix: `processed\/\$\{dataId\}`/);
+  assert.match(panel, /runValidation\(dataId, String\(versionId\)\)/);
+  assert.match(panel, /新建数据版本/);
+  assert.match(panel, /执行核验/);
+});

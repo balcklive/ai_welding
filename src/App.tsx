@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Archive, ArrowUpRight, BarChart3, Box, Check, ChevronDown,
   CircleHelp, Database, Factory, FileCheck2, Filter, Gauge, Layers3,
@@ -15,6 +15,7 @@ import { getDashboardData } from './api/dashboard';
 import type { DashboardData } from './api/dashboard';
 import {
   attachRawFiles,
+  createVersion,
   createRegistration,
   getValidation,
   getVersion,
@@ -1428,18 +1429,76 @@ function VersionPanel({ dataId }: { dataId?: string }) {
   const [versionsLoading, setVersionsLoading] = useState(true);
   const [versionsUnavailable, setVersionsUnavailable] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
-  useEffect(() => {
-    if (!dataId) { setVersionsLoading(false); return; }
-    let cancelled = false;
+  const [currentVersionId, setCurrentVersionId] = useState<number | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [validating, setValidating] = useState<number | null>(null);
+  const reload = useCallback(() => {
+    if (!dataId) return Promise.resolve();
     setVersionsLoading(true);
     setVersionsUnavailable(false);
-    listVersions(dataId).then((list) => { if (!cancelled) setVersions(list); })
-      .catch((err) => { if (!cancelled) { setVersionsUnavailable(true); console.warn('[versions] listVersions failed', err); } })
-      .finally(() => { if (!cancelled) setVersionsLoading(false); });
-    return () => { cancelled = true; };
+    return Promise.all([listVersions(dataId), getWeld(dataId)]).then(([list, weld]) => {
+      setVersions(list);
+      setCurrentVersionId(weld.latest_version_id ?? weld.latest_version?.id ?? null);
+    }).catch((err) => {
+      setVersionsUnavailable(true);
+      console.warn('[versions] listVersions failed', err);
+    }).finally(() => setVersionsLoading(false));
   }, [dataId]);
-  const last = versions[versions.length - 1];
-  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的版本链路</p></div><StatusPill>当前版本 {last?.version_no ?? '—'}</StatusPill></div>{versionsLoading ? <p className="dataset-empty-state" role="status">版本链路加载中…</p> : versionsUnavailable ? <p className="dataset-empty-state" role="alert">版本信息暂时无法读取，请稍后重试。</p> : versions.length ? <div className="version-line">{versions.map((version, index) => <div className={index === versions.length - 1 ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{fmtDT(version.created_at)} · {version.operator ?? '—'}</small></span><button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button></div>)}</div> : <p className="dataset-empty-state">该焊缝暂无版本数据。</p>}</section>{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
+  useEffect(() => {
+    if (!dataId) { setVersionsLoading(false); return; }
+    reload().catch(() => undefined);
+  }, [dataId, reload]);
+  const currentVersion = versions.find((version) => version.id === currentVersionId) ?? versions[versions.length - 1];
+  const handleCreate = async (payload: { action: '去噪处理' | '人工修正'; note?: string; file?: File }) => {
+    if (!dataId || creating) return;
+    setCreating(true);
+    setNotice(null);
+    try {
+      let object_keys: string[] | undefined;
+      if (payload.file) {
+        const uploaded = await presignUpload({
+          size: payload.file.size,
+          content_type: payload.file.type || 'application/octet-stream',
+          prefix: `processed/${dataId}`,
+          filename: payload.file.name,
+        });
+        await putFileDirect(uploaded.upload_url, payload.file);
+        object_keys = [uploaded.object_key];
+      }
+      await createVersion(dataId, { action: payload.action, note: payload.note, object_keys });
+      setShowCreate(false);
+      setNotice('新版本已创建，请执行核验后再用于分析或训练。');
+      await reload();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '新建数据版本失败，请重试。');
+    } finally {
+      setCreating(false);
+    }
+  };
+  const handleValidation = async (versionId: number) => {
+    if (!dataId || validating != null) return;
+    setValidating(versionId);
+    setNotice(null);
+    try {
+      const report = await runValidation(dataId, String(versionId));
+      setNotice(`${versions.find((v) => v.id === versionId)?.version_no ?? '该版本'}核验完成：${report.score.toFixed(1)} 分。`);
+      await reload();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : '版本核验失败，请重试。');
+    } finally {
+      setValidating(null);
+    }
+  };
+  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的不可覆盖版本链路</p></div><div className="toolbar-actions"><StatusPill>当前版本 {currentVersion?.version_no ?? '—'}</StatusPill><button className="primary-button" onClick={() => setShowCreate(true)} disabled={!dataId || creating}><Plus size={14} />新建数据版本</button></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{versionsLoading ? <p className="dataset-empty-state" role="status">版本链路加载中…</p> : versionsUnavailable ? <p className="dataset-empty-state" role="alert">版本信息暂时无法读取，请稍后重试。</p> : versions.length ? <div className="version-line">{versions.map((version) => <div className={version.id === currentVersionId ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{fmtDT(version.created_at)} · {version.operator ?? '—'}</small></span><div className="toolbar-actions"><button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button><button className="outline-button" disabled={validating === version.id} onClick={() => handleValidation(version.id)}>{validating === version.id ? '核验中…' : '执行核验'}</button></div></div>)}</div> : <p className="dataset-empty-state">该焊缝暂无版本数据。</p>}</section>{showCreate && <VersionCreateDialog baseVersion={currentVersion?.version_no} creating={creating} onCancel={() => setShowCreate(false)} onConfirm={handleCreate} />}{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
+}
+
+function VersionCreateDialog({ baseVersion, creating, onCancel, onConfirm }: { baseVersion?: string; creating: boolean; onCancel: () => void; onConfirm: (payload: { action: '去噪处理' | '人工修正'; note?: string; file?: File }) => void }) {
+  const [action, setAction] = useState<'去噪处理' | '人工修正'>('去噪处理');
+  const [note, setNote] = useState('');
+  const [file, setFile] = useState<File | undefined>();
+  return <div className="app-dialog-backdrop" role="presentation" onClick={onCancel}><section className="app-dialog" role="dialog" aria-modal="true" aria-label="新建数据版本" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>新建数据版本</h2><p>基于 {baseVersion ?? '当前版本'} 创建，不会覆盖历史版本。</p></div><button className="icon-button" onClick={onCancel} aria-label="关闭">×</button></div><div className="form-block"><label>处理动作</label><select className="native-select" value={action} onChange={(event) => setAction(event.target.value as '去噪处理' | '人工修正')}><option value="去噪处理">去噪处理</option><option value="人工修正">人工修正</option></select></div><div className="form-block"><label>版本说明</label><textarea className="input-field" rows={3} placeholder="说明本次处理内容、参数或修正原因" value={note} onChange={(event) => setNote(event.target.value)} /></div><div className="form-block"><label>加工后文件（可选）</label><input type="file" onChange={(event) => setFile(event.target.files?.[0])} /><small className="form-help">文件将保存到 processed/{'{焊缝ID}'}，并挂载到新版本。</small></div><div className="dialog-actions"><button className="ghost-button" onClick={onCancel} disabled={creating}>取消</button><button className="primary-button" onClick={() => onConfirm({ action, note: note.trim() || undefined, file })} disabled={creating}>{creating ? '创建中…' : '创建版本'}</button></div></section></div>;
 }
 
 /** 模型核心指标（后端 metric 为 dict）→ 卡片展示文案（F1/mAP50/mIoU/R²/Acc）。 */
