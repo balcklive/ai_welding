@@ -5,6 +5,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+run
 
 node_modules
 dist
@@ -24,6 +25,7 @@ dist-ssr
 .superpowers/
 .playwright-cli/
 .claude/
+.remote
 
 # --- 后端（backend/）---
 backend/.venv/
