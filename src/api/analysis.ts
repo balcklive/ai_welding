@@ -148,7 +148,7 @@ export async function getSplitTask(taskId: string): Promise<Job<SplitResult>> {
 
 /** 缺陷标签类别（焊瘤/气孔/未熔合/咬边/正常，模型口径）。 */
 export async function listLabelCategories(): Promise<LabelCategory[]> {
-  return request<LabelCategory[]>('/label-categories');
+  return request<LabelCategory[]>('/label-categories', { cacheTtlMs: 10 * 60 * 1000 });
 }
 
 /** 创建标注任务（异步：切分样本 / 手动选样 / 时序信号锚点）。signal 来源需带 version_id。 */

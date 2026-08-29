@@ -25,6 +25,9 @@ dist-ssr
 .superpowers/
 .impeccable/
 .playwright-cli/
+# Playwright 本地验收截图（临时产物，不进入仓库）
+playwright-*.png
+polygon-state.png
 .claude/
 .remote
 

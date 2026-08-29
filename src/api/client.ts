@@ -9,6 +9,7 @@
 
 const BASE = '/api/v1';
 const TOKEN_KEY = 'token';
+const GET_CACHE = new Map<string, { expiresAt: number; value: unknown }>();
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -44,6 +45,8 @@ export interface RequestOptions {
    * 密码错误是业务失败，不应清空会话/刷新页面）。401 仍照常抛 ApiError。
    */
   skipAuth?: boolean;
+  /** GET 响应的短期缓存时间；写请求和默认 GET 不缓存。 */
+  cacheTtlMs?: number;
 }
 
 /**
@@ -102,6 +105,14 @@ export async function request<T>(
   options: RequestOptions = {},
 ): Promise<T> {
   const url = `${BASE}${path}${buildQuery(options.query ?? {})}`;
+  const isGet = (options.method ?? 'GET').toUpperCase() === 'GET';
+  if (!isGet) GET_CACHE.clear();
+  const cacheKey = `${getToken() ?? ''}:${url}`;
+  if (isGet && options.cacheTtlMs) {
+    const cached = GET_CACHE.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+    if (cached) GET_CACHE.delete(cacheKey);
+  }
 
   const headers: Record<string, string> = { ...options.headers };
   const token = getToken();
@@ -146,5 +157,13 @@ export async function request<T>(
     throw new ApiError(envelope.code, envelope.message || '请求失败', res.status);
   }
 
-  return envelope.data as T;
+  const data = envelope.data as T;
+  if (isGet && options.cacheTtlMs) {
+    GET_CACHE.set(cacheKey, { expiresAt: Date.now() + options.cacheTtlMs, value: data });
+  }
+  return data;
+}
+
+export function clearRequestCache(): void {
+  GET_CACHE.clear();
 }
