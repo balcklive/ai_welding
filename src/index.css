@@ -495,3 +495,6 @@ button { border: 0; cursor: pointer; }
 /* Production alignment interactions: keyboard focus, timeline seek, artifact affordance. */
 .modal-check{position:relative}.modal-check input{display:block;position:absolute;inset:0;width:1px;height:1px;opacity:0}.modal-check:focus-within{border-color:#2c9caf;box-shadow:0 0 0 3px rgba(44,156,175,.16);outline:none}.studio-ruler,.lane-track:not(.lane-track-video),.artifact-row{cursor:pointer}.studio-ruler:focus,.lane-track:not(.lane-track-video):focus,.artifact-row:focus{outline:2px solid #2c9caf;outline-offset:2px}.inline-retry{margin-left:auto;padding:4px 8px;color:#9b6b2e;background:#fff;border:1px solid #e2bd7b;border-radius:5px;font-size:10px;cursor:pointer}.inline-retry:focus{outline:2px solid #2c9caf;outline-offset:2px}.artifact-row:after{content:'打开';margin-left:auto;color:#2d8d80;font-size:9px;white-space:nowrap}.artifact-row:hover{background:#eaf7f2}
 @media (max-width:720px){.studio-ruler,.lane-track:not(.lane-track-video){min-width:520px}.alignment-board{overflow-x:auto}.artifact-row{min-height:44px}.studio-events{min-width:520px}.inline-retry{flex-shrink:0}}
+
+/* 分析页的核验语义未统一，暂不展示该项，避免误导。 */
+.analysis-meta .analysis-kpis > div:first-child{display:none}
