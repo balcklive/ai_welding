@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import {
-  ChevronDown, MoreHorizontal, Settings2, Sparkles,
+  ChevronDown, MoreHorizontal, Settings2,
 } from 'lucide-react';
 import { getToken } from './api/client';
 import {
@@ -47,7 +47,7 @@ function AppShell() {
   });
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand-mark"><Sparkles size={18} strokeWidth={2.5} /></div><div className="brand-copy"><strong>ForgeLab</strong><span>工业智能实验室</span></div>
+      <div className="brand-mark"><img src="/logo-mark.png" alt="三维互联" /></div><div className="brand-copy"><strong>ForgeLab</strong><span>工业智能实验室</span></div>
       <div className="workspace-label">工作空间</div><nav className="main-nav">{navStructure.map((group) => {
         const Icon = group.icon;
         if (group.route && !group.children) {

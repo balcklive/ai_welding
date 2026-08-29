@@ -10,7 +10,6 @@
  *   `login-`），不污染全局样式、不引 UI 库。
  */
 import { useState } from 'react';
-import { Sparkles } from 'lucide-react';
 import { login } from '../api/auth';
 import { ApiError, setToken } from '../api/client';
 import type { User } from '../api/types';
@@ -55,7 +54,7 @@ export default function Login({ onSuccess }: LoginProps) {
     <div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
         <div className="login-brand">
-          <div className="login-brand-mark"><Sparkles size={18} strokeWidth={2.5} /></div>
+          <div className="login-brand-mark"><img src="/logo-mark.png" alt="三维互联" /></div>
           <div className="login-brand-copy"><strong>ForgeLab</strong><span>工业智能实验室</span></div>
         </div>
         <h1>欢迎回来</h1>
@@ -94,8 +93,8 @@ export default function Login({ onSuccess }: LoginProps) {
         .login-card { width: 100%; max-width: 380px; padding: 40px 34px 34px;
           background: #fff; border-radius: 14px; box-shadow: 0 24px 60px rgba(0, 0, 0, .28); }
         .login-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 30px; }
-        .login-brand-mark { width: 36px; height: 36px; display: grid; place-items: center;
-          color: #0f3440; background: #83dcc5; border-radius: 10px; }
+        .login-brand-mark { width: 36px; height: 36px; display: grid; place-items: center; }
+        .login-brand-mark img { width: 100%; height: 100%; object-fit: contain; }
         .login-brand-copy strong { display: block; color: #16343d; font-size: 18px; letter-spacing: -.5px; }
         .login-brand-copy span { display: block; color: #789399; font-size: 10px; letter-spacing: .4px; }
         .login-card h1 { margin: 0 0 6px; color: #16343d; font-size: 24px; letter-spacing: -1px; }
