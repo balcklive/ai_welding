@@ -229,6 +229,12 @@ def create_build_task(
     dataset = svc.get_dataset_by_identifier(session, dataset_id)
     if dataset is None:
         return err(40401, "数据集不存在", status=404)
+    if dataset.status != "可训练":
+        return err(
+            40000,
+            "当前数据集仍在标注中，不满足训练数据版本生成要求",
+            status=400,
+        )
     version = session.get(DatasetVersion, version_id)
     if version is None or version.dataset_id != dataset.id:
         return err(40402, "数据集版本不存在", status=404)

@@ -390,6 +390,10 @@ button { border: 0; cursor: pointer; }
 .build-no-dataset svg{color:#78b8aa}
 .build-no-dataset strong{color:#4a7073;font-size:11px}
 .build-no-dataset p{margin:0;font-size:10px}
+.build-blocked{display:flex;align-items:flex-start;gap:10px;margin:10px 0 18px;padding:13px 14px;color:#9a6a34;background:#fff8ed;border:1px solid #f1d7aa;border-radius:8px}
+.build-blocked svg{flex-shrink:0;margin-top:1px;color:#d79039}
+.build-blocked strong{display:block;color:#9a6a34;font-size:11px}
+.build-blocked p{margin:5px 0 0;color:#a78358;font-size:10px;line-height:1.6}
 .build-source label{justify-content:flex-start;min-height:52px;padding:10px 12px}
 .build-source label > span{display:grid;gap:3px;min-width:0}
 .build-source label > span strong{color:#426a6e;font-size:11px;font-weight:600}

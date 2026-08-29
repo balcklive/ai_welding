@@ -219,9 +219,11 @@ def create_training_task(
         version_dataset = session.get(Dataset, version.dataset_id)
         if version_dataset is None:
             return err(40401, "数据集不存在", status=404)
-        readiness = dataset_svc.readiness_for_version(session, version_dataset, version)
-        if readiness["readiness"] != "可训练":
-            return err(40000, f"数据集版本 {version.id}{readiness['readiness']}，拒绝创建训练任务", status=400)
+        split = version.split or {}
+        if version.item_count <= 0:
+            return err(40000, f"数据集版本 {version.id} 没有有效样本，无法创建训练任务", status=400)
+        if (split.get("train") or 0) <= 0:
+            return err(40000, f"数据集版本 {version.id} 没有训练集样本，无法创建训练任务", status=400)
     existing_job_id = svc.active_training_job_uid(session, dataset_version.id)
     if existing_job_id is not None:
         return ok({"job_id": existing_job_id})
