@@ -4,6 +4,35 @@
 >
 > 结论一句话：FiftyOne 借"看"（样本浏览 + 质量评估）、Datumaro 借"造"（构建/划分/统计校验/格式）、lakeFS 借"管"（版本/血缘/可复现）；三者与本项目现有 `dataset_versions + dataset_items` 固定快照设计不冲突，反而是它的补强。
 
+---
+
+## 零、迁移路线总原则（借思想 · 不引依赖）
+
+> **本迁移的唯一主线**：三个开源项目（FiftyOne / Datumaro / lakeFS）只借**思想、界面交互与处理能力**，一律用现有 DB（MySQL）+ MinIO + 前端落地；**不引入其中任何一个作为运行依赖或基础设施**。下文所有 DM 任务的取舍、以及今后涉及大数据量场景的实现，都以此为准。
+
+**为什么"不引依赖"对本项目是最优解（四条硬约束）**：
+
+| 约束 | 说明 |
+|---|---|
+| 数据源一致性 | FiftyOne 百万级浏览靠 MongoDB 聚合/索引；引入即需把 `dataset_items` 再同步一份 → 双份存储 + 同步延迟 + 快照一致性维护。`dataset_versions + dataset_items` 固定快照是业务真源，不做平行数据源 |
+| 部署拓扑 | 本部署为单容器 Docker（FastAPI 同时服务 `/api` 与前端静态）+ 私有化；引入 = 多进程 + 多依赖（MongoDB / FiftyOne server），破坏单容器 |
+| 规模在 MySQL 服务范围内 | 几十万~几百万行的浏览/预览，SQL 侧聚合 + 分页即可承担；FiftyOne 不可替代价值在 embeddings 可视化 / 语义检索 / 大规模模型评估，§三.4 已明确不做 |
+| 改造代价 | 现有真实链路（成员浏览 / 标签分布 / 信号预览）只缺"系统性补齐"，比推倒重来 + 迁移数据便宜一个数量级 |
+
+**复用边界（什么情况才值得引入）**：仅当**数据浏览本身成为产品主体**——百万样本上的语义检索 / embedding 相似度 / 复杂组合检索是核心功能时，自造成本才超过引入成本。本项目是焊接业务平台 + 数据治理 + 模型训练，浏览是业务动作的辅助、不是产品核心，故不适用。
+
+**大数据量渲染/预览五条落地原则**（后续每个 DM 任务涉及大数据量场景时照此执行）：
+
+| 场景 | 现有基础 | 优化动作（对应任务） | 借自 |
+|---|---|---|---|
+| 信号预览（910k 点/通道） | `signals.downsample_indices` min-max 抽稀 + `signal_ingest._cached_parquet` LRU 缓存 | 多级抽稀金字塔，缩放即时出图（DM-11） | FiftyOne 服务端投影 + lakeFS 直连 |
+| 数据集成员列表（百万行） | SQL 侧过滤/计数/offset 分页（`list_version_items`） | keyset/游标分页 + 前端虚拟滚动（DM-10） | FiftyOne view 下推 |
+| 统计类（标签分布/质量/类别平衡） | `label_distribution` 后端聚合小 payload | 服务端聚合 + 逐批迭代，不物化全量（DM-03） | FiftyOne aggregation / Datumaro 惰性求值 |
+| 缩略图浏览 | 无（纯表格行） | 预生成小图存 MinIO + 可视区懒加载（DM-06） | FiftyOne thumbnail/grid |
+| 大媒体预览 | 预签名直传（presign-upload） | 保持直连，预览同样走预签名 URL，不走 `/api` 代理 | lakeFS 直连对象存储 |
+
+---
+
 ## 一、参考体系总览
 
 | 项目 | 借的层 | 借什么 | 落在本项目哪个功能 | 明确不抄什么 |
@@ -92,6 +121,16 @@
 - **涉及文件**：`src/features/datasets/DatasetWorkspace.tsx`、可选 `src/components/annotation/AnnotoriousImageEditor.tsx`。
 - **验收**：网格视图下图像样本显示标注框叠加；非图像样本显示占位图标。
 
+#### [DM-10] 版本成员列表 keyset/游标分页（MySQL 大数据量深翻页）
+
+- **参考来源**：FiftyOne view 下推 + MySQL 大数据量公认做法（offset 深翻页在百万行退化，三个参考项目均未显式覆盖此点）。
+- **现状 gap**：`list_version_items`（`services/datasets.py:516`）用 offset/limit 分页，翻到深页后扫描开销线性增长；DM-04 扩筛后规模可能继续放大。
+- **改造内容**：
+  1. items 端点新增可选游标参数 `cursor`（上一页最后一个 `sample_id`），服务端走 `WHERE sample_id > cursor ORDER BY sample_id LIMIT n`；保留 `page/page_size` 兼容旧调用。
+  2. 前端翻页在页码超过阈值（如 >100）后自动切换游标模式。
+- **涉及文件**：`backend/app/api/v1/datasets.py`、`backend/app/services/datasets.py::list_version_items`、`src/features/datasets/DatasetWorkspace.tsx`、`src/api/datasets.ts`。
+- **验收**：游标模式深翻页结果与 offset 模式在浅页一致、深页切片正确且 `total` 不变；旧 `page` 参数仍可用。
+
 ### P2（生态打通 / 快照硬化，可选）
 
 #### [DM-07] 标注 / 数据集格式导出 COCO / YOLO（Datumaro 格式转换）
@@ -118,11 +157,21 @@
 - **涉及文件**：`backend/app/api/v1/models.py`（training-tasks 创建）、`backend/app/services/models.py`。
 - **验收**：训练创建即产出一个可追溯的实验版本，训练记录引用它。
 
+#### [DM-11] 信号预览多级抽稀金字塔（缩放即时出图）
+
+- **参考来源**：Grafana / TimescaleDB continuous aggregates（多级降采样预计算）；FiftyOne 服务端投影。
+- **现状 gap**：`signals.downsample_indices` 是单级 min-max 抽稀（按 `max_points` 现算），缩放/平移每次按目标点数重算，中间尺度重复计算（910k 点单级 ~300ms 尚可，高频交互可感知）。
+- **改造内容**：
+  1. 信号导入成功（Parquet 落盘）或首次预览时，预计算 1/10、1/100、1/1000 三级 min-max 降采样金字塔，随 Parquet 一并缓存（复用 `signal_ingest._cached_parquet` LRU 思路）。
+  2. `/signals` 预览按当前视口宽度选最近一级金字塔再细化，多数请求不再全量重算。
+- **涉及文件**：`backend/app/services/signals.py`、`backend/app/services/signal_ingest.py`、`backend/app/api/v1/analysis.py`（signals 端点）。
+- **验收**：同一视口第二次请求命中缓存；各级金字塔对瞬态尖峰（min-max 边界）均保留。
+
 ---
 
 ## 三、明确不做（边界）
 
-1. **不引入** FiftyOne / Datumaro / lakeFS / Pachyderm 任一作为运行依赖或基础设施。三者思想均可用现有 DB + MinIO + 前端落地；只有 DM-07 可用"薄转换器"借用 Datumaro 思路，也不做常驻依赖。
+1. **不引入** FiftyOne / Datumaro / lakeFS / Pachyderm 任一作为运行依赖或基础设施。三者思想均可用现有 DB + MinIO + 前端落地；只有 DM-07 可用"薄转换器"借用 Datumaro 思路，也不做常驻依赖。（此即 §零 迁移路线总原则的具体化，做任何 DM 任务前先读 §零。）
 2. **不把数据集模型改成目录式**。当前 DB 固定快照（`dataset_versions + dataset_items`）是业务平台正确的形态，比 Datumaro 目录式更适合本系统。
 3. **不做完整 Git 语义**（分支/合并/cherry-pick/回放）。lakeFS 只借"不可变提交 + 按引用可复现 + 回滚"三点。
 4. **不做 FiftyOne 特色但超需求的**：embeddings 可视化、模型评估面板、dataset zoo。
@@ -131,8 +180,8 @@
 ## 四、实施顺序建议
 
 1. **P0 先做（后端优先）**：DM-02（训练可复现，MLflow 已有基础，改动最小）→ DM-03（构建质量 + 划分类别平衡，直接影响训练质量，`run_build` 一处）→ DM-01（标签分布 UI，纯前端）。
-2. **P1**：DM-04（成员筛选增强）→ DM-05（版本回滚）→ DM-06（缩略图叠加）。
-3. **P2 按需**：DM-07（格式打通）→ DM-08（快照哈希）→ DM-09（实验快照）。
+2. **P1**：DM-04（成员筛选增强）→ DM-05（版本回滚）→ DM-06（缩略图叠加）→ DM-10（成员列表 keyset 分页；成员规模上来后建议提前到与 DM-04 同批做）。
+3. **P2 按需**：DM-07（格式打通）→ DM-08（快照哈希）→ DM-09（实验快照）→ DM-11（信号多级抽稀金字塔）。
 
 ## 五、契约与文档影响（每项改动必须同步）
 
@@ -146,5 +195,7 @@
 | DM-07 | export format 参数 → 回写 `docs/API接口清单.md` §3.4 |
 | DM-08 | 对象键升级 → 回写 `docs/OSS存储设计.md`；评估既有快照兼容 |
 | DM-09 | training-tasks 行为 → 回写 `docs/API接口清单.md` §3.6 |
+| DM-10 | items 端点新增可选 cursor 参数（page/page_size 兼容保留）→ 回写 `docs/API接口清单.md` §3.5 |
+| DM-11 | `/signals` 无接口改动；`signals.py`/`signal_ingest.py` 行为补充 → 同步 `backend/app/services/CLAUDE.md` |
 
 > 通用规则：改动任何接口/表/对象键，须同步 `API接口清单.md` / `数据库设计.md` / `OSS存储设计.md` 三份契约 + 两端代码 + 涉及目录的 CLAUDE.md，再 commit。
