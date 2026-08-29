@@ -13,12 +13,13 @@
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlmodel import Session
+from sqlalchemy import func
+from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
 from app.core.audit import write_audit
 from app.core.db import get_session
-from app.models.data import User
+from app.models.data import DataRecord, User
 from app.models.datasets import DatasetBuildTask, DatasetVersion
 from app.schemas.common import err, ok, paginate
 from app.services import datasets as svc
@@ -99,7 +100,10 @@ def get_dataset(dataset_id: str, session: Session = Depends(get_session)) -> dic
     label_distribution = (
         svc.label_distribution_for_version(session, current.id) if current is not None else {}
     )
-    return ok(svc.dataset_payload(dataset, current, label_distribution=label_distribution))
+    weld_count = session.exec(
+        select(func.count(DataRecord.id)).where(DataRecord.dataset_id == dataset.id)
+    ).one()
+    return ok(svc.dataset_payload(dataset, current, label_distribution=label_distribution, weld_count=int(weld_count)))
 
 
 # ── 输入维度 / 适配检查 ──────────────────────────────────────────────

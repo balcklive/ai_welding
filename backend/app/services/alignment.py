@@ -31,6 +31,7 @@ import io
 import json
 import math
 import time
+from datetime import datetime, timezone
 
 from loguru import logger
 from sqlmodel import Session, select
@@ -102,7 +103,11 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
 
     # ── 40%：视频探测 + 关键帧（逐模态容错，失败转 unavailable） ──────
     video_key = sources["video"][0] if sources["video"] else None
-    video_data, video_meta, video_error = _load_video(video_key)
+    # 未选择视频模态时不应探测视频对象；远端对象的 stat/get 可能较慢，
+    # 且该模态不参与本次任务结果。
+    video_data, video_meta, video_error = (
+        _load_video(video_key) if "video" in modalities else (None, None, "未纳入视频模态")
+    )
     keyframes: list[dict] = []
     if video_data is not None:
         try:
@@ -128,14 +133,50 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
     _advance(session, job, _PROGRESS_STEPS[3])
 
     # ── 100%：时间对齐版本 + 回填 + succeeded（同最终事务） ───────────
+    # 加工版本是新的快照，但原始多模态对象仍属于同一条焊缝的数据血缘。
+    # 复用对象 key 而不是复制对象，保证后续页面/任务仍能读取源视频、CSV 等原始文件。
+    inherited_keys: list[str] = []
+    source_v10 = get_v10_version(session, record.id)
+    for source in (source_v10, version):
+        for key in (source.object_keys if source is not None else []) or []:
+            if "/align/" not in key.lower() and key not in inherited_keys:
+                inherited_keys.append(key)
+    version_object_keys = inherited_keys + [key for key in asset_keys if key not in inherited_keys]
     aligned_version = create_version(
         session,
         record,
         action="时间对齐",
         note="多模态时间轴对齐（算法任务自动生成）",
-        object_keys=asset_keys,
+        object_keys=version_object_keys,
         operator="算法任务",
     )
+    # 对齐会生成焊缝的新版本；复制真实信号索引，使后续信号分析/特征提取
+    # 继续读取同一份已校验 Parquet，而不是因 latest_version_id 变化误报“信号不可用”。
+    source_ingest = session.exec(
+        select(SignalIngest)
+        .where(
+            SignalIngest.version_id == signal_version_id,
+            SignalIngest.status == "succeeded",
+        )
+        .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
+    ).first()
+    if source_ingest is not None and source_ingest.parquet_key:
+        session.add(SignalIngest(
+            job_id=job.id,
+            version_id=aligned_version.id,
+            source_object_key=source_ingest.source_object_key,
+            status="succeeded",
+            sample_rate=source_ingest.sample_rate,
+            duration=source_ingest.duration,
+            row_count=source_ingest.row_count,
+            column_map=source_ingest.column_map,
+            validation=source_ingest.validation,
+            parquet_key=source_ingest.parquet_key,
+            events=source_ingest.events,
+            anomalies=source_ingest.anomalies,
+            created_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc),
+        ))
 
     task.events = events
     task.tracks = tracks
@@ -224,6 +265,19 @@ def _signal_version_id(
     v10 = get_v10_version(session, record.id)
     if v10 is not None and v10.id != task.version_id and _has_ingest(v10.id):
         return v10.id
+    # 历史数据可能把成功导入挂在 v1.1 等原始版本，而不是严格的 v1.0；
+    # 沿同一焊缝版本链寻找最近成功导入，避免加工版本丢失真实信号来源。
+    source = session.exec(
+        select(SignalIngest.version_id)
+        .join(DataVersion, DataVersion.id == SignalIngest.version_id)
+        .where(
+            DataVersion.record_id == record.id,
+            SignalIngest.status == "succeeded",
+        )
+        .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
+    ).first()
+    if source is not None:
+        return source
     return task.version_id
 
 
@@ -245,6 +299,14 @@ def _load_video(video_key: str | None) -> tuple[bytes | None, dict | None, str |
     if read is None:
         return None, None, "存储客户端不支持读取对象（测试环境）"
     try:
+        stat = getattr(storage, "stat_object", None)
+        if stat is not None:
+            size = stat(video_key)
+            if size > media_probe.MAX_VIDEO_PROBE_BYTES:
+                return None, None, (
+                    f"视频超过 {media_probe.MAX_VIDEO_PROBE_BYTES // (1024 * 1024)}MB，"
+                    "为避免任务长时间阻塞，跳过视频探测"
+                )
         data = read(video_key)
     except Exception as exc:  # noqa: BLE001 - 源对象不可读 → unavailable
         return None, None, f"视频对象不可读: {exc}"

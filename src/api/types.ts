@@ -208,6 +208,8 @@ export interface DatasetSplit {
 }
 
 export interface Dataset {
+  /** 已登记焊缝数，与固定快照中的样本数区分。 */
+  weld_count?: number;
   id: number;
   dataset_no: string;
   name: string;
@@ -555,7 +557,7 @@ export interface TestConfig {
 export interface InferenceRequest {
   model_version_id: number;
   input: string;
-  input_type: string;
+  input_type: 'image' | 'video';
 }
 
 export interface ExportRequest {

@@ -526,6 +526,18 @@ def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> Signa
         )
         .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
     ).first()
+    if ingest is None:
+        version = session.get(DataVersion, version_id)
+        if version is not None:
+            ingest = session.exec(
+                select(SignalIngest)
+                .join(DataVersion, DataVersion.id == SignalIngest.version_id)
+                .where(
+                    DataVersion.record_id == version.record_id,
+                    SignalIngest.status == "succeeded",
+                )
+                .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
+            ).first()
     if ingest is None or not ingest.parquet_key:
         raise ValueError("当前版本没有成功导入的真实时序信号")
     parsed = _cached_parquet(ingest.parquet_key)
@@ -546,6 +558,18 @@ def load_real_signal_bundle(
         )
         .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
     ).first()
+    if ingest is None:
+        version = session.get(DataVersion, version_id)
+        if version is not None:
+            ingest = session.exec(
+                select(SignalIngest)
+                .join(DataVersion, DataVersion.id == SignalIngest.version_id)
+                .where(
+                    DataVersion.record_id == version.record_id,
+                    SignalIngest.status == "succeeded",
+                )
+                .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
+            ).first()
     if ingest is None or not ingest.parquet_key:
         return None
     parsed = _cached_parquet(ingest.parquet_key)

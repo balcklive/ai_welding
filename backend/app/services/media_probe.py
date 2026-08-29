@@ -23,7 +23,12 @@ from pathlib import Path
 from loguru import logger
 
 #: 视频探测/关键帧的字节上限（与 `signal_ingest` 大文件预检同量级；get_object 全量读内存）。
-MAX_VIDEO_PROBE_BYTES = 200 * 1024 * 1024
+# 对齐只抽取元数据/关键帧，不应为单个视频占满 Job 执行器内存或长时间阻塞。
+# 超过该大小的视频仍可在页面播放，但对齐任务会明确降级为“视频不可用”。
+MAX_VIDEO_PROBE_BYTES = 64 * 1024 * 1024
+# 媒体预处理需要完整读取源文件并生成浏览器预览，允许比对齐探测更大的源视频。
+# 两者分开限制，避免大视频阻塞对齐任务，同时仍能生成可播放的 H.264 预览。
+MAX_MEDIA_PREP_BYTES = 256 * 1024 * 1024
 
 _FFMPEG_TIMEOUT = 30  # 单次 subprocess 超时（秒）
 # 转码超时（秒）。跑在 executor daemon 线程内不能无限等待；长视频转码（veryfast 预设）

@@ -50,7 +50,7 @@ from app.models.datasets import Dataset, DatasetBuildTask, DatasetItem, DatasetV
 from app.models.jobs import Job
 from app.models.models import TrainingTask
 from app.services.annotation import resolve_annotation_task, resolve_split_task
-from app.services.jobs import _iso_utc, mark_succeeded
+from app.services.jobs import _iso_utc, create_job, mark_succeeded
 
 #: 进度逐步递增点（与 split/annotation handler 一致）。
 _PROGRESS_STEPS: tuple[int, ...] = (20, 40, 60, 80, 100)
@@ -149,7 +149,17 @@ def list_datasets(session: Session) -> list[dict]:
             select(DatasetVersion).where(DatasetVersion.id.in_(ids))
         ).all():
             versions[v.id] = v
-    return [dataset_payload(d, versions.get(d.current_version_id)) for d in datasets]
+    record_counts = dict(
+        session.exec(
+            select(DataRecord.dataset_id, func.count(DataRecord.id))
+            .where(DataRecord.dataset_id.is_not(None))
+            .group_by(DataRecord.dataset_id)
+        ).all()
+    )
+    return [
+        dataset_payload(d, versions.get(d.current_version_id), weld_count=int(record_counts.get(d.id, 0)))
+        for d in datasets
+    ]
 
 
 def create_dataset(
@@ -179,6 +189,7 @@ def dataset_payload(
     current_version: DatasetVersion | None = None,
     *,
     label_distribution: dict[str, int] | None = None,
+    weld_count: int | None = None,
 ) -> dict:
     """数据集 → JSON（列表/详情共用）。"""
     return {
@@ -187,6 +198,7 @@ def dataset_payload(
         "name": dataset.name,
         "task": dataset.task,
         "sample_count": dataset.sample_count,
+        "weld_count": weld_count if weld_count is not None else 0,
         "progress": float(dataset.progress) if dataset.progress is not None else None,
         "status": dataset.status,
         "current_version_id": dataset.current_version_id,

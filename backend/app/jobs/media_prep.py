@@ -8,7 +8,7 @@
 POST /registrations/{id}/raw-files 挂载含视频扩展名 key
   └ 同事务 create_job("media_prep", result={weld_id, version_id, object_key})
       └ executor → handle → run_media_prep(session, job)
-          ├ MinIO 读源视频（≤ MAX_VIDEO_PROBE_BYTES）
+          ├ MinIO 读源视频（≤ MAX_MEDIA_PREP_BYTES）
           ├ 已是浏览器友好编码（BROWSER_FRIENDLY_CODECS）+ faststart
           │   └ 预览 key = 原始 key（不转码）
           ├ 否则 media_probe.transcode_preview → H.264 + faststart
@@ -53,9 +53,9 @@ def run_media_prep(session: Session, job: Job) -> None:
 
         storage = get_storage()
         data = storage.get_object(object_key)
-        if len(data) > media_probe.MAX_VIDEO_PROBE_BYTES:
+        if len(data) > media_probe.MAX_MEDIA_PREP_BYTES:
             raise ValueError(
-                f"Video is too large ({len(data)} B > {media_probe.MAX_VIDEO_PROBE_BYTES} B); preview transcoding skipped"
+                f"Video is too large ({len(data)} B > {media_probe.MAX_MEDIA_PREP_BYTES} B); preview transcoding skipped"
             )
         # 探测编码（源不可解析在此抛 ValueError → failed，锚点回退用原始 key）
         codec = _probe_codec(data)
