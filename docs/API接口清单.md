@@ -1,4 +1,4 @@
-# API 接口清单 — 焊接数据智能分析与 AI 建模平台
+# API 接口清单 — 焊接工艺分析和建模机器学习平台
 
 > 版本：v0.1 · 日期：2026-08-23（2026-08-29 更新） · 状态：**已实现**（前后端已接线跑通，契约与实现偏差回写见 `docs/CLAUDE.md`）
 >
@@ -366,9 +366,9 @@ exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string
 | 分析 · 选择数据 | `datasets.listDatasets()` + `welds.listWelds({ dataset_id })`（数据集优先两级选择，未核验通过置灰） | `GET /datasets` + `GET /welds?dataset_id=` |
 | 对齐 · 时间轴/事件/轨道 | `analysis.createAlignmentTask()` + `useJob(getAlignmentTask)` | `POST` / `GET …/alignment-tasks`（成功自动生成时间对齐版本） |
 | 切分 · 规则/预览/样本数 | `analysis.createSplitTask()` + `useJob(getSplitTask)` | `POST` / `GET …/split-tasks` |
-| 信号分析 · 时域波形+滤波 | `analysis.getSignals()` | `GET …/signals` |
-| 信号分析 · PSD/STFT/DWT/小波/相图/PDD | `analysis.getAnalysisMode(mode, channel, filter?)` | `GET …/analysis/{mode}`（支持滤波参数） |
-| 信号分析 · 异常区段/稳定度 | `analysis.getAnalysisResult()` | `GET …/analysis/result` |
+| 起收弧识别 · 时域波形+滤波 | `analysis.getSignals()` | `GET …/signals` |
+| 起收弧识别 · PSD/STFT/DWT/小波/相图/PDD | `analysis.getAnalysisMode(mode, channel, filter?)` | `GET …/analysis/{mode}`（支持滤波参数） |
+| 起收弧识别 · 异常区段/稳定度 | `analysis.getAnalysisResult()` | `GET …/analysis/result` |
 | 标注 · 标签类别 | `analysis.listLabelCategories()` | `GET /label-categories` |
 | 标注 · 创建任务 | `analysis.createAnnotationTask()` | `POST /annotation-tasks` |
 | 标注 · 导入样本 | `analysis.importAnnotationSamples()` | `POST …/import` |
@@ -410,7 +410,7 @@ pending ──► running ──► succeeded
 
 | 方式 | 接口 |
 |---|---|
-| 同步 | 登录、总览统计、列表/详情查询、登记增改、版本新建、核验、信号分析、特征提取、AI 预标注、标注保存、模型新建/状态流转、上传、导出、通用轮询 |
+| 同步 | 登录、总览统计、列表/详情查询、登记增改、版本新建、核验、起收弧识别、特征提取、AI 预标注、标注保存、模型新建/状态流转、上传、导出、通用轮询 |
 | 异步（Job） | 多模态对齐、数据切分、标注任务创建、数据集构建、模型训练、模型测试、推理 |
 
 ### 6.3 预留项（本期不实现，文档中占位）
@@ -420,4 +420,4 @@ pending ──► running ──► succeeded
 - **版本回滚**：README 提到"版本回滚接口"，本期只读版本链，预留 `POST …/versions/{version_id}/rollback`。
 - **审计日志**：登记页提到"所有操作写入审计日志"，写入侧已实现（`audit_logs` 表），只读端预留 `GET /audit-logs`。
 - **删除能力**：本期不支持删除（标注/样本/数据集/模型/焊缝），预留 `DELETE …` 端点。
-- **异常区段详情**：信号分析"查看异常详情"按钮，本期复用 `GET …/analysis/result` 的异常区段列表；深度区段详情预留扩展点。
+- **异常区段详情**：起收弧识别"查看异常详情"按钮，本期复用 `GET …/analysis/result` 的异常区段列表；深度区段详情预留扩展点。
