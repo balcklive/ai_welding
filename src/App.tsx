@@ -2268,6 +2268,8 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   const [signalsLoading, setSignalsLoading] = useState(true);
   const [signalSource, setSignalSource] = useState<'real' | 'generated' | null>(null);
   const [signalError, setSignalError] = useState<string | null>(null);
+  const [record, setRecord] = useState<DataRecord | null>(null);
+  const [weldDuration, setWeldDuration] = useState<number | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
   const [psdData, setPsdData] = useState<PsdData | null>(null);
   const [stftData, setStftData] = useState<StftData | null>(null);
@@ -2284,7 +2286,7 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
-    getWeld(dataId).then((r) => { if (!cancelled) setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); }).catch((err) => { if (!cancelled) console.warn('[analysis] getWeld failed', err); });
+    getWeld(dataId).then((r) => { if (!cancelled) { setRecord(r); setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); } }).catch((err) => { if (!cancelled) console.warn('[analysis] getWeld failed', err); });
     return () => { cancelled = true; };
   }, [dataId]);
   // 时域波形：挂载 + 滤波参数变化 → 重新拉取（始终请求全部 4 通道，勾选仅本地显示过滤）
@@ -2294,10 +2296,11 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
     setSignalsLoading(true);
     setSignalError(null);
     setSignalSource(null);
+    setWeldDuration(null);
     setChannels(emptyChannels);
     const opts: SignalQuery = { channels: ['cur', 'vol', 'gas', 'wir'] };
     if (filterOn) { opts.filter_type = filterType; opts.cutoff = cutoff; if (filterType === '带通') opts.cutoff2 = cutoff2; }
-    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') setChannels(data.channels.map(toChan)); else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
+    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
     return () => { cancelled = true; };
   }, [dataId, versionId, filterOn, filterType, cutoff, cutoff2]);
   // 主视图 mode（PSD/STFT/DWT/小波分解）：仅真实信号可进入生产分析
@@ -2356,7 +2359,7 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   const filteredValues = filterChanObj.values;
   const seg = result?.segments;
   const modes = ['时域', 'PSD', 'STFT', 'DWT', '小波分解'];
-  return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" exportType="analysis" exportRefIds={versionId != null ? [versionId] : undefined} />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />分析概览</span><h2>当前焊缝信号分析</h2><p>分析结果基于上方“当前数据上下文”中选择的焊缝及其最新版本。</p><div className="source-status"><span className={signalSource === 'real' ? 'real' : 'generated'}>{signalsLoading ? '信号加载中…' : signalSource === 'real' ? '真实信号' : '信号不可用'}</span>{result && <span>分析结果已完成</span>}</div></div><div className="analysis-kpis"><div><span>核验状态</span><strong className="accent-text">通过</strong></div><div><span>有效焊接段</span><strong>3.86 s</strong></div><div><span>异常区段</span><strong className="warning-text">{result ? `${anomalies.length} 个` : '—'}</strong></div></div></div>{signalError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{signalError}</div>}{resultError && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{resultError}</div>}
+  return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" exportType="analysis" exportRefIds={versionId != null ? [versionId] : undefined} />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />分析概览</span><h2>当前焊缝信号分析</h2><p>分析结果基于上方“当前数据上下文”中选择的焊缝及其最新版本。</p><div className="source-status"><span className={signalSource === 'real' ? 'real' : 'generated'}>{signalsLoading ? '信号加载中…' : signalSource === 'real' ? '真实信号' : '信号不可用'}</span>{result && <span>分析结果已完成</span>}</div></div><div className="analysis-kpis"><div><span>核验状态</span><strong className={record?.quality === '通过' ? 'accent-text' : record?.quality === '异常' ? 'danger-text' : 'warning-text'}>{record?.quality ?? '加载中…'}</strong></div><div><span>有效焊接段</span><strong>{weldDuration != null ? `${weldDuration.toFixed(2)} s` : '—'}</strong></div><div><span>异常区段</span><strong className="warning-text">{result ? `${anomalies.length} 个` : '—'}</strong></div></div></div>{signalError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{signalError}</div>}{resultError && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{resultError}</div>}
   <div className="explore-layout">
     <section className="panel explore-main">
       <div className="panel-heading"><div><h2>多模态信号联动</h2><p>勾选通道任意组合，拖动波形同步定位 — 当前：{modeLabel(mode)}</p></div><div className="mode-tabs">{modes.map((item) => <button className={mode === item ? 'active' : ''} onClick={() => setMode(item)} key={item}>{item}</button>)}</div></div>
@@ -2536,21 +2539,31 @@ function DatasetBuild() {
 void DatasetBuild;
 
 function TrainingDataPreparation() {
+  type BuildResult = {
+    item_count: number;
+    split: Partial<DatasetSplit>;
+    quality: DatasetQuality | null;
+    snapshot_id: string | null;
+  };
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState<number | null>(null);
   const [source, setSource] = useState<'manual' | 'split_task' | 'annotation_task'>('manual');
   const [buildJobId, setBuildJobId] = useState<string | null>(null);
+  const [completedBuildResult, setCompletedBuildResult] = useState<BuildResult | null>(null);
   const [buildError, setBuildError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const { status: buildStatus, progress, result: buildResult } = useJob<{ item_count: number; split: Partial<DatasetSplit>; quality: DatasetQuality | null; snapshot_id: string | null }>(buildJobId);
+  const { status: buildStatus, progress, result: buildResult } = useJob<BuildResult>(buildJobId);
   useEffect(() => {
     let cancelled = false;
     listDatasets().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[training-data] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
   const dataset = datasets.find((item) => item.id === datasetId) ?? null;
+  const isTrainable = dataset?.status === '可训练';
+  const previewResult = buildResult ?? completedBuildResult;
   const handleBuild = () => {
-    if (datasetId == null) return;
+    if (datasetId == null || !isTrainable || buildJobId != null) return;
+    setCompletedBuildResult(null);
     setBuildError(null);
     createDatasetVersion(String(datasetId), { name: `训练版本-${new Date().toISOString().slice(0, 10)}` })
       .then((version) => createBuildTask(String(datasetId), String(version.id), { type: source }))
