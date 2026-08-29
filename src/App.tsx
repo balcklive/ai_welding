@@ -9,13 +9,13 @@ import {
   Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
 } from 'lucide-react';
 import * as echarts from 'echarts';
-import ImageAnnotate from 'react-image-annotate';
 import { getToken } from './api/client';
 import { getDashboardData } from './api/dashboard';
 import type { DashboardData } from './api/dashboard';
 import {
   attachRawFiles,
   createVersion,
+  deleteWeld,
   createRegistration,
   getValidation,
   getVersion,
@@ -73,6 +73,8 @@ import {
 } from './api/models';
 import { exportReport } from './api/reports';
 import { useJob } from './hooks/useJob';
+import { AnnotoriousImageEditor } from './components/annotation/AnnotoriousImageEditor';
+import type { ImageEditorAnnotation } from './components/annotation/AnnotoriousImageEditor';
 import type {
   AlignmentResult,
   AlignmentTrack,
@@ -210,12 +212,12 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   const [repoRefresh, setRepoRefresh] = useState(0);
   const [isDatasetDetail, setIsDatasetDetail] = useState(false);
   useEffect(() => { if (route !== 'data-center/datasets') setIsDatasetDetail(false); }, [route]);
-  const toolbarConfig = ws === 'data-center' ? { action: route === 'data-center/datasets' && isDatasetDetail ? '上传数据' : undefined, secondary: undefined }
-    : route === 'analysis/annotation' ? { action: '保存标注', secondary: '导出结果' }
-    : ws === 'analysis' ? { action: '开始处理', secondary: '导出结果' }
-    : route === 'model-center/training' ? { action: '开始训练', secondary: '导出报告' }
-    : route === 'model-center/dataset-build' ? { action: undefined, secondary: '导出报告' }
-    : { action: '新建模型', secondary: '导出报告' };
+  // 工作区工具栏只承载 WorkspaceFrame 自己拥有回调的操作；各业务页的操作由页面内部负责。
+  const toolbarConfig = ws === 'data-center' && route === 'data-center/datasets' && isDatasetDetail
+    ? { action: '上传数据', secondary: undefined }
+    : route === 'model-center/repository'
+      ? { action: '新建模型', secondary: undefined }
+      : { action: undefined, secondary: undefined };
   // 当前页/工作区 → 报告导出 type（§3.7）：data-list/validation/analysis/annotation/features/test。
   const exportType = ws === 'data-center' ? 'data-list'
     : route === 'analysis/annotation' ? 'annotation'
@@ -250,7 +252,8 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
-  return <div className="workspace-page"><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div><Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={ws === 'data-center' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined} /></div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
+  const frameAction = ws === 'data-center' && route === 'data-center/datasets' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined;
+  return <div className={`workspace-page ${route === 'model-center/repository' ? 'model-repository-page' : ''}`}><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div>{(toolbarConfig.action || toolbarConfig.secondary) && <Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={frameAction} />}</div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
 }
 
 function PageIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-intro"><div><div className="eyebrow"><span />{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action}</div>; }
@@ -410,7 +413,7 @@ const mockLabelCategories: LabelCategory[] = [
   { id: 5, name: '正常', color: null },
 ];
 function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
-  const [mode, setMode] = useState<'image' | 'signal' | 'video'>('image');
+  const [mode, setMode] = useState<string>('image');
   const [saved, setSaved] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState(['焊瘤', '气孔']);
   // 初始为空：标签类别加载完成前不闪现 mock 类别，mock 仅作失败兜底
@@ -420,9 +423,12 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
   const [sampleImg, setSampleImg] = useState('');
   const [sampleImgError, setSampleImgError] = useState(false);
   const [aiBoxes, setAiBoxes] = useState<AnnotationLabel[]>([]);
+  const [imageTool, setImageTool] = useState<'box' | 'polygon'>('box');
+  const [imageEditorKey, setImageEditorKey] = useState(0);
+  const [imageDraft, setImageDraft] = useState<ImageEditorAnnotation[]>([]);
   // 初始为 0：样本总数在接口返回前不得显示 mock 值 1209
   const [totalSamples, setTotalSamples] = useState(0);
-  const creatingRef = useRef(false);
+  const creatingRef = useRef<string | null>(null);
   const { status: jobStatus } = useJob<unknown>(taskId);
   const toggleLabel = (label: string) => setSelectedLabels((current) => current.includes(label) ? current.filter((item) => item !== label) : [...current, label]);
   useEffect(() => {
@@ -432,16 +438,20 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
   }, []);
   // 只从当前焊缝版本导入真实图片对象，禁止创建无样本的演示任务。
   useEffect(() => {
-    if (!dataId || creatingRef.current) return;
+    if (!dataId || creatingRef.current === dataId) return;
     let cancelled = false;
-    setSample(null); setSampleImg(''); setSampleImgError(false); setAiBoxes([]); setTotalSamples(0); setTaskId(null);
+    creatingRef.current = dataId;
+    setSample(null); setSampleImg(''); setSampleImgError(false); setAiBoxes([]); setImageDraft([]); setTotalSamples(0); setTaskId(null);
     getWeld(dataId).then((weld) => {
       const imageKey = (weld.latest_version?.object_keys ?? []).find((key) => /\.(jpe?g|png|webp|bmp)$/i.test(key));
       if (!imageKey) throw new Error('当前版本没有真实图片对象');
-      creatingRef.current = true;
+      // 媒体预览不依赖标注任务，先拿 URL 显示图片，任务在后台准备样本。
+      getFileUrl(imageKey).then((r) => { if (!cancelled) setSampleImg(r.url); }).catch((err) => {
+        if (!cancelled) { setSampleImgError(true); console.warn('[annotation] image preview failed', err); }
+      });
       return createAnnotationTask({ source: 'manual', name: `真实图像标注 · ${weld.weld_id}` }).then((res) => importAnnotationSamples(res.job_id, { source: 'files', object_keys: [imageKey] }).then(() => res));
-    }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => { if (!cancelled) console.warn('[annotation] real image sample unavailable', err); });
-    return () => { cancelled = true; creatingRef.current = false; };
+    }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => { if (!cancelled) console.warn('[annotation] real image sample unavailable', err); if (creatingRef.current === dataId) creatingRef.current = null; });
+    return () => { cancelled = true; };
   }, [dataId]);
   useEffect(() => {
     if (!taskId || jobStatus !== 'succeeded') return;
@@ -455,6 +465,11 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
         if (cancelled) return;
       setSample(s);
       setAiBoxes(s.annotations ?? []);
+      setImageDraft((s.annotations ?? []).flatMap<ImageEditorAnnotation>((annotation, index) => annotation.kind === 'polygon'
+        ? [{ id: String(annotation.id ?? index), category: annotation.category, kind: 'polygon' as const, box: [], points: annotation.points }]
+        : annotation.box.length === 4
+          ? [{ id: String(annotation.id ?? index), category: annotation.category, kind: 'box' as const, box: annotation.box, points: [] }]
+          : []));
         if (s.object_keys && s.object_keys.length) {
           getFileUrl(s.object_keys[0]).then((r) => { if (!cancelled) setSampleImg(r.url); }).catch((err) => { if (!cancelled) { setSampleImgError(true); console.warn('[annotation] getFileUrl failed', err); } });
         }
@@ -464,9 +479,28 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
   }, [taskId, jobStatus]);
   const handleAiPretag = () => {
     if (!taskId || !sample) return;
-    aiPretag(taskId, String(sample.id)).then((anns) => { setAiBoxes(anns); setSaved(false); }).catch((err) => console.warn('[annotation] aiPretag failed', err));
+    aiPretag(taskId, String(sample.id)).then((anns) => {
+      setAiBoxes(anns);
+      setImageDraft(anns.flatMap<ImageEditorAnnotation>((annotation, index) => annotation.kind === 'polygon'
+        ? [{ id: String(annotation.id ?? index), category: annotation.category, kind: 'polygon' as const, box: [], points: annotation.points }]
+        : annotation.box.length === 4
+          ? [{ id: String(annotation.id ?? index), category: annotation.category, kind: 'box' as const, box: annotation.box, points: [] }]
+          : []));
+      setSaved(false);
+    }).catch((err) => console.warn('[annotation] aiPretag failed', err));
   };
   const handleSave = () => {
+    if (mode === 'image') {
+      if (!taskId || !sample) return;
+      const labelsToSave: LabelItem[] = imageDraft.map((annotation) => annotation.kind === 'polygon'
+        ? { category: annotation.category, kind: 'polygon', points: annotation.points.map(([x, y]) => [Math.round(x), Math.round(y)]) }
+        : { category: annotation.category, kind: 'box', box: annotation.box.map((value) => Math.round(value)) });
+      saveAnnotation(taskId, String(sample.id), labelsToSave).then(() => {
+        setSaved(true);
+        setAiBoxes(labelsToSave.map((label, index) => ({ id: index, sample_id: sample.id, category: label.category, kind: label.kind ?? 'box', box: label.box ?? [], points: label.points ?? [], start_time: null, end_time: null, confidence: null, annotator: '当前用户', created_at: null, updated_at: null })));
+      }).catch((err) => console.warn('[annotation] image annotation save failed', err));
+      return;
+    }
     if (!taskId || !sample) { setSaved(true); return; }
     const boxes = aiBoxes.map((b) => ({ category: b.category, box: b.box, confidence: b.confidence }));
     const labelsToSave: LabelItem[] = selectedLabels.length
@@ -476,6 +510,16 @@ function Annotation({ embedded = false, dataId }: { embedded?: boolean; dataId?:
   };
   const frameLabel = sample?.frame_no != null ? String(sample.frame_no).padStart(4, '0') : '—';
   const confidence = sample?.confidence != null ? `${(sample.confidence * 100).toFixed(1)}%` : '—';
+  if (mode === 'image') {
+    return <div className={embedded ? 'embedded-page' : 'page-wrap'}>
+      <PageIntro eyebrow="数据生产线" title="数据标注" description="支持目标检测框与熔池语义分割轮廓标注。" action={<button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button>} />
+      <div className="annotation-mode-bar"><button className="selected"><ImageIcon size={14} />图像标注</button><button onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button onClick={() => setMode('video')}><Play size={14} />视频标注</button></div>
+      <section className="panel annotation-board"><div className="board-toolbar"><div><span className="file-badge"><Archive size={15} />{sample ? <>样本 {frameLabel} / {totalSamples.toLocaleString()}</> : '样本加载中…'}</span><h2>图像目标检测 / 熔池分割</h2></div><div className="toolbar-actions"><button className="icon-button" onClick={handleAiPretag} title="AI 预标注" disabled={!sample}><SlidersHorizontal size={17} /></button><button className="select-button" onClick={() => { setImageTool(imageTool === 'box' ? 'polygon' : 'box'); setImageEditorKey((k) => k + 1); }}>{imageTool === 'box' ? '目标检测框' : '熔池轮廓'} <ChevronDown size={14} /></button></div></div>
+        <div className="annotation-image-editor">{sampleImg && !sampleImgError ? <><AnnotoriousImageEditor key={`${imageEditorKey}-${sample?.id ?? 'empty'}`} src={sampleImg} annotations={imageDraft} tool={imageTool === 'box' ? 'rectangle' : 'polygon'} defaultLabel={selectedLabels[0] ?? '正常'} onChange={(next) => { setImageDraft(next); setSaved(false); }} /></> : <div className="selection-required"><ImageIcon size={23} /><h2>{sampleImgError ? '图片暂时无法预览' : '真实图片加载中'}</h2><p>{sampleImgError ? '请检查对象存储连接后重试。' : '图片正在加载，加载完成后可直接绘制。'}</p></div>}</div>
+        <div className="stage-tip">拖拽绘制目标检测框；切换为“熔池轮廓”后点击多个顶点并闭合。标注可移动、缩放和删除，完成后点击页面顶部“保存标注”。</div>
+      </section>
+    </div>;
+  }
   return <div className={embedded ? 'embedded-page' : 'page-wrap'}><PageIntro eyebrow="数据生产线" title="数据标注" description="为模型准备高质量训练样本，支持多模态协同标注。" action={<><button className="outline-button"><Upload size={16} />导入数据</button><button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button></>} /><div className="annotation-mode-bar"><button className={mode === 'signal' ? 'selected' : ''} onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button className={mode === 'video' ? 'selected' : ''} onClick={() => setMode('video')}><Play size={14} />视频标注</button><button className={mode === 'image' ? 'selected' : ''} onClick={() => setMode('image')}><ImageIcon size={14} />图像标注</button></div>{mode === 'signal' ? <AnnotationSignal dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : mode === 'video' ? <AnnotationVideo dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : <div className="annotation-layout"><section className="panel annotation-board"><div className="board-toolbar"><div><span className="file-badge"><Archive size={15} />{sample ? <>样本 {frameLabel} / {totalSamples.toLocaleString()}</> : '样本加载中…'}</span><h2>焊接件 · 视觉质检样本</h2></div><div className="toolbar-actions"><button className="icon-button" onClick={handleAiPretag} title="AI 预标注" disabled={!sample}><SlidersHorizontal size={17} /></button><button className="select-button">图像标注 <ChevronDown size={14} /></button></div></div><div className="image-stage">{sampleImg && !sampleImgError ? <img src={sampleImg} alt="真实待标注焊接样本" onError={() => setSampleImgError(true)} /> : <div className="selection-required"><ImageIcon size={23} /><h2>{sampleImgError ? '图片暂时无法预览' : '真实图片加载中'}</h2><p>{sampleImgError ? '请检查对象存储连接后重试。' : '当前版本没有可用的真实图片样本。'}</p></div>}{aiBoxes.length ? aiBoxes.map((a, i) => { const [bx, by, bw, bh] = a.box.length === 4 ? a.box : [128, 182, 186, 106]; return <div key={a.id ?? i} className="annotation-box" style={{ left: `${(bx / 640) * 100}%`, top: `${(by / 480) * 100}%`, width: `${(bw / 640) * 100}%`, height: `${(bh / 480) * 100}%` }}><span>{a.category} {a.confidence != null ? <b>{a.confidence.toFixed(2)}</b> : null}</span></div>; }) : null}<div className="stage-tip">{aiBoxes.length ? <><Sparkles size={14} />AI 已预标注 {aiBoxes.length} 个区域</> : '暂无标注数据'}</div></div><div className="board-footer"><div className="thumb-strip"><>{sampleImg && !sampleImgError && <img className="thumb-active" src={sampleImg} alt="当前样本缩略图" onError={() => setSampleImgError(true)} />}</></div><div className="pagination">{sample ? <span>当前样本</span> : null}</div></div></section><aside className="annotation-side"><section className="panel label-panel"><div className="panel-heading"><div><h2>标签类别</h2><p>选择需要应用的缺陷标签</p></div><button className="more-button"><MoreHorizontal size={18} /></button></div><div className="label-options">{labels.map((label, index) => <button className={`label-chip ${selectedLabels.includes(label.name) ? 'chosen' : ''}`} onClick={() => toggleLabel(label.name)} key={label.name}><i className={`chip-dot chip-${index % 5}`} />{label.name}<span>{selectedLabels.includes(label.name) ? <Check size={14} /> : '+'}</span></button>)}</div></section><section className="panel annotation-info"><div className="panel-heading"><div><h2>标注信息</h2><p>当前样本的详细信息</p></div></div><InfoRow label="数据来源" value={sample ? '真实对象存储图片' : '—'} /><InfoRow label="采集时间" value={sample ? '真实数据记录' : '—'} /><InfoRow label="标注人员" value={sample ? '当前用户' : '—'} /><InfoRow label="置信度" value={sample ? confidence : '—'} accent /></section><div className="ai-card"><div className="ai-card-icon"><Zap size={17} /></div><div><strong>智能标注建议</strong><p>{aiBoxes.length ? `已为你识别 ${aiBoxes.length} 个疑似缺陷区域，建议确认后提交。` : '暂无 AI 标注建议'}</p></div></div></aside></div>}</div>;
 }
 /** 时序标注模式：ECharts 波形 + 点击设起点/终点选缺陷区间（kind=segment）+ 区间列表 + 保存。
@@ -705,11 +749,11 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
     </div>
   );
 }
-/** 视频标注模式：熔池视频播放器 + 帧捕获 → react-image-annotate 画多边形（kind='polygon'）。
+/** 视频标注模式：熔池视频播放器 + 帧捕获 → Annotorious 画多边形（kind='polygon'）。
  *
  * 流程：选中焊缝 → getWeld 取最新版本 → createAnnotationTask(source='video', version_id)
  * → useJob 成功 → 取视频锚点样本（meta.video_key → getFileUrl 播放）→ 播放/定位 → 捕获当前帧
- * （canvas 按视频自然分辨率取帧）→ react-image-annotate 画多边形（归一化坐标，`key` 变化重挂载
+ * （canvas 按视频自然分辨率取帧）→ Annotorious 画多边形（像素坐标，`key` 变化重挂载
  * 重置每帧）→ 点标注器自带保存（onExit）→ 归一化 × 帧宽高转像素 → createAnnotationFrame 建帧样本
  * → saveAnnotation(kind='polygon', category='熔池')。已标注帧在侧栏展示。
  */
@@ -723,6 +767,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
   const [saved, setSaved] = useState(false);
   const [savedFrames, setSavedFrames] = useState<{ timestamp: number; sample_id: number; count: number }[]>([]);
   const [captureKey, setCaptureKey] = useState(0);
+  const [frameDraft, setFrameDraft] = useState<ImageEditorAnnotation[]>([]);
   const [videoError, setVideoError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -749,6 +794,10 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
         (v.object_keys ?? []).some((key) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key)),
       );
       if (!version) return;
+      const videoKey = (version.object_keys ?? []).find((key) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key));
+      if (videoKey) getFileUrl(videoKey, 86400).then((r) => {
+        if (!cancelled) { setVideoUrl(r.url); setVideoError(null); }
+      }).catch((err) => console.warn('[annotation.video] early video preview failed', err));
       if (taskDataIdRef.current === dataId) return;
       taskDataIdRef.current = dataId;
       createAnnotationTask({ source: 'video', version_id: version.id, name: 'AN-视频' })
@@ -799,6 +848,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
     setFrameW(w); setFrameH(h);
     setCurrentTime(Math.round(video.currentTime * 1000) / 1000);
     setFrameImage(canvas.toDataURL('image/jpeg', 0.9));
+    setFrameDraft([]);
     setSaved(false);
     setCaptureKey((k) => k + 1);
   };
@@ -820,18 +870,12 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
     );
   };
 
-  // react-image-annotate 保存（onExit）：把归一化多边形转像素 → 建帧样本 → 保存 kind='polygon'
-  // 库的 onExit 把 regions 类型标成 unknown[]，先按宽松签名接参、内部收窄（TS 逆变要求）
-  const handleExit = (state: { images?: Array<{ regions?: unknown[] }> }) => {
-    const regions = (state.images?.[0]?.regions ?? []) as Array<{ type?: string; points?: number[][]; cls?: string; open?: boolean }>;
-    // 全部闭合多边形都保存（单类熔池，可一帧多区域），空画布不误报已保存
-    const polys = regions.filter((r) => (r.points?.length ?? 0) >= 3 && r.open !== true);
-    if (!polys.length || !taskId || !frameImage) return;
-    const labels: LabelItem[] = polys.map((p) => ({
-      category: p.cls ?? '熔池',
-      kind: 'polygon',
-      points: (p.points ?? []).map(([nx, ny]) => [Math.round(nx * frameW), Math.round(ny * frameH)]),
+  const handleFrameSave = () => {
+    if (!frameDraft.length || !taskId || !frameImage) return;
+    const labels: LabelItem[] = frameDraft.filter((item) => item.kind === 'polygon' && item.points.length >= 3).map((item) => ({
+      category: item.category || '熔池', kind: 'polygon', points: item.points.map(([x, y]) => [Math.round(x), Math.round(y)]),
     }));
+    if (!labels.length) return;
     const existing = sampleByTime.current.get(currentTime);
     const create = existing != null
       ? Promise.resolve(existing)
@@ -851,7 +895,7 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
       <section className="panel annotation-signal-board">
         <div className="board-toolbar">
           <div><span className="file-badge"><ImageIcon size={15} />视频标注 · {dataId ?? '未选择'}</span><h2>{videoUrl ? '熔池视频 · 播放/定位后捕获帧画多边形' : '加载视频中…'}</h2></div>
-          <div className="toolbar-actions"><button className="outline-button" onClick={onBack}><ImageIcon size={14} />图像标注</button><button className="primary-button" onClick={handleCapture} disabled={!videoUrl}><Play size={14} />捕获当前帧</button></div>
+          <div className="toolbar-actions"><button className="outline-button" onClick={onBack}><ImageIcon size={14} />图像标注</button><button className="outline-button" onClick={handleFrameSave} disabled={!frameDraft.length}>保存当前帧</button><button className="primary-button" onClick={handleCapture} disabled={!videoUrl}><Play size={14} />捕获当前帧</button></div>
         </div>
         <div className="signal-stage">
           {videoError ? (
@@ -868,17 +912,10 @@ function AnnotationVideo({ dataId, onBack }: { embedded?: boolean; dataId?: stri
         </div>
         {frameImage ? (
           <div className="video-annotate-editor">
-            <ImageAnnotate
-              key={captureKey}
-              images={[{ src: frameImage, regions: [] }]}
-              enabledTools={['create-polygon']}
-              selectedTool="create-polygon"
-              regionClsList={['熔池']}
-              onExit={handleExit}
-            />
+            <AnnotoriousImageEditor key={captureKey} src={frameImage} annotations={[]} tool="polygon" defaultLabel="熔池" onChange={setFrameDraft} />
           </div>
         ) : <div className="signal-stage-tip">播放/定位到要标注的时间点，点「捕获当前帧」后画多边形（点若干顶点、双击闭合），再点标注器自带的保存按钮。</div>}
-        <div className="signal-stage-tip">{saved ? <><Check size={14} />已保存 </> : null}已标注 {savedFrames.length} 帧</div>
+        <div className="signal-stage-tip">{saved ? <><Check size={14} />已保存 </> : null}已标注 {savedFrames.length} 帧 · 当前帧绘制完成后点击“保存当前帧”</div>
       </section>
       <aside className="annotation-signal-side">
         <section className="panel annotation-info">
@@ -1349,7 +1386,21 @@ function RawMediaPreview({ objectKeys, loading = false }: { objectKeys: string[]
   return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>使用当前焊缝版本中的真实文件。</p></div></div><div className="raw-media-grid">{visibleUrls.map(({ key, url }) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key) ? <video key={key} src={url} controls preload="metadata" onError={() => { setMediaError('媒体文件加载失败'); setBrokenKeys((prev) => new Set(prev).add(key)); }} /> : <img key={key} src={url} alt={`真实数据 ${key}`} onError={() => { setMediaError('媒体文件加载失败'); setBrokenKeys((prev) => new Set(prev).add(key)); }} />)}</div></section>;
 }
 
-function DatasetRecordDetail({ weldId, dataset, versionId, split, onBack, setSelectedDataId, navigate }: { weldId: string; dataset: DatasetRow; versionId: number; split: 'train' | 'val' | 'test' | null; onBack: () => void; setSelectedDataId: (id: string | null) => void; navigate: (route: Route) => void }) {
+function DatasetRecordDetail(props: { weldId: string; dataset: DatasetRow; versionId: number; split: 'train' | 'val' | 'test' | null; onBack: () => void; setSelectedDataId: (id: string | null) => void; navigate: (route: Route) => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleDelete = () => {
+    if (!window.confirm(`确定删除焊缝“${props.weldId}”及其全部数据版本吗？该操作不可撤销。`)) return;
+    setDeleting(true);
+    deleteWeld(props.weldId)
+      .then(() => window.location.reload())
+      .catch((err) => setError(err instanceof Error ? err.message : '删除焊缝失败'))
+      .finally(() => setDeleting(false));
+  };
+  return <><DatasetRecordDetailContent {...props} /><div className="dataset-delete-bar">{error && <span role="alert">{error}</span>}<button className="danger-button" onClick={handleDelete} disabled={deleting}>{deleting ? '删除中…' : '删除焊缝'}</button></div></>;
+}
+
+function DatasetRecordDetailContent({ weldId, dataset, versionId, split, onBack, setSelectedDataId, navigate }: { weldId: string; dataset: DatasetRow; versionId: number; split: 'train' | 'val' | 'test' | null; onBack: () => void; setSelectedDataId: (id: string | null) => void; navigate: (route: Route) => void }) {
   const [record, setRecord] = useState<DataRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -1378,17 +1429,6 @@ function ModelReadiness({ task, status, readiness, loading = false }: { task: st
   return <section className="panel readiness-panel"><div className="panel-heading"><div><h2>模型适配检查</h2><p>当前数据集按照“{task}”的最低训练要求检查。</p></div><StatusPill tone={isTrainable ? 'green' : 'orange'}>{isTrainable ? '可训练' : '暂不可训练'}</StatusPill></div><div className="readiness-grid">{checks.length ? checks.map((check) => <div key={check.name}>{check.passed ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}<span>{check.name}</span></div>) : <p className="dataset-empty-state" role="status">模型适配检查加载中…</p>}</div><div className="split-policy"><GitBranch size={14} /><span>划分策略：按焊缝 ID 分组，避免同一焊缝的视频帧同时出现在训练集和测试集。</span></div></section>;
 }
 
-function DatasetTrainingContext() {
-  const [ds, setDs] = useState<Dataset | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listDatasets().then((list) => { if (!cancelled && list.length) setDs(list.find((d) => d.status === '可训练') ?? list[0]); }).catch((err) => { if (!cancelled) console.warn('[datasets] training context failed', err); });
-    return () => { cancelled = true; };
-  }, []);
-  const name = ds ? `${ds.name} · 快照 ${ds.version ?? '—'}` : '焊接缺陷检测集 · 快照 v1.3';
-  const split = ds?.split && ds.split.train !== undefined ? `${ds.split.train.toLocaleString()} / ${(ds.split.val ?? 0).toLocaleString()} / ${(ds.split.test ?? 0).toLocaleString()}` : '6,736 / 842 / 842';
-  return <div className="model-dataset-context"><div className="dataset-row-icon"><Box size={16} /></div><div><span>当前训练数据集快照</span><strong>{name}</strong></div><div><span>训练 / 验证 / 测试</span><strong>{split}</strong></div><StatusPill>{ds?.status ?? '可训练'}</StatusPill><button className="ghost-button">更换数据集 <ChevronDown size={13} /></button></div>;
-}
 function DatasetTestingContext() {
   const [ds, setDs] = useState<Dataset | null>(null);
   useEffect(() => {
@@ -1574,7 +1614,7 @@ function ModelRepository({ refreshKey = 0, navigate }: { refreshKey?: number; na
   const openDetail = (model: Model) => { setDetailLoading(true); setSelectedModel(model); getModel(String(model.id)).then(setSelectedModel).catch(() => setNotice('模型详情暂时无法读取。')).finally(() => setDetailLoading(false)); };
   const handleExport = (version: ModelVersion) => { if (!selectedModel || exporting != null) return; setExporting(version.id); setNotice(null); exportModelVersion(selectedModel.id, version.id).then(() => setNotice(`已提交 ${version.version_no} 的 ONNX 导出任务。`)).catch(() => setNotice('模型导出暂时不可用，请稍后重试。')).finally(() => setExporting(null)); };
   const handleStatus = (version: ModelVersion, status: string) => { if (!selectedModel || updatingStatus != null) return; setUpdatingStatus(version.id); setNotice(null); updateModelVersionStatus(String(selectedModel.id), String(version.id), { status }).then((updated) => { setSelectedModel((current) => current ? { ...current, versions: current.versions?.map((item) => item.id === updated.id ? updated : item), status: updated.status, version: updated.version_no, metric: updated.metric, latest_version_id: updated.id } : current); return listModels(); }).then((res) => { setModels(res.models ?? []); setSummary(res.summary); }).catch(() => setNotice('模型状态更新失败，请稍后重试。')).finally(() => setUpdatingStatus(null)); };
-  return <div className="model-repository"><section className="model-repository-hero"><div className="model-repository-hero-icon"><Cpu size={25} /></div><div className="model-repository-hero-copy"><span className="eyebrow"><i />模型资产管理</span><h2>让每个模型版本都可追踪、可评估、可发布</h2><p>模型资产统一承接模型登记、版本管理、指标评估、权重导出和推理验证。</p></div><button className="primary-button" onClick={() => navigate('model-center/training')}><Play size={15} />开始一次训练</button></section><div className="model-workflow"><div><span>01</span><strong>登记模型</strong><small>建立模型条目</small></div><i>→</i><div><span>02</span><strong>训练版本</strong><small>关联数据集快照</small></div><i>→</i><div><span>03</span><strong>测试评估</strong><small>查看指标与混淆矩阵</small></div><i>→</i><div><span>04</span><strong>发布推理</strong><small>晋级生产并验证样本</small></div></div><div className="repository-summary"><div><span>模型总数</span><strong>{summary?.total ?? '—'}</strong></div><div><span>生产候选</span><strong>{summary?.prod_candidates ?? '—'}</strong></div><div><span>最近训练</span><strong>{summary?.recent_training ? fmtDT(summary.recent_training) : '—'}</strong></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{repoLoading ? <p className="dataset-empty-state" role="status">模型资产加载中…</p> : models.length ? <div className="model-card-grid">{models.map((model) => <section className="panel model-card" key={model.id}><div className="model-card-top"><div className="model-logo"><Cpu size={17} /></div><StatusPill tone={model.status === '训练中' ? 'orange' : 'green'}>{model.status ?? '无版本'}</StatusPill><MoreHorizontal size={16} className="muted-icon" /></div><h2>{model.name}</h2><p>{model.type} · {model.version ?? '暂无版本'}</p><div className="model-metric"><span>核心指标</span><strong>{modelMetricText(model.metric)}</strong></div><div className="model-card-footer"><span>{model.description ?? '暂无模型描述'}</span><button className="ghost-button" onClick={() => openDetail(model)}>查看详情 <ArrowUpRight size={13} /></button></div></section>)}</div> : <><div className="model-catalog-heading"><div><h2>标准模型目录</h2><p>平台预留的三类模型能力入口，训练完成后会在这里生成版本。</p></div><button className="outline-button" onClick={() => navigate('model-center/training')}><Plus size={14} />新建训练任务</button></div><div className="model-catalog-grid">{modelCatalog.map(({ name, type, description, icon: Icon }) => <section className="panel model-catalog-card" key={name}><div className="model-catalog-icon"><Icon size={20} /></div><StatusPill tone="blue">待接入版本</StatusPill><h3>{name}</h3><span>{type}</span><p>{description}</p><button className="ghost-button" onClick={() => navigate('model-center/training')}>去创建版本 <ArrowUpRight size={13} /></button></section>)}</div></>}{selectedModel && <div className="app-dialog-backdrop" role="presentation" onClick={() => setSelectedModel(null)}><section className="app-dialog model-detail-dialog" role="dialog" aria-modal="true" aria-label="模型详情" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>{selectedModel.name}</h2><p>{selectedModel.type} · {selectedModel.description ?? '暂无描述'}</p></div><button className="icon-button" onClick={() => setSelectedModel(null)} aria-label="关闭">×</button></div>{detailLoading ? <p className="dataset-empty-state">详情加载中…</p> : <div className="model-version-list">{selectedModel.versions?.length ? selectedModel.versions.map((version) => <div className="model-version-row" key={version.id}><div><strong>{version.version_no}</strong><span>{version.status} · {modelMetricText(version.metric)}</span><small>{version.created_at ? fmtDT(version.created_at) : '暂无创建时间'}</small></div><div className="model-version-actions"><button className="outline-button" disabled={!version.file_key || exporting === version.id} onClick={() => handleExport(version)}><Download size={14} />{exporting === version.id ? '导出中…' : '导出 ONNX'}</button>{version.status === '生产候选' ? <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '实验版本')}>{updatingStatus === version.id ? '更新中…' : '退回实验版'}</button> : <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '生产候选')}>{updatingStatus === version.id ? '更新中…' : '设为生产候选'}</button>}</div></div>) : <p className="dataset-empty-state">该模型暂无版本。</p>}</div>}</section></div>}</div>;
+  return <div className="model-repository"><section className="model-repository-hero"><div className="model-repository-hero-icon"><Cpu size={25} /></div><div className="model-repository-hero-copy"><span className="eyebrow"><i />模型资产管理</span><h2>让每个模型版本都可追踪、可评估、可发布</h2><p>模型资产统一承接模型登记、版本管理、指标评估、权重导出和推理验证。</p></div><button className="primary-button" onClick={() => navigate('model-center/training')}><Play size={15} />开始一次训练</button></section><div className="repository-summary"><div><span>模型总数</span><strong>{summary?.total ?? '—'}</strong></div><div><span>生产候选</span><strong>{summary?.prod_candidates ?? '—'}</strong></div><div><span>最近训练</span><strong>{summary?.recent_training ? fmtDT(summary.recent_training) : '—'}</strong></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{repoLoading ? <p className="dataset-empty-state" role="status">模型资产加载中…</p> : models.length ? <div className="model-card-grid">{models.map((model) => <section className="panel model-card" key={model.id}><div className="model-card-top"><div className="model-logo"><Cpu size={17} /></div><StatusPill tone={model.status === '训练中' ? 'orange' : 'green'}>{model.status ?? '无版本'}</StatusPill><MoreHorizontal size={16} className="muted-icon" /></div><h2>{model.name}</h2><p>{model.type} · {model.version ?? '暂无版本'}</p><div className="model-metric"><span>核心指标</span><strong>{modelMetricText(model.metric)}</strong></div><div className="model-card-footer"><span>{model.description ?? '暂无模型描述'}</span><button className="ghost-button" onClick={() => openDetail(model)}>查看详情 <ArrowUpRight size={13} /></button></div></section>)}</div> : <><div className="model-catalog-heading"><div><h2>标准模型目录</h2><p>平台预留的三类模型能力入口，训练完成后会在这里生成版本。</p></div><button className="outline-button" onClick={() => navigate('model-center/training')}><Plus size={14} />新建训练任务</button></div><div className="model-catalog-grid">{modelCatalog.map(({ name, type, description, icon: Icon }) => <section className="panel model-catalog-card" key={name}><div className="model-catalog-icon"><Icon size={20} /></div><StatusPill tone="blue">待接入版本</StatusPill><h3>{name}</h3><span>{type}</span><p>{description}</p><button className="ghost-button" onClick={() => navigate('model-center/training')}>去创建版本 <ArrowUpRight size={13} /></button></section>)}</div></>}{selectedModel && <div className="app-dialog-backdrop" role="presentation" onClick={() => setSelectedModel(null)}><section className="app-dialog model-detail-dialog" role="dialog" aria-modal="true" aria-label="模型详情" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>{selectedModel.name}</h2><p>{selectedModel.type} · {selectedModel.description ?? '暂无描述'}</p></div><button className="icon-button" onClick={() => setSelectedModel(null)} aria-label="关闭">×</button></div>{detailLoading ? <p className="dataset-empty-state">详情加载中…</p> : <div className="model-version-list">{selectedModel.versions?.length ? selectedModel.versions.map((version) => <div className="model-version-row" key={version.id}><div><strong>{version.version_no}</strong><span>{version.status} · {modelMetricText(version.metric)}</span><small>{version.created_at ? fmtDT(version.created_at) : '暂无创建时间'}</small></div><div className="model-version-actions"><button className="outline-button" disabled={!version.file_key || exporting === version.id} onClick={() => handleExport(version)}><Download size={14} />{exporting === version.id ? '导出中…' : '导出 ONNX'}</button>{version.status === '生产候选' ? <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '实验版本')}>{updatingStatus === version.id ? '更新中…' : '退回实验版'}</button> : <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '生产候选')}>{updatingStatus === version.id ? '更新中…' : '设为生产候选'}</button>}</div></div>) : <p className="dataset-empty-state">该模型暂无版本。</p>}</div>}</section></div>}</div>;
 }
 
 function InferencePanel() {
@@ -2313,7 +2353,7 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
     setSignalSource(null);
     setWeldDuration(null);
     setChannels(emptyChannels);
-    const opts: SignalQuery = { channels: ['cur', 'vol', 'gas', 'wir'] };
+    const opts: SignalQuery = { channels: ['cur', 'vol', 'gas', 'wir'], max_points: 2048 };
     if (filterOn) { opts.filter_type = filterType; opts.cutoff = cutoff; if (filterType === '带通') opts.cutoff2 = cutoff2; }
     getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
     return () => { cancelled = true; };
@@ -2576,6 +2616,26 @@ function TrainingDataPreparation() {
   const dataset = datasets.find((item) => item.id === datasetId) ?? null;
   const isTrainable = dataset?.status === '可训练';
   const previewResult = buildResult ?? completedBuildResult;
+  useEffect(() => {
+    let cancelled = false;
+    const versionId = dataset?.current_version_id;
+    if (dataset == null || versionId == null) {
+      setCompletedBuildResult(null);
+      return () => { cancelled = true; };
+    }
+    getDatasetVersion(String(dataset.id), String(versionId)).then((version) => {
+      if (cancelled || version.item_count <= 0) return;
+      setCompletedBuildResult({
+        item_count: version.item_count,
+        split: version.split,
+        quality: version.quality,
+        snapshot_id: version.snapshot_id,
+      });
+    }).catch((err) => {
+      if (!cancelled) console.warn('[training-data] current version restore failed', err);
+    });
+    return () => { cancelled = true; };
+  }, [dataset?.id, dataset?.current_version_id]);
   const handleBuild = () => {
     if (datasetId == null || !isTrainable || buildJobId != null) return;
     setCompletedBuildResult(null);
@@ -2926,7 +2986,7 @@ function mapUnifiedGroups(uv: FeatureExtraction['unified_vector'] | null | undef
   return (uv?.groups ?? []).map((g, i) => ({ group: g.name, dims: g.dims, range: `[${g.range[0]}:${g.range[1]}]`, tone: unifiedPalette[i % unifiedPalette.length] }));
 }
 
-function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) {
+function FeatureExtraction({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
   const [normMethod, setNormMethod] = useState('Z-Score');
   const [exportFmt, setExportFmt] = useState('NPY');
   const [versionId, setVersionId] = useState<number | null>(null);
@@ -3008,7 +3068,7 @@ function FeatureExtraction({ dataId }: { embedded?: boolean; dataId?: string }) 
       if (res.url) window.open(res.url, '_blank', 'noopener,noreferrer');
     }).catch(() => setExtractError('统一特征向量导出失败，请稍后重试'));
   };
-  return <div className="page-wrap"><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从真实输入提取可追溯特征；缺失模态不会被静默当作真实数据。" action={<Toolbar action={extracting ? '提取中…' : '执行提取'} secondary="导出特征集" onAction={handleExtract} exportType="features" exportRefIds={extractionId != null ? [extractionId] : undefined} actionDisabled={extracting || !dataId || versionId == null} />} />{extractError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{extractError}</div>}{fallbackModalities.length > 0 && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{fallbackModalities.join('、')}模态非真实输入，本次结果不可直接用于生产判定。</div>}
+  return <div className={embedded ? 'embedded-page feature-extraction-page' : 'page-wrap'}><PageIntro eyebrow="多模态特征工程" title="特征提取" description="从真实输入提取可追溯特征；缺失模态不会被静默当作真实数据。" action={<Toolbar action={extracting ? '提取中…' : '执行提取'} secondary="导出特征集" onAction={handleExtract} exportType="features" exportRefIds={extractionId != null ? [extractionId] : undefined} actionDisabled={extracting || !dataId || versionId == null} />} />{extractError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{extractError}</div>}{fallbackModalities.length > 0 && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{fallbackModalities.join('、')}模态非真实输入，本次结果不可直接用于生产判定。</div>}
     <div className="feature-layout">
       <section className="panel feature-modality-panel">
         <div className="panel-heading"><div><h2>时序信号特征</h2><p>电流 / 电压 / 气体流量 / 送丝速度 · 统计 + 频域 + 时频</p></div><Waves size={17} className="accent-text" /></div>
