@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, Check, ChevronDown, Image as ImageIcon, MoreHorizontal, Play, Plus, SlidersHorizontal, Sparkles, Upload, Waves, Zap } from 'lucide-react';
-import * as echarts from 'echarts';
+import { init, use as registerECharts } from 'echarts/core';
+import type { EChartsOption } from 'echarts';
+import { LineChart } from 'echarts/charts';
+import { DataZoomComponent, GridComponent, LegendComponent, MarkAreaComponent, TooltipComponent } from 'echarts/components';
+import { CanvasRenderer } from 'echarts/renderers';
 import {
   aiPretag, createAnnotationFrame, createAnnotationTask, getAnnotationSample,
   getSignals, importAnnotationSamples, listAnnotationSamples,
@@ -12,11 +16,14 @@ import type {
   Annotation as AnnotationLabel, LabelCategory, LabelItem, Sample, SignalData,
 } from '../../api/types';
 import { useJob } from '../../hooks/useJob';
-import { AnnotoriousImageEditor } from '../../components/annotation/AnnotoriousImageEditor';
 import type { ImageEditorAnnotation } from '../../components/annotation/AnnotoriousImageEditor';
 import { InfoRow } from '../../shared/components/InfoRow';
 import { PageIntro } from '../../shared/components/PageIntro';
 import { fmt } from '../analysis/signals/chartData';
+
+const AnnotoriousImageEditor = lazy(() => import('../../components/annotation/AnnotoriousImageEditor').then((module) => ({ default: module.AnnotoriousImageEditor })));
+
+registerECharts([LineChart, DataZoomComponent, GridComponent, LegendComponent, MarkAreaComponent, TooltipComponent, CanvasRenderer]);
 
 const mockLabelCategories: LabelCategory[] = [
   { id: 1, name: '焊瘤', color: null },
@@ -242,7 +249,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
   useEffect(() => {
     const el = chartElRef.current;
     if (!el || !channels.length) return;
-    const chart = echarts.init(el);
+    const chart = init(el);
     const gridHeight = 96;
     const segData = [
       ...anomalies.map((a) => [{ xAxis: a.start, itemStyle: { color: '#e88d6c', opacity: 0.1 } }, { xAxis: a.end }]),
@@ -255,7 +262,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
     const seriesData = (c: { values: number[]; times?: number[] }) => c.times && c.times.length === c.values.length
       ? c.times.map((t, j) => [t, c.values[j]])
       : c.values.map((v, j) => [j / Math.max(c.values.length - 1, 1) * dur, v]);
-    const option: echarts.EChartsOption = {
+    const option: EChartsOption = {
       animation: false,
       tooltip: { trigger: 'axis' },
       legend: { data: channels.map((c) => c.name), top: 0 },

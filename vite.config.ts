@@ -14,6 +14,10 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['lucide-react'],
   },
+  build: {
+    // 标注工作台按路由懒加载，包含模块化 ECharts；该独立块约 582 KB（gzip 约 198 KB）。
+    chunkSizeWarningLimit: 600,
+  },
   server: {
     proxy: {
       '/api': {

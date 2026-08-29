@@ -9,6 +9,7 @@ const source = fs.readFileSync(path.join(__dirname, 'App.tsx'), 'utf8');
 const datasetSource = fs.readFileSync(path.join(__dirname, 'features/datasets/DatasetWorkspace.tsx'), 'utf8');
 const dataContextSource = fs.readFileSync(path.join(__dirname, 'features/data-context/DataContext.tsx'), 'utf8');
 const alignmentSource = fs.readFileSync(path.join(__dirname, 'features/alignment/AlignmentWorkspace.tsx'), 'utf8');
+const versionDrawerSource = fs.readFileSync(path.join(__dirname, 'features/versions/VersionDetailDrawer.tsx'), 'utf8');
 
 test('Alignment split panel exposes editable buffer seconds and wires them to split API', () => {
   assert.match(alignmentSource, /bufferSeconds/);
@@ -19,7 +20,7 @@ test('Alignment split panel exposes editable buffer seconds and wires them to sp
 });
 
 test('version view buttons open the appropriate detail drawer', () => {
-  assert.match(datasetSource, /function VersionDetailDrawer/);
+  assert.match(versionDrawerSource, /function VersionDetailDrawer/);
   assert.match(dataContextSource, /<VersionDetailDrawer mode="weld"/);
   assert.match(dataContextSource, /onClick=\{\(\) => setSelectedVersionId\(String\(version\.id\)\)\}/);
   assert.match(datasetSource, /<VersionDetailDrawer mode="dataset"/);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import {
   ChevronDown, MoreHorizontal, Settings2, Sparkles,
 } from 'lucide-react';
@@ -7,24 +7,26 @@ import {
   createModel,
 } from './api/models';
 import Login from './pages/Login';
-import { OverviewPage } from './features/overview/OverviewPage';
 import { Toolbar } from './shared/components/Toolbar';
-import { DatasetWorkspace } from './features/datasets/DatasetWorkspace';
 import {
   AnalysisSelect, DatasetTestingContext, SelectionRequired, SelectionSwitcher, VersionPanel,
 } from './features/data-context/DataContext';
-import { RegistrationPage } from './features/registration/RegistrationPage';
-import { AnnotationWorkspace } from './features/annotation/AnnotationWorkspace';
-import { AdvancedWeldAnalysis } from './features/analysis/AnalysisWorkspace';
-import { ValidationPage } from './features/validation/ValidationPage';
-import { FeatureExtractionPage } from './features/features/FeatureExtractionPage';
-import {
-  InferencePanel, ModelRepository, ModelTestLive,
-  Training, TrainingDataPreparation,
-} from './features/models/ModelCenter';
-import { AlignmentWorkspace } from './features/alignment/AlignmentWorkspace';
 import { navStructure, workspaceHeaders } from './app/navigation';
 import type { Route } from './app/navigation';
+
+const OverviewPage = lazy(() => import('./features/overview/OverviewPage').then((module) => ({ default: module.OverviewPage })));
+const DatasetWorkspace = lazy(() => import('./features/datasets/DatasetWorkspace').then((module) => ({ default: module.DatasetWorkspace })));
+const RegistrationPage = lazy(() => import('./features/registration/RegistrationPage').then((module) => ({ default: module.RegistrationPage })));
+const AnnotationWorkspace = lazy(() => import('./features/annotation/AnnotationWorkspace').then((module) => ({ default: module.AnnotationWorkspace })));
+const AdvancedWeldAnalysis = lazy(() => import('./features/analysis/AnalysisWorkspace').then((module) => ({ default: module.AdvancedWeldAnalysis })));
+const ValidationPage = lazy(() => import('./features/validation/ValidationPage').then((module) => ({ default: module.ValidationPage })));
+const FeatureExtractionPage = lazy(() => import('./features/features/FeatureExtractionPage').then((module) => ({ default: module.FeatureExtractionPage })));
+const AlignmentWorkspace = lazy(() => import('./features/alignment/AlignmentWorkspace').then((module) => ({ default: module.AlignmentWorkspace })));
+const ModelRepository = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.ModelRepository })));
+const TrainingDataPreparation = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.TrainingDataPreparation })));
+const Training = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.Training })));
+const ModelTestLive = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.ModelTestLive })));
+const InferencePanel = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.InferencePanel })));
 
 function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
@@ -60,8 +62,10 @@ function AppShell() {
       <div className="sidebar-bottom"><button className="nav-item"><Settings2 size={18} /><span>系统设置</span></button><div className="user-card"><div className="avatar">林</div><div><strong>林工</strong><span>管理员</span></div><MoreHorizontal size={16} /></div></div>
     </aside>
     <main className="main-content">
-      {route === 'overview' && <OverviewPage navigate={navigate} />}
-      {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} datasetHomeKey={datasetHomeKey} navigate={navigate} />}
+      <Suspense fallback={<div className="dataset-empty-state" role="status">页面加载中…</div>}>
+        {route === 'overview' && <OverviewPage navigate={navigate} />}
+        {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} datasetHomeKey={datasetHomeKey} navigate={navigate} />}
+      </Suspense>
     </main>
   </div>;
 }

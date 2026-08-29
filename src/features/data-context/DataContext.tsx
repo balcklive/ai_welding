@@ -4,7 +4,7 @@ import { listDatasets } from '../../api/datasets';
 import { createVersion, getWeld, listVersions, listWelds, runValidation } from '../../api/welds';
 import { presignUpload, putFileDirect } from '../../api/files';
 import type { DataRecord, Dataset, DataVersion } from '../../api/types';
-import { VersionDetailDrawer } from '../datasets/DatasetWorkspace';
+import { VersionDetailDrawer } from '../versions/VersionDetailDrawer';
 import { fallbackDatasetOptions } from '../datasets/fallbacks';
 import { mockWeldRows, toWeldRow } from '../datasets/weldRows';
 import type { WeldRow } from '../datasets/weldRows';
