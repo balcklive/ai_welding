@@ -40,7 +40,7 @@ function AvailabilityTag({ track }: { track: AlignmentTrack }) {
   return <span className={`track-availability ${pair[1]}`} title={track.reason ?? undefined}>{pair[0]}</span>;
 }
 
-/** 模型中心 · 训练数据准备：从数据中心的数据集筛选样本，生成可用于训练的固定版本快照。 */
+/** 模型中心 · 训练数据准备：从数据管理的数据集筛选样本，生成可用于训练的固定版本快照。 */
 export function AlignmentWorkspace({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);

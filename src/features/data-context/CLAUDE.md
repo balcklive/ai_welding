@@ -5,7 +5,7 @@
 ## 文件
 
 - `DataContext.tsx`：
-  - `SelectionSwitcher`：工作区顶部的数据集/焊缝切换器（读 `selectedDatasetId`/`selectedDataId`；`onChange` 在数据中心回到数据集列表）。
+  - `SelectionSwitcher`：工作区顶部的数据集/焊缝切换器（读 `selectedDatasetId`/`selectedDataId`；`onChange` 在数据管理回到数据集列表）。
   - `SelectionRequired`：未选数据时的引导占位（`onBack` 回选择页）。
   - `DatasetTestingContext`：数据集上下文条（测试用）。
   - `AnalysisSelect`：分析「选择数据」两级选择——第一级 `listDatasets` 下拉（失败兜底 mock），第二级 `listWelds({dataset_id})` 全部焊缝（失败兜底 mock）；**仅 `quality===异常` 的卡片 disabled 置灰**（待复核可进）。

@@ -59,7 +59,7 @@ export default function Login({ onSuccess }: LoginProps) {
           <div className="login-brand-copy"><strong>ForgeLab</strong><span>工业智能实验室</span></div>
         </div>
         <h1>欢迎回来</h1>
-        <p className="login-sub">登录焊接数据智能分析平台</p>
+        <p className="login-sub">登录焊接工艺分析和建模机器学习平台</p>
 
         <label className="login-label" htmlFor="login-username">用户名</label>
         <input

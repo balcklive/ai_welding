@@ -1,6 +1,6 @@
 # CLAUDE.md — src/features/validation/
 
-数据中心·数据核验页（15 项确定性规则）。
+数据管理·数据核验页（15 项确定性规则）。
 
 ## 文件
 

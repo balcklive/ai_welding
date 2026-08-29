@@ -6,7 +6,7 @@
 
 - `navigation.ts`：
   - `Route`：全部 15 个路由联合类型（`overview` + `data-center/*` + `analysis/*` + `model-center/*`）。
-  - `workspaceHeaders`：三个一级工作区（数据中心/分析与标注/模型中心）的页头 `{eyebrow, title, description}`。
+  - `workspaceHeaders`：三个一级工作区（数据管理/分析与标注/模型中心）的页头 `{eyebrow, title, description}`。
   - `navStructure`：侧边栏导航树（一级模块 + 二级子菜单），图标用 lucide-react。
 
 ## 调用链

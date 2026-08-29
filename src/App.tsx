@@ -85,7 +85,7 @@ function App() {
 function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, datasetHomeKey, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; datasetHomeKey: number; navigate: (r: Route) => void }) {
   const ws = route.split('/')[0];
   const header = route === 'model-center/dataset-build'
-    ? { eyebrow: '模型研发中心', title: '训练数据准备', description: '基于数据中心的数据集，筛选可用于模型训练的样本并生成固定版本。' }
+    ? { eyebrow: '模型研发中心', title: '训练数据准备', description: '基于数据管理的数据集，筛选可用于模型训练的样本并生成固定版本。' }
     : workspaceHeaders[ws];
   // 模型资产刷新计数（「新建模型」成功后自增，触发 ModelRepository 重新拉取）。
   const [repoRefresh, setRepoRefresh] = useState(0);
@@ -93,7 +93,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   useEffect(() => { if (route !== 'data-center/datasets') setIsDatasetDetail(false); }, [route]);
   // 工作区工具栏只承载 WorkspaceFrame 自己拥有回调的操作；各业务页的操作由页面内部负责。
   const toolbarConfig = ws === 'data-center' && route === 'data-center/datasets' && isDatasetDetail
-    ? { action: '上传数据', secondary: undefined }
+    ? { action: '登记数据', secondary: undefined }
     : route === 'model-center/repository'
       ? { action: '新建模型', secondary: undefined }
       : { action: undefined, secondary: undefined };
@@ -110,7 +110,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
       .then(() => setRepoRefresh((v) => v + 1))
       .catch((err) => console.warn('[model-center] createModel failed', err));
   };
-  // 数据上传是新建数据操作，不依赖当前焊缝上下文；核验/版本页则展示当前上下文。
+  // 数据登记是新建数据操作，不依赖当前焊缝上下文；核验/版本页则展示当前上下文。
   const showContext = selectedDataId && (ws === 'analysis' || (ws === 'data-center' && route !== 'data-center/datasets' && route !== 'data-center/registration'));
   const showDataSwitcher = ws === 'analysis' || route === 'data-center/validation' || route === 'data-center/versions';
 

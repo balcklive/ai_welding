@@ -446,7 +446,7 @@ button { border: 0; cursor: pointer; }
 .status.muted{color:#73898b;background:#f1f5f4}
 @media (max-width:720px){.build-steps{align-items:flex-start;flex-direction:column;gap:7px}.build-steps i{width:1px;height:10px;margin-left:10px}.empty-steps{align-items:stretch;flex-direction:column}.build-result{min-height:320px}}
 
-/* 数据上传页：必填星标红色强调 + 缺失项红色闪烁提示（Registration） */
+/* 数据登记页：必填星标红色强调 + 缺失项红色闪烁提示（Registration） */
 .required-mark { color:#e5484d; font-weight:700; }
 .native-select { width:100%; padding:11px 12px; border:1px solid #dce7e5; border-radius:6px; background:#fff; color:#45666b; font:inherit; }
 .native-select:focus { outline:0; border-color:#67cdb0; box-shadow:0 0 0 3px rgba(103,205,176,.15); }

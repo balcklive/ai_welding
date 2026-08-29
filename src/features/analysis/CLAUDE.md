@@ -1,6 +1,6 @@
 # CLAUDE.md — src/features/analysis/
 
-分析与标注·信号分析工作区（`AdvancedWeldAnalysis`，2026-08-29 重构自 App.tsx 抽出）。
+分析与标注·起收弧识别工作区（`AdvancedWeldAnalysis`，2026-08-29 重构自 App.tsx 抽出）。
 
 ## 文件
 
