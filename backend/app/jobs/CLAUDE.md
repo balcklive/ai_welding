@@ -28,6 +28,9 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
     对 `alignment`/`split` 还会同步清空任务行的 `active_request_key`，让 failed 请求可直接重试；
     未注册 type → `ValueError` 同样走 failed。
   - `_dispatch` / `_mark_failed_in`：handler 执行 + 失败回写（事务脏先 `rollback` 再写）。
+  - **MLflow（2026-08-29）**：`training/test/inference` Job 首次运行时若 `mlflow_run_id` 为空，
+    调 `mlflow_integration.start_run(job_uid, type)` 建 RUNNING Run 并回写；失败兜底时对已有
+    run_id 调 `finish_run(run_id, "FAILED")` 保留失败历史（best-effort，MLflow 不可用不阻塞 Job）。
 - `alignment.py`：**Task 13（对齐真实化后为真实内核）**。`handle(job_id, session)`（`@register_handler("alignment")`）——
   按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.run_alignment`
   （真实信号事件 + ffmpeg 视频探测/关键帧 + 真实产物 CSV/JPG/tracks.json，部分成功语义；

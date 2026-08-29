@@ -181,6 +181,16 @@
     延迟 `from app.storage import get_storage`，测试 monkeypatch `app.storage.get_storage`；
     `run_build` 内的进度 commit 是执行器专用 session 场景（同 alignment）。
 
+- `torch_training.py`：**2026-08-29 真实训练内核**（Task 16 由模拟升级为真实 CPU 训练）。
+  `load_real_examples(session, dataset_version_id, storage)`：读固定 `dataset_items`→`Sample`→`Annotation`
+  真实样本，标签折叠为 正常/缺陷 两类；`_features_from_sample` 从 MinIO 取样本首个支持的
+  图片/CSV/JSON 对象算 8 维统计特征（CSV/JSON 取全数值、图片 resize 32×32 灰图 + 8 维统计），
+  兼容旧快照仅存 `meta.version_id` 的对象键回退；`run(task_id, epochs, seed, examples, classes)`：
+  两层 MLP + CrossEntropy + SGD 在 CPU 训练，返回 `CpuTrainingResult`（metrics/loss_curve/weights
+  state_dict 字节/classes）。供 `app/services/models.py::run_training` 调用；测试
+  `tests/test_torch_training.py`。**坑**：单一样本读 MinIO/解析失败即整个任务 ValueError（无跳过）；
+  训练数据必须同时含 train 与 val/test 且 ≥2 类，否则报错（空标注数据集无法训练）；`mAP50` 实为
+  分类 accuracy（命名沿用前端展示口径，非检测 mAP）。
 - `models.py`：**Task 16**。模型中心服务，供 `app/api/v1/models.py` 路由调用（契约 §3.6）：
   - `create_model`（同名抛 ValueError → 路由 409）/ `list_models`（**汇总 + 列表**：summary
     `{total, prod_candidates, recent_training}`，单条查询取全部 model_versions
@@ -188,12 +198,15 @@
     `model_payload` / `version_payload`。
   - `update_version_status`（PATCH：status 白名单 生产候选/训练中/实验版本 校验抛 ValueError；
     **note 无对应列仅接受不落库**，同 dataset_versions.name/note 约定）。
-  - `run_training`（训练 handler 领域逻辑）：进度逐步 → **CPU-only Torch 读取真实 DatasetItem/Sample/Annotation 后前向/反向训练**
-    （固定 seed、train/val loss、accuracy/precision/recall/F1）→ **同事务生成 `model_versions`
+  - `run_training`（训练 handler 领域逻辑）：进度逐步 → **调 `torch_training.run` 做 CPU-only 真实训练**
+    （`load_real_examples` 读 DatasetItem/Sample/Annotation 特征 + 标签，固定 seed、train/val loss、
+    accuracy/precision/recall/F1）→ **同事务生成 `model_versions`
     （version_no next、status=实验版本、metric、file_key=`models/{id}/weights.pt`）→ Torch
     `state_dict` 写 MinIO 尽力而为**；`base_model_id` 给定时新版本挂到其所属模型，否则自动新建
     `Model`（name=`训练模型-{task.id}`）；回填 training_tasks.metrics/loss_curve →
-    job.result `{metrics, loss_curve, model_version}`。
+    job.result `{metrics, loss_curve, model_version}`；**MLflow 记录**：`mlflow_integration.record_training`
+    （超参 + 指标 + loss_curve.json + model_artifact.json）→ `finish_run`，run_id 取 `Job.mlflow_run_id`
+    （执行器在 Job 首次运行时创建）。
   - `run_test`（测试 handler）：metrics `{accuracy 0.968, recall 0.942, f1 0.955, latency_ms 18}`
     + confusion_matrix `[[612,18],[22,596]]`（照 App.tsx ModelTest）。
   - `run_inference`（推理 handler）：确定性 boxes/categories/confidence/latency_ms

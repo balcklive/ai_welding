@@ -27,6 +27,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
+  - `DELETE /welds/{weld_id}`（**2026-08-29 新增**）：删除焊缝及其可安全删除的版本产物；
+    已进入切分/固定数据集快照时抛 `WeldDeleteConflict` → `40900`（不删）；正常删除会级联清理
+    核验报告/规则、对齐/特征/信号产物与版本链，并审计 delete。业务逻辑
+    `app.services.welds.delete_record`，测试 `tests/test_weld_delete.py`。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。**Task 4 修复**：除管理员外，列表/详情/登记编辑/版本/核验均按 `audit_logs(create,weld).user_id` 的稳定 owner ACL；`record.operator` 仅作展示。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
 - `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
@@ -116,7 +120,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
     状态经通用 `GET /jobs/{job_id}` 轮询）。
   - `GET /datasets/{dataset_id}/lineage`（4 层节点）。
-  - 错误码：40401=数据集不存在、40402=数据集版本不存在（含版本不属于该数据集）、40900=同名冲突、40000=参数。
+  - `DELETE /datasets/{dataset_id}`（**2026-08-29 新增**）：删除无业务引用的数据集及固定版本
+    元数据；仍有焊缝或训练/测试任务引用时抛 `DatasetDeleteConflict` → `40900`。业务逻辑
+    `app.services.datasets.delete_dataset`，测试 `tests/test_dataset_delete.py`。
+  - 错误码：40401=数据集不存在、40402=数据集版本不存在（含版本不属于该数据集）、40900=同名冲突/删除冲突、40000=参数。
 - `models.py`：**Task 16 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.6，业务逻辑在
   `app.services.models`：

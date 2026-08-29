@@ -1,6 +1,6 @@
 # CLAUDE.md — backend/app/
 
-应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）+ Task 11（analysis 域：真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（Job 执行器 DB 轮询 + 对齐任务，**已真实化**）+ Task 14（切分 + 标注，模拟）+ Task 15（数据集 + 构建任务）+ Task 16（模型中心：模型 CRUD + 状态流转 + 训练/测试/推理任务模拟）+ Task 17（通用报告导出：Jinja2+xhtml2pdf PDF / JSON，写 MinIO）+ Task 18（真实信号导入：CSV 自动解析校验 → 启发式事件 → MinIO Parquet；DSP 优先读真实信号，无则回退生成）+ **对齐真实化（ffmpeg 媒体探测 + 真实产物，`services/media_probe.py`）**。
+应用代码包。当前进度：Task 1（配置 + 日志中间件 + 健康检查）+ Task 2（models + db）+ Task 3（统一信封 + 异常处理 + 路由聚合 + audit + 分页助手）+ Task 4（MinIO 存储客户端）+ Task 5（密码哈希 + JWT + login/me）+ Task 6（启动 seed）+ Task 7（通用 Job 服务 + jobs 轮询端点）+ Task 8（Dashboard 总览四端点）+ Task 9（files 三端点）+ Task 10（welds 核心 CRUD）+ Task 11（analysis 域：真实 DSP + 确定性信号生成）+ Task 12（多模态特征提取）+ Task 13（Job 执行器 DB 轮询 + 对齐任务，**已真实化**）+ Task 14（切分 + 标注，模拟）+ Task 15（数据集 + 构建任务）+ Task 16（模型中心：模型 CRUD + 状态流转 + 训练/测试/推理任务模拟）+ Task 17（通用报告导出：Jinja2+xhtml2pdf PDF / JSON，写 MinIO）+ Task 18（真实信号导入：CSV 自动解析校验 → 启发式事件 → MinIO Parquet；DSP 优先读真实信号，无则回退生成）+ **对齐真实化（ffmpeg 媒体探测 + 真实产物，`services/media_probe.py`）** + **真实训练（CPU Torch，`services/torch_training.py` + MLflow 记录，`integrations/mlflow.py`）**。
 
 ## 脚本
 
@@ -12,7 +12,7 @@
 - `core/db.py`：MySQL `engine` + `SessionLocal` + `get_session()` 依赖（Task 2，详见 `core/CLAUDE.md`）。
 - `core/audit.py`：`write_audit(...)` 向 `audit_logs` 写审计（Task 3，详见 `core/CLAUDE.md`）。
 - `core/security.py`：密码哈希 + JWT 签发/解析（Task 5，详见 `core/CLAUDE.md`）。
-- `models/`：全部 23 张 SQLModel 表类（Task 2，详见 `models/CLAUDE.md`）。
+- `models/`：全部 24 张 SQLModel 表类（Task 2，详见 `models/CLAUDE.md`）。
 - `schemas/`：统一响应信封 `ok/err` + 分页 `paginate`（Task 3，详见 `schemas/CLAUDE.md`）。
 - `services/`：跨域复用业务服务。`jobs.py` = 通用 Job 生命周期
   （create_job/mark_* /to_job_payload，状态机 pending→running→succeeded/failed，**不 commit** 由调用方落库），
@@ -36,6 +36,10 @@
   `signal_ingest.py` = **Task 18**（CSV 真实信号导入：表头映射/10 条校验/启发式事件/Parquet
   读写/`load_signal_bundle` loader/`run_ingest` 领域逻辑），
   详见 `services/CLAUDE.md`。
+- `integrations/`：可选外部系统集成（2026-08-29，Task 16 真实训练配套）。`mlflow.py` = MLflow 跟踪
+  （best-effort，`off/embedded/server` 三模式，start_run/log_params/log_metrics/record_training
+  /record_test/record_inference/finish_run）；被 `jobs/executor.py`（start/finish Run）与
+  `services/models.py`（记录训练/测试/推理产物）调用，详见 `integrations/CLAUDE.md`。
 - `templates/reports/`：**Task 17** Jinja2 报告模板（base/validation/data_list/generic），
   见 `templates/CLAUDE.md`。
 - `jobs/`：**Task 13 ~ Task 16** Job 执行器 + 各域 handler（`executor.py` DB 轮询 / `run_job`
