@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(__dirname, 'App.tsx'), 'utf8');
+const datasetSource = fs.readFileSync(path.join(__dirname, 'features/datasets/DatasetWorkspace.tsx'), 'utf8');
 
 test('Alignment split panel exposes editable buffer seconds and wires them to split API', () => {
   assert.match(source, /bufferSeconds/);
@@ -16,11 +17,11 @@ test('Alignment split panel exposes editable buffer seconds and wires them to sp
 });
 
 test('version view buttons open the appropriate detail drawer', () => {
-  assert.match(source, /function VersionDetailDrawer/);
+  assert.match(datasetSource, /function VersionDetailDrawer/);
   assert.match(source, /<VersionDetailDrawer mode="weld"/);
   assert.match(source, /onClick=\{\(\) => setSelectedVersionId\(String\(version\.id\)\)\}/);
-  assert.match(source, /<VersionDetailDrawer mode="dataset"/);
-  assert.match(source, /onClick=\{\(\) => setSelectedVersion\(v\)\}/);
+  assert.match(datasetSource, /<VersionDetailDrawer mode="dataset"/);
+  assert.match(datasetSource, /onClick=\{\(\) => setSelectedVersion\(v\)\}/);
 });
 
 test('data version panel exposes create and validation actions backed by APIs', () => {

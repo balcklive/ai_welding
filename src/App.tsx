@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, Archive, ArrowUpRight, BarChart3, Box, Check, ChevronDown,
-  CircleHelp, Database, Factory, FileCheck2, Filter, Gauge, Layers3,
-  MoreHorizontal, Play, Plus, Minus, Search, Settings2, SlidersHorizontal, Sparkles,
-  Tag, Terminal, TrainFront, Upload, WandSparkles, Waves, Zap,
+  CircleHelp, Database, FileCheck2, Gauge, Layers3,
+  MoreHorizontal, Play, Plus, Minus, Settings2, SlidersHorizontal, Sparkles,
+  Terminal, Upload, Waves, Zap,
   ClipboardCheck, FileText, GitBranch, ScanLine, Download, CheckCircle2,
   AlertTriangle, RefreshCw, ChevronLeft, Cpu,
   Filter as FilterIcon, Sigma, Image as ImageIcon, AudioWaveform, Boxes,
@@ -13,7 +13,6 @@ import { getToken } from './api/client';
 import {
   attachRawFiles,
   createVersion,
-  deleteWeld,
   createRegistration,
   getValidation,
   getVersion,
@@ -24,16 +23,9 @@ import {
 } from './api/welds';
 import {
   createBuildTask,
-  createDataset,
-  deleteDataset,
   createDatasetVersion,
-  getDataset,
   getDatasetVersion,
-  getDimensions,
-  getLineage,
   getReadiness,
-  listDatasetVersions,
-  listDatasetVersionItems,
   listDatasets,
 } from './api/datasets';
 import {
@@ -69,7 +61,6 @@ import {
   listModels,
   updateModelVersionStatus,
 } from './api/models';
-import { exportReport } from './api/reports';
 import { useJob } from './hooks/useJob';
 import { AnnotoriousImageEditor } from './components/annotation/AnnotoriousImageEditor';
 import type { ImageEditorAnnotation } from './components/annotation/AnnotoriousImageEditor';
@@ -80,25 +71,20 @@ import type {
   Annotation as AnnotationLabel,
   DataRecord,
   Dataset,
-  DatasetItemRow,
   DatasetQuality,
   DatasetSplit,
-  DatasetVersion,
   DataVersion,
-  DimensionStatus,
   DwtData,
   FeatureExtraction,
   InferenceResult,
   LabelCategory,
   LabelItem,
-  LineageNode,
   Model,
   ModelSummary,
   ModelVersion,
   PddData,
   PhaseData,
   PsdData,
-  ReadinessCheck,
   RegistrationForm,
   Sample,
   SignalChannel,
@@ -116,8 +102,20 @@ import type {
 import Login from './pages/Login';
 import { OverviewPage } from './features/overview/OverviewPage';
 import { PageIntro } from './shared/components/PageIntro';
+import { InfoRow } from './shared/components/InfoRow';
+import { StatusPill } from './shared/components/StatusPill';
+import { Toolbar } from './shared/components/Toolbar';
+import { formatDateTime } from './shared/lib/formatting';
+import { DatasetWorkspace, VersionDetailDrawer } from './features/datasets/DatasetWorkspace';
+import { fallbackDatasetOptions } from './features/datasets/fallbacks';
 import { navStructure, workspaceHeaders } from './app/navigation';
 import type { Route } from './app/navigation';
+import {
+  CH, CW, AXIS_L, PLOT_W, PLOT_H, dur, seg,
+  anomalA, anomalB, isAnom, clamp, chanColor, toChan, emptyChannels,
+  fmt, buildPath, toPath,
+} from './features/analysis/signals/chartData';
+import type { Chan } from './features/analysis/signals/chartData';
 
 function AppShell() {
   const [route, setRoute] = useState<Route>('overview');
@@ -824,452 +822,6 @@ function SelectionRequired({ onBack }: { onBack: () => void }) {
   return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择数据集和焊缝数据</h2><p>当前功能必须绑定真实数据后才能执行，请在页面上方选择数据集和一条焊缝。</p><button className="outline-button" onClick={onBack}><ChevronLeft size={14} />前往选择数据</button></div>;
 }
 
-type VersionDetailDrawerProps =
-  | { mode: 'weld'; weldId: string; versionId: string; onClose: () => void }
-  | { mode: 'dataset'; datasetId: string; version: DatasetVersion; onClose: () => void };
-
-function VersionDetailDrawer(props: VersionDetailDrawerProps) {
-  const { onClose } = props;
-  const ownerId = props.mode === 'weld' ? props.weldId : props.datasetId;
-  const versionId = props.mode === 'weld' ? props.versionId : String(props.version.id);
-  const [weldVersion, setWeldVersion] = useState<DataVersion | null>(null);
-  const [validation, setValidation] = useState<ValidationReport | null>(null);
-  const [datasetVersion, setDatasetVersion] = useState<DatasetVersion | null>(props.mode === 'dataset' ? props.version : null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKeyDown);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = previousOverflow; };
-  }, [onClose]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    if (props.mode === 'weld') {
-      Promise.all([
-        getVersion(ownerId, versionId),
-        getValidation(ownerId, versionId).catch(() => null),
-      ]).then(([version, report]) => {
-        if (cancelled) return;
-        setWeldVersion(version);
-        setValidation(report);
-        setLoading(false);
-      }).catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : '版本详情加载失败'); setLoading(false); } });
-    } else {
-      getDatasetVersion(ownerId, versionId)
-        .then((version) => { if (!cancelled) { setDatasetVersion(version); setLoading(false); } })
-        .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : '快照详情加载失败'); setLoading(false); } });
-    }
-    return () => { cancelled = true; };
-  }, [props.mode, ownerId, versionId]);
-
-  const version = props.mode === 'weld' ? weldVersion : datasetVersion;
-  const split = version && 'split' in version
-    ? `${version.split.train?.toLocaleString() ?? '—'} / ${version.split.val?.toLocaleString() ?? '—'} / ${version.split.test?.toLocaleString() ?? '—'}`
-    : null;
-  const quality = version && 'quality' in version && version.quality
-    ? `${((1 - version.quality.repeat_rate - version.quality.empty_label_rate - version.quality.dimension_missing_rate) * 100).toFixed(1)}%`
-    : '—';
-
-  const versionKind = props.mode === 'weld' ? '焊缝版本' : '数据集快照';
-  return <div className="version-drawer-backdrop" role="presentation" onClick={onClose}><aside className="version-drawer" role="dialog" aria-modal="true" aria-label={`${versionKind}详情`} onClick={(event) => event.stopPropagation()}><div className="version-drawer-head"><div><span className="eyebrow"><span />{versionKind}详情</span><h2>{version?.version_no ?? '加载中…'}</h2></div><button className="icon-button" onClick={onClose} aria-label={`关闭${versionKind}详情`}>×</button></div>{loading && <div className="version-drawer-state">正在加载{versionKind}详情…</div>}{error && <div className="version-drawer-state error">{error}</div>}{!loading && !error && version && props.mode === 'weld' && <><div className="version-drawer-summary"><StatusPill>{weldVersion?.action}</StatusPill><span>{weldVersion?.operator ?? '—'} · {fmtDT(weldVersion?.created_at)}</span></div><div className="version-drawer-section"><h3>焊缝版本信息</h3><InfoRow label="处理动作" value={weldVersion?.action ?? '—'} /><InfoRow label="操作人" value={weldVersion?.operator ?? '—'} /><InfoRow label="备注" value={weldVersion?.note ?? '暂无备注'} /><InfoRow label="数据文件" value={weldVersion?.object_keys.length ? `${weldVersion.object_keys.length} 个文件` : '暂无关联文件'} /></div><div className="version-drawer-section"><h3>核验结果</h3>{validation ? <><InfoRow label="质量分数" value={`${validation.score.toFixed(1)} 分`} accent /><InfoRow label="规则统计" value={`通过 ${validation.passed} · 警告 ${validation.warning} · 失败 ${validation.failed}`} /></> : <p className="version-drawer-muted">尚未执行核验</p>}</div></>}{!loading && !error && version && props.mode === 'dataset' && <><div className="version-drawer-summary"><StatusPill>固定快照</StatusPill><span>创建于 {fmtDT(datasetVersion?.created_at)}</span></div><div className="version-drawer-section"><h3>数据集快照信息</h3><InfoRow label="样本总数" value={`${datasetVersion?.item_count.toLocaleString() ?? '—'} 条`} /><InfoRow label="训练 / 验证 / 测试" value={split ?? '—'} /><InfoRow label="数据质量" value={quality} accent /><InfoRow label="快照 ID" value={datasetVersion?.snapshot_id ?? '尚未生成'} /></div><div className="version-drawer-section"><h3>使用说明</h3><p className="version-drawer-muted">该快照是固定样本清单，不会随单条焊缝后续处理自动变化。</p></div></>}</aside></div>;
-}
-
-/** 数据集列表/详情行展示形状（table/detail 期望的字段）。 */
-interface DatasetRow {
-  id: string;
-  numericId?: number;
-  name: string;
-  task: string;
-  samples: string;
-  weldCount?: number;
-  source: string;
-  progress: string;
-  version: string;
-  status: string;
-  tone: 'green' | 'orange';
-  split: string;
-  currentVersionId: number | null;
-}
-/** ISO 时间 → "YYYY-MM-DD HH:MM"。 */
-const fmtDT = (iso: string | null | undefined): string => (iso ? iso.replace('T', ' ').slice(0, 16) : '—');
-/** 数据集 → 展示行（split 空/未构建 → '—'，status→tone，progress→"96.8%"）。 */
-function toDatasetRow(d: Dataset): DatasetRow {
-  const s = d.split;
-  const split = s && s.train !== undefined
-    ? `${s.train.toLocaleString()} / ${(s.val ?? 0).toLocaleString()} / ${(s.test ?? 0).toLocaleString()}`
-    : '—';
-  return {
-    id: d.dataset_no || String(d.id),
-    numericId: d.id,
-    name: d.name,
-    task: d.task,
-    samples: d.sample_count.toLocaleString(),
-    weldCount: d.weld_count ?? 0,
-    source: '多模态数据',
-    progress: `${d.progress ?? 0}%`,
-    version: d.version ?? '—',
-    status: d.status,
-    tone: d.status === '可训练' ? 'green' : 'orange',
-    split,
-    currentVersionId: d.current_version_id,
-  };
-}
-const mockDatasetRows: DatasetRow[] = [
-  { id: 'DS-DEFECT-001', name: '焊接缺陷检测集', task: '目标检测', samples: '8,420', source: '产线相机 · 多品牌', progress: '96.8%', version: 'v1.3', status: '可训练', tone: 'green', split: '6,736 / 842 / 842', currentVersionId: 2 },
-  { id: 'DS-POOL-002', name: '熔池分割数据集', task: '语义分割', samples: '5,680', source: '高速相机 · Fronius', progress: '91.2%', version: 'v0.8', status: '标注中', tone: 'orange', split: '4,544 / 568 / 568', currentVersionId: 1 },
-  { id: 'DS-QUALITY-003', name: '工艺质量预测集', task: '多模态回归', samples: '2,140', source: '产线相机 · 多模态', progress: '100%', version: 'v2.0', status: '可训练', tone: 'green', split: '1,712 / 214 / 214', currentVersionId: 1 }
-];
-const inputDimensions = ['Voltage', 'GasSpeed', 'Current', 'Molten_feature', 'Sound_feature', '焊缝照片', '熔池视频'];
-const requiredByTask: Record<string, string[]> = { '目标检测': ['Current', 'Voltage', 'GasSpeed'], '语义分割': ['熔池视频'], '多模态回归': ['Current', 'Voltage'] };
-const mockDimensions: DimensionStatus[] = inputDimensions.map((dim) => {
-  const isRequired = requiredByTask['目标检测']?.includes(dim) ?? false;
-  const isAvailable = ['Current', 'Voltage', 'GasSpeed', 'Molten_feature', 'Sound_feature'].includes(dim);
-  return { name: dim, status: isAvailable ? '已具备' : isRequired ? '必需' : '缺失', required: isRequired };
-});
-const mockLineage: LineageNode[] = [
-  { type: 'records', label: '原始焊缝数据', count: 1086, items: [] },
-  { type: 'annotation_tasks', label: '标注任务', count: 1, items: [{ name: 'AN-0248' }] },
-  { type: 'dataset_versions', label: '数据集版本', count: 2, items: ['v1.2', 'v1.3'] },
-  { type: 'training_tasks', label: '模型训练', count: 3, items: [] },
-];
-function mockReadinessChecks(task: string): { name: string; passed: boolean }[] {
-  const names = task === '语义分割' ? ['熔池视频已切分为图像帧', '图像与像素级掩膜数量一致', '标注审核通过率 ≥ 90%', '按焊缝 ID 完成数据划分'] : task === '多模态回归' ? ['Current 与 Voltage 时间轴已对齐', '至少具备两种输入模态', '质量标签完整且无空值', '按焊缝 ID 完成数据划分'] : ['Current、Voltage、GasSpeed 均完整', '异常区段标签已审核', '信号采样率与时间轴一致', '按焊缝 ID 完成数据划分'];
-  return names.map((name) => ({ name, passed: true }));
-}
-
-type DatasetView = 'list' | 'overview' | 'dataset-records' | 'records' | 'record-detail';
-
-function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, onDetailChange, setSelectedDataId, setSelectedDatasetId }: { navigate: (route: Route) => void; selectedDatasetId: number | null; datasetHomeKey: number; onDetailChange?: (isDetail: boolean) => void; setSelectedDataId: (id: string | null) => void; setSelectedDatasetId: (id: number | null) => void }) {
-  // 初始为空 + 加载中：不得让 mock 数据集行在接口响应到达前闪现，mock 仅作失败兜底
-  const [rows, setRows] = useState<DatasetRow[]>([]);
-  const [listLoading, setListLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
-  const [selectedRecordId, setSelectedRecordId] = useState<string | null>(null);
-  const [selectedRecordSplit, setSelectedRecordSplit] = useState<DatasetItemRow['split'] | null>('train');
-  const [recordBackView, setRecordBackView] = useState<'dataset-records' | 'records'>('records');
-  const [view, setView] = useState<DatasetView>('list');
-  const [createDialog, setCreateDialog] = useState(false);
-  const selectedIdRef = useRef<string | null>(null);
-  const dataset = rows.find((item) => item.id === selectedId);
-  useEffect(() => {
-    if (datasetHomeKey === 0) return;
-    selectedIdRef.current = null;
-    setSelectedId(null);
-    setSelectedVersionId(null);
-    setSelectedRecordId(null);
-    setSelectedDataId(null);
-    setSelectedDatasetId(null);
-    setView('list');
-  }, [datasetHomeKey, setSelectedDataId, setSelectedDatasetId]);
-  useEffect(() => { onDetailChange?.(view === 'overview'); return () => onDetailChange?.(false); }, [view, onDetailChange]);
-  // 顶部 SelectionSwitcher 与本页原有的内部选择必须保持同一数据集。
-  // 仅在外部选择确实发生变化时进入该数据集概览，避免首次加载时从列表页意外跳转。
-  useEffect(() => {
-    if (selectedDatasetId == null || !rows.length) return;
-    const target = rows.find((item) => item.numericId === selectedDatasetId);
-    if (!target || selectedIdRef.current === target.id) return;
-    selectedIdRef.current = target.id;
-    setSelectedId(target.id);
-    setSelectedVersionId(target.currentVersionId);
-    setSelectedRecordId(null);
-    setSelectedDataId(null);
-    setView('overview');
-  }, [selectedDatasetId, rows, setSelectedDataId]);
-  const applyRows = (nextRows: DatasetRow[]) => {
-    const selected = nextRows.find((item) => item.id === selectedIdRef.current) ?? nextRows[0];
-    setRows(nextRows);
-    selectedIdRef.current = selected?.id ?? null;
-    setSelectedId(selected?.id ?? null);
-    setSelectedVersionId(selected?.currentVersionId ?? null);
-  };
-  useEffect(() => {
-    let cancelled = false;
-    setListLoading(true);
-    listDatasets().then((list) => { if (!cancelled) { applyRows(list.map(toDatasetRow)); setListLoading(false); } })
-      .catch((err) => { if (!cancelled) { setRows(mockDatasetRows); setListLoading(false); console.warn('[datasets] listDatasets failed', err); } });
-    return () => { cancelled = true; };
-  }, []);
-  const reload = () => listDatasets().then((list) => applyRows(list.map(toDatasetRow)));
-  const handleCreate = (name: string) => {
-    setCreateDialog(false);
-    createDataset({ name, task: '目标检测' }).then(reload).catch((err) => console.warn('[datasets] createDataset failed', err));
-  };
-  const selectDataset = (item: DatasetRow) => {
-    selectedIdRef.current = item.id;
-    setSelectedId(item.id);
-    setSelectedDatasetId(item.numericId ?? null);
-    setSelectedVersionId(item.currentVersionId);
-    setSelectedRecordId(null);
-    setSelectedDataId(null);
-    setView('overview');
-  };
-  const selectVersion = (versionId: number) => { setSelectedVersionId(versionId); setSelectedRecordId(null); setSelectedDataId(null); };
-  return <div className="dataset-workspace">{view === 'list' && <><div className="dataset-list-heading"><div><div className="dataset-breadcrumb">数据中心 / 数据集列表</div><h2>数据集列表</h2><p>管理和浏览平台中的全部数据集，查看快照、成员数据与训练状态。</p></div><button className="primary-button" onClick={() => setCreateDialog(true)}><Plus size={15} />新建数据集</button></div><div className="dataset-rule"><GitBranch size={14} /><span>数据集以固定快照保存；焊缝版本记录单条数据的处理历史。</span><span className="dataset-rule-count">可训练 {rows.filter((item) => item.status === '可训练').length} 个</span></div>{listLoading ? <p className="dataset-empty-state" role="status">数据集列表加载中…</p> : <div className="dataset-table">{rows.map((item) => <button className="dataset-list-row" onClick={() => selectDataset(item)} key={item.id}><span className="dataset-row-icon"><Box size={17} /></span><span className="dataset-row-main"><strong>{item.name}</strong><small>{item.id} · {item.task}</small></span><span><small>样本数</small><strong className="mono">{item.samples}</strong></span><span><small>标注完成度</small><strong className="mono">{item.progress}</strong></span><span><small>当前快照</small><strong className="mono">{item.version ? `快照 ${item.version}` : '未生成'}</strong></span><StatusPill tone={item.tone}>{item.status}</StatusPill><ArrowUpRight size={15} className="muted-icon" /></button>)}</div>}{createDialog && <TextDialog title="新建数据集" label="数据集名称" initialValue="新建数据集" onCancel={() => setCreateDialog(false)} onConfirm={handleCreate} />}</>}{view === 'overview' && dataset && <DatasetDetail dataset={dataset} versionId={selectedVersionId} onShowRecords={() => setView('records')} onShowAllRecords={() => setView('dataset-records')} onVersionChange={selectVersion} />}{view === 'dataset-records' && dataset && <DatasetSourceRecords dataset={dataset} onBack={() => setView('overview')} onSelectRecord={(record) => { setRecordBackView('dataset-records'); setSelectedRecordId(record.weld_id); setSelectedDataId(record.weld_id); setSelectedVersionId(record.latest_version_id ?? selectedVersionId); setSelectedRecordSplit(null); setView('record-detail'); }} />}{view === 'records' && dataset && selectedVersionId != null && <DatasetRecords dataset={dataset} versionId={selectedVersionId} onBack={() => setView('overview')} onVersionChange={(versionId) => { selectVersion(versionId); setView('records'); }} onSelectRecord={(row) => { if (!row.weld_id) return; setRecordBackView('records'); setSelectedRecordId(row.weld_id); setSelectedRecordSplit(row.split); setSelectedDataId(row.weld_id); setView('record-detail'); }} />}{view === 'record-detail' && dataset && selectedVersionId != null && selectedRecordId && <DatasetRecordDetail weldId={selectedRecordId} dataset={dataset} versionId={selectedVersionId} split={selectedRecordSplit} onBack={() => setView(recordBackView)} setSelectedDataId={setSelectedDataId} navigate={navigate} />}</div>;
-}
-
-function DatasetDetail(props: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onShowAllRecords: () => void; onVersionChange: (versionId: number) => void }) {
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const handleDelete = () => {
-    if (!window.confirm(`确定删除数据集“${props.dataset.name}”吗？该操作不可撤销。`)) return;
-    setDeleting(true);
-    deleteDataset(String(props.dataset.numericId ?? props.dataset.id))
-      .then(() => window.location.reload())
-      .catch((err) => setError(err instanceof Error ? err.message : '删除数据集失败'))
-      .finally(() => setDeleting(false));
-  };
-  return <><DatasetDetailContent {...props} /><div className="dataset-delete-bar">{error && <span role="alert">{error}</span>}<button className="danger-button" onClick={handleDelete} disabled={deleting}>{deleting ? '删除中…' : '删除数据集'}</button></div></>;
-}
-
-function DatasetDetailContent({ dataset, versionId, onShowRecords, onShowAllRecords, onVersionChange }: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onShowAllRecords: () => void; onVersionChange: (versionId: number) => void }) {
-  const [detail, setDetail] = useState<Dataset | null>(null);
-  // 初始为空：mock 仅作接口失败兜底（见下方 catch），不得在加载期闪现演示维度/血缘
-  const [dims, setDims] = useState<DimensionStatus[]>([]);
-  const [readiness, setReadiness] = useState<ReadinessCheck | null>(null);
-  const [readinessLoading, setReadinessLoading] = useState(true);
-  const [versions, setVersions] = useState<DatasetVersion[]>([]);
-  const [selectedVersion, setSelectedVersion] = useState<DatasetVersion | null>(null);
-  const [lineage, setLineage] = useState<LineageNode[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    setDetail(null);
-    setDims(mockDimensions);
-    setReadiness(null);
-    setReadinessLoading(true);
-    setVersions([]);
-    setSelectedVersion(null);
-    setLineage(mockLineage);
-    getDataset(dataset.id).then((d) => { if (!cancelled) setDetail(d); }).catch((err) => { if (!cancelled) console.warn('[datasets] getDataset failed', err); });
-    getDimensions(dataset.id).then((list) => { if (!cancelled) setDims(list); }).catch((err) => { if (!cancelled) { setDims(mockDimensions); console.warn('[datasets] getDimensions failed', err); } });
-    getReadiness(dataset.id).then((r) => { if (!cancelled) setReadiness(r); }).catch((err) => { if (!cancelled) console.warn('[datasets] getReadiness failed', err); }).finally(() => { if (!cancelled) setReadinessLoading(false); });
-    listDatasetVersions(dataset.id).then((list) => { if (!cancelled) setVersions(list); }).catch((err) => { if (!cancelled) console.warn('[datasets] listDatasetVersions failed', err); });
-    getLineage(dataset.id).then((list) => { if (!cancelled) setLineage(list); }).catch((err) => { if (!cancelled) { setLineage(mockLineage); console.warn('[datasets] getLineage failed', err); } });
-    return () => { cancelled = true; };
-  }, [dataset.id]);
-  const quality = detail?.quality;
-  // 这些质量风险率可能来自不同规则，允许重叠，不能直接相加后展示负质量。
-  // 页面指标表达“剩余质量”时始终限制在 0%–100%，避免误导用户做出错误准入判断。
-  const qualityPct = quality ? `${Math.max(0, Math.min(100, (1 - quality.repeat_rate - quality.empty_label_rate - quality.dimension_missing_rate) * 100)).toFixed(1)}%` : '…';
-  const updated = detail?.updated_at ? fmtDT(detail.updated_at) : '…';
-  const currentVersionId = versionId;
-  const currentVersion = currentVersionId == null ? null : versions.find((version) => version.id === currentVersionId) ?? null;
-  const visibleVersions = versions;
-  const lineageIcon: Record<string, typeof Database> = { records: Database, annotation_tasks: Tag, dataset_versions: Box, training_tasks: TrainFront };
-  const lineageSuffix: Record<string, string> = { records: '条', training_tasks: '次', annotation_tasks: '个', dataset_versions: '个' };
-  return <><div className="dataset-detail"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 数据集概览</div><div className="dataset-detail-head"><div><span className="file-badge"><Box size={14} />{dataset.id}</span><h2>{dataset.name} <em>{dataset.version ? `快照 ${dataset.version}` : '未生成快照'}</em></h2><p>{dataset.task} · {dataset.source} · 最近更新 {updated}</p></div><div className="dataset-detail-actions"><StatusPill tone={dataset.tone as 'green' | 'orange'}>{dataset.status}</StatusPill><button className="primary-button dataset-primary-entry" onClick={onShowAllRecords}><Database size={14} />查看全部焊缝 · {dataset.weldCount} 条</button>{currentVersionId != null && <button className="outline-button" onClick={onShowRecords}><GitBranch size={14} />查看当前快照 · {currentVersion?.item_count ?? detail?.sample_count ?? 0} 条</button>}</div></div>{currentVersionId == null && <div className="dataset-empty-state">当前数据集还没有固定快照；新数据上传完成后系统会自动生成快照。</div>}<div className="dataset-detail-grid"><div className="dataset-detail-stat"><span>数据集数据</span><strong>{detail ? detail.sample_count.toLocaleString() : dataset.samples}</strong><small>固定快照中的样本总数</small></div><div className="dataset-detail-stat"><span>标注完成度</span><strong>{dataset.progress}</strong><small>通过质检的标注</small></div><div className="dataset-detail-stat"><span>训练 / 验证 / 测试</span><strong>{dataset.split}</strong><small>按数据集快照固定划分</small></div><div className="dataset-detail-stat"><span>数据质量</span><strong>{qualityPct}</strong><small>重复与空标注已检查</small></div></div><DatasetInputPanel task={dataset.task} dims={dims} /><ModelReadiness task={dataset.task} status={dataset.status} readiness={readiness} loading={readinessLoading} /><div className="dataset-detail-columns"><section className="panel"><div className="panel-heading"><div><h2>数据集快照</h2><p>固定训练样本清单；不随单条焊缝后续处理自动变化</p></div></div><div className="dataset-version-list">{visibleVersions.length ? visibleVersions.map((v) => <div className={`dataset-version ${v.id === currentVersionId ? 'current' : ''}`} key={v.version_no} onClick={() => onVersionChange(v.id)}><span>{v.version_no}</span><div><strong>固定快照 · {v.item_count.toLocaleString()} 条样本</strong><small>{fmtDT(v.created_at)}</small></div>{v.id === currentVersionId ? <StatusPill>当前快照</StatusPill> : <button className="ghost-button" onClick={() => setSelectedVersion(v)}>查看详情</button>}</div>) : <p className="dataset-empty-state">还没有生成数据集快照。</p>}</div></section><section className="panel"><div className="panel-heading"><div><h2>数据血缘</h2><p>从焊缝版本到训练任务的关联</p></div></div>{lineage.length ? <div className="lineage">{lineage.flatMap((node, i) => { const Icon = lineageIcon[node.type] ?? Database; const sep = i === 0 ? [] : [<i key={`sep-${i}`}>↓</i>]; return [...sep, <span key={node.type}><Icon size={14} />{node.label} <b>{node.count} {lineageSuffix[node.type] ?? '个'}</b></span>]; })}</div> : <p className="dataset-empty-state" role="status">数据血缘加载中…</p>}</section></div></div>{selectedVersion && <VersionDetailDrawer mode="dataset" datasetId={dataset.id} version={selectedVersion} onClose={() => setSelectedVersion(null)} />}</>;
-}
-
-const mockDatasetItemRows: DatasetItemRow[] = [
-  { sample_id: 1, weld_id: 'WLD-20260815-0248', weld_name: 'MAG 短路过渡样本', registration_no: 'REG-202608-001', source: '产线相机 · 03号', machine: 'Fronius CMT', modalities: ['视频', '时序', '声音'], quality: '通过', split: 'train', frame_no: 248, created_at: '2026-08-15 09:42' },
-  { sample_id: 2, weld_id: 'WLD-20260815-0247', weld_name: '熔池异常样本', registration_no: 'REG-202608-002', source: '实训线 · 02号', machine: 'OTC FD-V8', modalities: ['视频', '时序'], quality: '待复核', split: 'val', frame_no: 249, created_at: '2026-08-15 09:18' },
-  { sample_id: 3, weld_id: 'WLD-20260814-0246', weld_name: '红外多模态样本', registration_no: 'REG-202608-003', source: '产线相机 · 03号', machine: 'Kemppi Minarc', modalities: ['视频', '时序', '红外'], quality: '通过', split: 'test', frame_no: 250, created_at: '2026-08-14 18:32' },
-];
-const splitLabel: Record<DatasetItemRow['split'], string> = { train: '训练集', val: '验证集', test: '测试集' };
-
-function DatasetRecords({ dataset, versionId, onBack, onVersionChange, onSelectRecord }: { dataset: DatasetRow; versionId: number; onBack: () => void; onVersionChange: (versionId: number) => void; onSelectRecord: (row: DatasetItemRow) => void }) {
-  const [query, setQuery] = useState('');
-  const [quality, setQuality] = useState('');
-  const [split, setSplit] = useState<DatasetItemRow['split'] | ''>('');
-  const [page, setPage] = useState(1);
-  // 初始为空 + 加载中：不得让 mock 演示行在接口响应到达前闪现，mock 仅作失败兜底
-  const [rows, setRows] = useState<DatasetItemRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [versionChoices, setVersionChoices] = useState<DatasetVersion[]>([]);
-  const [versionSummary, setVersionSummary] = useState<DatasetVersion | null>(null);
-  const [versionSummaryUnavailable, setVersionSummaryUnavailable] = useState(false);
-  useEffect(() => { listDatasetVersions(dataset.id).then(setVersionChoices).catch((err) => console.warn('[datasets] listDatasetVersions failed', err)); }, [dataset.id]);
-  useEffect(() => {
-    let cancelled = false;
-    setVersionSummary(null);
-    setVersionSummaryUnavailable(false);
-    getDatasetVersion(dataset.id, String(versionId)).then((version) => { if (!cancelled) setVersionSummary(version); })
-      .catch((err) => { if (!cancelled) { setVersionSummary(null); setVersionSummaryUnavailable(true); console.warn('[datasets] getDatasetVersion failed', err); } });
-    return () => { cancelled = true; };
-  }, [dataset.id, versionId]);
-  useEffect(() => { setPage(1); }, [query, quality, split, versionId]);
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    listDatasetVersionItems(dataset.id, versionId, { q: query.trim() || undefined, quality: quality || undefined, split: split || undefined, page, page_size: PAGE_SIZE })
-      .then((result) => { if (!cancelled) { setRows(result.items); setTotal(result.total); setNotice(null); } })
-      .catch((err) => { if (!cancelled) { setRows(mockDatasetItemRows); setTotal(mockDatasetItemRows.length); setNotice('成员列表暂时无法同步，请刷新后重试。'); console.warn('[datasets] listDatasetVersionItems failed', err); } })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [dataset.id, versionId, query, quality, split, page]);
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const splitTotals = versionSummary?.split ?? null;
-  const summaryState = versionSummary ? `数据集快照 · ${versionSummary.version_no}` : versionSummaryUnavailable ? '快照信息暂不可用' : '快照信息加载中…';
-  return <section className="dataset-records"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 当前版本数据</div><div className="dataset-context-card"><div><span>数据集</span><strong>{dataset.name}</strong><small>{dataset.task} · 版本 #{versionId}</small></div><div><span>样本数</span><strong>{versionSummary?.item_count != null ? versionSummary.item_count.toLocaleString() : loading && !versionSummaryUnavailable ? '…' : total.toLocaleString()}</strong></div><div><span>训练 / 验证 / 测试</span><strong>{splitTotals ? `${splitTotals.train?.toLocaleString() ?? '—'} / ${splitTotals.val?.toLocaleString() ?? '—'} / ${splitTotals.test?.toLocaleString() ?? '—'}` : versionSummaryUnavailable ? '版本切分信息暂不可用' : '加载中…'}</strong></div><div><span>版本摘要</span><strong>{summaryState}</strong></div><div className="dataset-summary-links"><button className="ghost-button" onClick={onBack}><ChevronLeft size={14} />返回概览</button><label className="filter-field">切换版本<select value={versionId} onChange={(event) => onVersionChange(Number(event.target.value))}>{(versionChoices.length ? versionChoices : [{ id: versionId, version_no: `#${versionId}` } as DatasetVersion]).map((version) => <option value={version.id} key={version.id}>{version.version_no}</option>)}</select></label></div></div><div className="dataset-records-header"><div><h2>当前版本数据</h2><p>固定快照成员，筛选与分页由服务端执行。</p></div><div className="data-filter-strip"><div className="filter-field keyword"><label>关键词</label><div className="inline-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="焊缝 ID、名称或登记编号" /></div></div><label className="filter-field">核验状态<select value={quality} onChange={(event) => setQuality(event.target.value)}><option value="">全部</option><option value="通过">通过</option><option value="待复核">待复核</option><option value="异常">异常</option></select></label><label className="filter-field">数据划分<select value={split} onChange={(event) => setSplit(event.target.value as DatasetItemRow['split'] | '')}><option value="">全部</option><option value="train">训练集</option><option value="val">验证集</option><option value="test">测试集</option></select></label></div></div>{notice && <p className="dataset-empty-state" role="status">{notice}</p>}{rows.length ? <div className="dataset-records-table"><div className="dataset-record-row dataset-record-head"><span>样本 ID / 焊缝</span><span>登记编号</span><span>来源 / 焊机</span><span>模态</span><span>核验状态</span><span>数据划分</span><span>采集时间</span></div>{rows.map((row) => <button className="dataset-record-row" key={row.sample_id} disabled={!row.weld_id} title={row.weld_id ? undefined : '该成员未关联焊缝，无法打开数据详情'} onClick={() => onSelectRecord(row)}><span><strong>样本 #{row.sample_id}</strong><small>{row.weld_id ?? '未关联焊缝'} · 帧 {row.frame_no ?? '—'}</small></span><span>{row.registration_no ?? '—'}</span><span>{row.source ?? '—'}<small>{row.machine ?? '—'}</small></span><span>{row.modalities.join(' / ') || '—'}</span><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality ?? '未核验'}</StatusPill><span>{splitLabel[row.split]}</span><span>{fmtDT(row.created_at)}</span></button>)}</div> : loading ? <p className="dataset-empty-state" role="status">成员列表加载中…</p> : <p className="dataset-empty-state">当前版本没有符合筛选条件的成员样本。</p>}<div className="table-footer"><span>共 {total} 条</span><div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>‹</button><span>{page} / {totalPages}</span><button disabled={page === totalPages} onClick={() => setPage((value) => value + 1)}>›</button></div></div></section>;
-}
-
-function DatasetSourceRecords({ dataset, onBack, onSelectRecord }: { dataset: DatasetRow; onBack: () => void; onSelectRecord: (record: DataRecord) => void }) {
-  const [rows, setRows] = useState<DataRecord[]>([]);
-  const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(1);
-  const [query, setQuery] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const pageSize = 20;
-  useEffect(() => { setPage(1); }, [query]);
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    listWelds({ dataset_id: dataset.numericId, q: query.trim() || undefined, page, page_size: pageSize })
-      .then((result) => { if (!cancelled) { setRows(result.items); setTotal(result.total); setError(null); } })
-      .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : '数据列表加载失败'); setRows([]); setTotal(0); } })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [dataset.numericId, page, query]);
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  return <section className="dataset-records"><div className="dataset-breadcrumb">数据中心 / 数据集 / {dataset.name} / 全部数据</div><div className="dataset-context-card"><div><span>数据集</span><strong>{dataset.name}</strong><small>{dataset.task} · {dataset.id}</small></div><div><span>全部数据</span><strong>{total.toLocaleString()}</strong></div><div><span>版本策略</span><strong>新数据自动生成版本</strong></div><div className="dataset-summary-links"><button className="ghost-button" onClick={onBack}><ChevronLeft size={14} />返回概览</button></div></div><div className="dataset-records-header"><div><h2>全部数据样本</h2><p>这里展示该数据集下所有已登记数据，不要求先创建数据集版本。</p></div><div className="data-filter-strip"><div className="filter-field keyword"><label>关键词</label><div className="inline-search"><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="焊缝 ID、名称或登记编号" /></div></div></div></div>{error && <p className="dataset-empty-state" role="alert">{error}，请刷新后重试。</p>}{rows.length ? <div className="dataset-records-table"><div className="dataset-record-row dataset-record-head"><span>焊缝 / 登记编号</span><span>来源 / 焊机</span><span>数据模态</span><span>核验状态</span><span>当前数据版本</span><span>采集时间</span></div>{rows.map((row) => <button className="dataset-record-row" key={row.weld_id} onClick={() => onSelectRecord(row)}><span><strong>{row.weld_id}</strong><small>{row.weld_name ?? '未命名'} · {row.registration_no}</small></span><span>{row.source ?? '—'}<small>{row.machine ?? '—'}</small></span><span>{(row.modalities ?? []).join(' / ') || '—'}</span><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality ?? '未核验'}</StatusPill><span>{row.latest_version?.version_no ?? '—'}</span><span>{fmtDT(row.created_at)}</span></button>)}</div> : loading ? <p className="dataset-empty-state" role="status">数据样本加载中…</p> : <p className="dataset-empty-state">该数据集下暂无登记数据。</p>}<div className="table-footer"><span>共 {total} 条</span><div className="pagination"><button disabled={page === 1} onClick={() => setPage((value) => value - 1)}>‹</button><span>{page} / {totalPages}</span><button disabled={page === totalPages} onClick={() => setPage((value) => value + 1)}>›</button></div></div></section>;
-}
-
-function RawSignalPreview({ weldId, versionId, navigate, setSelectedDataId }: { weldId: string; versionId: number; navigate: (route: Route) => void; setSelectedDataId: (id: string | null) => void }) {
-  // 初始为空；真实信号加载失败时不再回落到合成波形，避免误导用户。
-  const [channels, setChannels] = useState<Chan[]>([]);
-  const [signalDuration, setSignalDuration] = useState(dur);
-  const [hover, setHover] = useState<{ left: number; top: number; time: number } | null>(null);
-  const [active, setActive] = useState<Set<string>>(new Set(['cur', 'vol', 'gas']));
-  const [signalError, setSignalError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const toggle = (id: string) => setActive((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  useEffect(() => {
-    let cancelled = false;
-    // 换焊缝/换版本先清空旧波形再拉取：否则旧数据会一直渲染到新响应返回，造成"闪一下旧图"
-    setChannels([]);
-    setSignalDuration(dur);
-    setHover(null);
-    setSignalError(null);
-    setLoading(true);
-    getSignals(weldId, String(versionId), { channels: ['cur', 'vol', 'gas', 'wir'] })
-      .then((data) => { if (!cancelled) { setSignalDuration(data.duration || dur); setChannels(data.channels.map(toChan)); } })
-      .catch((err) => { if (!cancelled) { setChannels([]); setSignalError('信号暂时无法读取，请稍后重试。'); console.warn('[datasets] raw signal preview failed', err); } })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [weldId, versionId]);
-  const visibleChannels = channels.filter((channel) => active.has(channel.id));
-  const handleHover = (event: React.MouseEvent<SVGSVGElement>) => {
-    if (!channels.length) return;
-    const svgRect = event.currentTarget.getBoundingClientRect();
-    const chartRect = event.currentTarget.parentElement?.getBoundingClientRect() ?? svgRect;
-    const svgX = clamp(((event.clientX - svgRect.left) / svgRect.width) * CH, AXIS_L, CH);
-    const time = ((svgX - AXIS_L) / PLOT_W) * signalDuration;
-    setHover({ left: event.clientX - chartRect.left, top: event.clientY - chartRect.top, time });
-  };
-  const cursorX = hover ? AXIS_L + (hover.time / signalDuration) * PLOT_W : 0;
-  return <section className="panel raw-signal-preview"><div className="panel-heading"><div><h2>原始数据预览</h2><p>基于当前数据版本的多通道时域波形，可用于快速确认数据是否正常。</p></div><div className="raw-signal-meta"><span>{loading ? '信号加载中' : signalError ? '信号不可用' : '真实信号'}</span><small>版本 #{versionId}</small></div></div><div className="raw-channel-toggles">{channels.map((channel) => <button key={channel.id} className={active.has(channel.id) ? 'active' : ''} onClick={() => toggle(channel.id)}><i style={{ background: channel.color }} />{channel.name}<small>{channel.unit}</small>{active.has(channel.id) && <Check size={12} />}</button>)}</div><div className="raw-signal-chart" onMouseLeave={() => setHover(null)}>{loading && !channels.length ? <p className="dataset-empty-state" role="status">波形加载中…</p> : signalError ? <p className="dataset-empty-state" role="alert">{signalError}</p> : <><svg viewBox={`0 0 ${CH} ${CW}`} preserveAspectRatio="none" role="img" aria-label="原始多通道信号波形" onMouseMove={handleHover}>{[0, .25, .5, .75, 1].map((position) => <line key={position} x1={AXIS_L} y1={PLOT_H * position} x2={CH} y2={PLOT_H * position} stroke="#edf2f2" />)}{visibleChannels.map((channel) => <path key={channel.id} d={toPath(channel.values, channel.lo, channel.hi)} fill="none" stroke={channel.color} strokeWidth={channel.id === 'cur' ? 2 : 1.6} />)}{hover && <line x1={cursorX} y1={0} x2={cursorX} y2={PLOT_H} stroke="#d16f69" strokeWidth="1.5" strokeDasharray="4 3" />}</svg>{hover && <div className="raw-signal-tooltip" style={{ left: hover.left, top: hover.top }}><strong>{fmt(hover.time)}</strong>{visibleChannels.map((channel) => { const i = Math.min(channel.values.length - 1, Math.max(0, Math.round((hover.time / signalDuration) * Math.max(channel.values.length - 1, 0)))); return <span key={channel.id}><i style={{ background: channel.color }} />{channel.name}<b>{channel.values[i]?.toFixed(3)} {channel.unit}</b></span>; })}</div>}<div className="raw-signal-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>{signalDuration.toFixed(2)}s</span></div></>}</div><div className="raw-signal-footer"><span><Waves size={14} />电流 / 电压 / 气体流量 / 送丝速度</span><button className="outline-button" onClick={() => { setSelectedDataId(weldId); navigate('analysis/analysis'); }}>进入完整信号分析 <ArrowUpRight size={14} /></button></div></section>;
-}
-
-const EMPTY_OBJECT_KEYS: string[] = [];
-
-function RawMediaPreview({ objectKeys, loading = false }: { objectKeys: string[]; loading?: boolean }) {
-  const [urls, setUrls] = useState<{ key: string; sourceKey: string; url: string; preview?: boolean }[]>([]);
-  const [processing, setProcessing] = useState(false);
-  const [mediaError, setMediaError] = useState<string | null>(null);
-  const [brokenKeys, setBrokenKeys] = useState<Set<string>>(new Set());
-  const [refresh, setRefresh] = useState(0);
-  const mediaKeys = useMemo(() => objectKeys.filter((key) => /\.(mp4|avi|mkv|mov|webm|jpg|jpeg|png|webp|bmp|gif)$/i.test(key)), [objectKeys]);
-  useEffect(() => {
-    let cancelled = false;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let isProcessing = false;
-    setUrls([]);
-    setProcessing(false);
-    setMediaError(null);
-    setBrokenKeys(new Set());
-    Promise.all(mediaKeys.map(async (key) => {
-      try {
-        const result = await getFileUrl(key);
-        if (result.processing) isProcessing = true;
-        // The URL endpoint may transparently resolve a raw video to a generated
-        // browser preview. Keep the source key so the raw video can be hidden
-        // when a playable preview is available.
-        return { key: result.object_key ?? key, sourceKey: key, url: result.url, preview: result.preview };
-      }
-      catch (err) { console.warn('[datasets] media file url failed', key, err); return null; }
-    }))
-      .then((results) => results.filter((item): item is NonNullable<typeof item> => item !== null))
-      .then((next) => {
-        if (cancelled) return;
-        const isVideo = (key: string) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key);
-        const isPreview = (item: { key: string; sourceKey: string; preview?: boolean }) =>
-          item.preview === true || item.key !== item.sourceKey || /(?:^|[./_-])preview(?:[./_-])/i.test(item.key);
-        const hasBrowserPreview = next.some((item) => isVideo(item.key) && isPreview(item));
-        const visible = hasBrowserPreview
-          ? next.filter((item) => !isVideo(item.key) || isPreview(item))
-          : next;
-        // A raw request can resolve to the same preview key as an explicit
-        // *.preview.mp4 object. Avoid rendering the preview twice.
-        const deduped = visible.filter((item, index, all) =>
-          all.findIndex((candidate) => candidate.key === item.key && candidate.url === item.url) === index,
-        );
-        setUrls(deduped);
-        setProcessing(isProcessing);
-        if (!deduped.length && mediaKeys.length && !isProcessing) setMediaError('图片或视频地址暂时无法读取');
-        if (isProcessing) retry = setTimeout(() => { if (!cancelled) setRefresh((value) => value + 1); }, 2000);
-      })
-      .catch((err) => { if (!cancelled) { setMediaError('图片或视频地址暂时无法读取'); console.warn('[datasets] media preview failed', err); } });
-    return () => { cancelled = true; if (retry) clearTimeout(retry); };
-  }, [objectKeys, mediaKeys, refresh]);
-  const visibleUrls = urls.filter(({ key }) => !brokenKeys.has(key));
-  const mediaLoading = loading || processing;
-  if (mediaLoading) return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>正在读取当前焊缝的真实媒体文件…</p></div></div><div className="raw-media-empty" role="status"><ImageIcon size={28} /><strong>媒体加载中</strong><span>请稍候</span></div></section>;
-  if (!visibleUrls.length) return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>{mediaError ?? '当前焊缝没有已关联的图片或视频文件。'}</p></div></div><div className="raw-media-empty" role={mediaError ? 'alert' : undefined}><ImageIcon size={28} /><strong>{mediaError ? '媒体暂时无法预览' : '暂无图片或视频'}</strong><span>{mediaError ? '请检查对象存储连接后点击重试。' : '该焊缝仍可查看时序信号和其他数据详情。'}</span>{mediaError && <button className="outline-button" onClick={() => setRefresh((value) => value + 1)}><RefreshCw size={14} />重试</button>}</div></section>;
-  return <section className="panel raw-media-preview"><div className="panel-heading"><div><h2>视频 / 图片预览</h2><p>使用当前焊缝版本中的真实文件。</p></div></div><div className="raw-media-grid">{visibleUrls.map(({ key, url }) => /\.(mp4|avi|mkv|mov|webm)$/i.test(key) ? <video key={key} src={url} controls preload="metadata" onError={() => { setMediaError('媒体文件加载失败'); setBrokenKeys((prev) => new Set(prev).add(key)); }} /> : <img key={key} src={url} alt={`真实数据 ${key}`} onError={() => { setMediaError('媒体文件加载失败'); setBrokenKeys((prev) => new Set(prev).add(key)); }} />)}</div></section>;
-}
-
-function DatasetRecordDetail(props: { weldId: string; dataset: DatasetRow; versionId: number; split: 'train' | 'val' | 'test' | null; onBack: () => void; setSelectedDataId: (id: string | null) => void; navigate: (route: Route) => void }) {
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const handleDelete = () => {
-    if (!window.confirm(`确定删除焊缝“${props.weldId}”及其全部数据版本吗？该操作不可撤销。`)) return;
-    setDeleting(true);
-    deleteWeld(props.weldId)
-      .then(() => window.location.reload())
-      .catch((err) => setError(err instanceof Error ? err.message : '删除焊缝失败'))
-      .finally(() => setDeleting(false));
-  };
-  return <><DatasetRecordDetailContent {...props} /><div className="dataset-delete-bar">{error && <span role="alert">{error}</span>}<button className="danger-button" onClick={handleDelete} disabled={deleting}>{deleting ? '删除中…' : '删除焊缝'}</button></div></>;
-}
-
-function DatasetRecordDetailContent({ weldId, dataset, versionId, split, onBack, setSelectedDataId, navigate }: { weldId: string; dataset: DatasetRow; versionId: number; split: 'train' | 'val' | 'test' | null; onBack: () => void; setSelectedDataId: (id: string | null) => void; navigate: (route: Route) => void }) {
-  const [record, setRecord] = useState<DataRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    setSelectedDataId(weldId);
-    setRecord(null);
-    setError(null);
-    getWeld(weldId).then((value) => { if (!cancelled) setRecord(value); })
-      .catch((err) => { if (!cancelled) { setError('焊缝详情加载失败，请返回成员列表后重试。'); console.warn('[datasets] getWeld failed', err); } });
-    return () => { cancelled = true; };
-  }, [weldId, setSelectedDataId]);
-  const qualityTone = record?.quality === '异常' ? 'red' : record?.quality === '待复核' ? 'orange' : 'green';
-  const splitText = split ? splitLabel[split] : '尚未进入版本切分';
-  return <section className="dataset-record-detail"><div className="dataset-breadcrumb">数据中心 / 数据集列表 / {dataset.name} / 数据详情 / {weldId}</div><button className="ghost-button" onClick={onBack}><ChevronLeft size={14} />返回数据列表</button><div className="dataset-context-card"><div><span>焊缝 ID</span><strong>{weldId}</strong></div><div><span>所属数据集</span><strong>{dataset.name}</strong></div><div><span>所属版本</span><strong>#{versionId}</strong></div><div><span>数据划分</span><strong>{splitText}</strong></div></div>{error && <p className="dataset-empty-state" role="alert">{error}</p>}<RawMediaPreview objectKeys={record?.latest_version?.object_keys ?? EMPTY_OBJECT_KEYS} loading={!record && !error} /><RawSignalPreview weldId={weldId} versionId={record?.latest_version_id ?? record?.latest_version?.id ?? versionId} navigate={navigate} setSelectedDataId={setSelectedDataId} /><div className="dataset-detail-columns"><section className="panel"><h2>数据详情</h2><InfoRow label="所属数据集" value={dataset.name} /><InfoRow label="所属版本" value={`版本 #${versionId}`} /><InfoRow label="数据划分" value={splitText} /><InfoRow label="焊缝 ID" value={record?.weld_id ?? weldId} /><InfoRow label="登记编号" value={record?.registration_no ?? '加载中…'} /><InfoRow label="当前版本" value={record?.latest_version?.version_no ?? '加载中…'} /><InfoRow label="核验状态" value={record?.quality ?? '加载中…'} accent={!!record} />{record && <><InfoRow label="数据来源" value={record.source} /><InfoRow label="焊机" value={record.machine ?? '—'} /><InfoRow label="数据模态" value={record.modalities.join(' / ') || '—'} /></>}</section><section className="panel"><h2>继续处理</h2><StatusPill tone={qualityTone}>{record?.quality ?? '加载中'}</StatusPill><button className="quick-action" onClick={() => navigate('data-center/validation')}><ClipboardCheck size={15} />数据核验 <ArrowUpRight size={14} /></button><button className="quick-action" onClick={() => navigate('data-center/versions')}><GitBranch size={14} />数据版本 <ArrowUpRight size={14} /></button><button className="quick-action" onClick={() => navigate('analysis/analysis')}><BarChart3 size={15} />信号分析 <ArrowUpRight size={14} /></button></section></div></section>;
-}
-
-function DatasetInputPanel({ task, dims }: { task: string; dims: DimensionStatus[] }) {
-  return <section className="panel dataset-input-panel"><div className="panel-heading"><div><h2>输入数据维度</h2><p>字段是否存在由采集情况决定，训练资格按当前任务动态判断。</p></div><span className="dataset-task-tag">{task}</span></div>{dims.length ? <div className="dimension-grid">{dims.map((dim) => { const isRequired = dim.required; const isAvailable = dim.status === '已具备'; return <div className={`dimension-item ${isRequired ? 'required' : ''}`} key={dim.name}><span className="dimension-status">{isAvailable ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}</span><div><strong>{dim.name}</strong><small>{isRequired ? '当前任务必需' : isAvailable ? '已具备 · 可选输入' : '缺失 · 不影响当前任务'}</small></div><StatusPill tone={isAvailable ? 'green' : 'orange'}>{isAvailable ? '已具备' : '缺失'}</StatusPill></div>; })}</div> : <p className="dataset-empty-state" role="status">输入维度加载中…</p>}</section>;
-}
-
-function ModelReadiness({ task, status, readiness, loading = false }: { task: string; status: string; readiness: ReadinessCheck | null; loading?: boolean }) {
-  const ready = readiness?.readiness ?? (status === '可训练' ? '可训练' : '暂不可训练');
-  const isTrainable = ready === '可训练';
-  // 初始为空：readiness 接口返回前显示加载中，mock 检查项仅作失败兜底（loading=false 且无数据）
-  const checks = readiness?.checks ?? (loading ? [] : mockReadinessChecks(task));
-  return <section className="panel readiness-panel"><div className="panel-heading"><div><h2>模型适配检查</h2><p>当前数据集按照“{task}”的最低训练要求检查。</p></div><StatusPill tone={isTrainable ? 'green' : 'orange'}>{isTrainable ? '可训练' : '暂不可训练'}</StatusPill></div><div className="readiness-grid">{checks.length ? checks.map((check) => <div key={check.name}>{check.passed ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}<span>{check.name}</span></div>) : <p className="dataset-empty-state" role="status">模型适配检查加载中…</p>}</div><div className="split-policy"><GitBranch size={14} /><span>划分策略：按焊缝 ID 分组，避免同一焊缝的视频帧同时出现在训练集和测试集。</span></div></section>;
-}
-
 function DatasetTestingContext() {
   const [ds, setDs] = useState<Dataset | null>(null);
   useEffect(() => {
@@ -1294,7 +846,7 @@ function AnalysisSelect({ onContinue, selectedDatasetId, setSelectedDatasetId }:
   // 第一级：数据集下拉（数据集为登记时的归属容器，分析以其为入口）。
   useEffect(() => {
     let cancelled = false;
-    const fallback = () => mockDatasetRows.map((row, index) => ({ id: index + 1, label: row.name }));
+    const fallback = () => fallbackDatasetOptions;
     listDatasets()
       .then((list) => {
         if (cancelled) return;
@@ -1397,7 +949,7 @@ function VersionPanel({ dataId }: { dataId?: string }) {
       setValidating(null);
     }
   };
-  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的不可覆盖版本链路</p></div><div className="toolbar-actions"><StatusPill>当前版本 {currentVersion?.version_no ?? '—'}</StatusPill><button className="primary-button" onClick={() => setShowCreate(true)} disabled={!dataId || creating}><Plus size={14} />新建数据版本</button></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{versionsLoading ? <p className="dataset-empty-state" role="status">版本链路加载中…</p> : versionsUnavailable ? <p className="dataset-empty-state" role="alert">版本信息暂时无法读取，请稍后重试。</p> : versions.length ? <div className="version-line">{versions.map((version) => <div className={version.id === currentVersionId ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{fmtDT(version.created_at)} · {version.operator ?? '—'}</small></span><div className="toolbar-actions"><button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button><button className="outline-button" disabled={validating === version.id} onClick={() => handleValidation(version.id)}>{validating === version.id ? '核验中…' : '执行核验'}</button></div></div>)}</div> : <p className="dataset-empty-state">该焊缝暂无版本数据。</p>}</section>{showCreate && <VersionCreateDialog baseVersion={currentVersion?.version_no} creating={creating} onCancel={() => setShowCreate(false)} onConfirm={handleCreate} />}{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
+  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的不可覆盖版本链路</p></div><div className="toolbar-actions"><StatusPill>当前版本 {currentVersion?.version_no ?? '—'}</StatusPill><button className="primary-button" onClick={() => setShowCreate(true)} disabled={!dataId || creating}><Plus size={14} />新建数据版本</button></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{versionsLoading ? <p className="dataset-empty-state" role="status">版本链路加载中…</p> : versionsUnavailable ? <p className="dataset-empty-state" role="alert">版本信息暂时无法读取，请稍后重试。</p> : versions.length ? <div className="version-line">{versions.map((version) => <div className={version.id === currentVersionId ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{formatDateTime(version.created_at)} · {version.operator ?? '—'}</small></span><div className="toolbar-actions"><button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button><button className="outline-button" disabled={validating === version.id} onClick={() => handleValidation(version.id)}>{validating === version.id ? '核验中…' : '执行核验'}</button></div></div>)}</div> : <p className="dataset-empty-state">该焊缝暂无版本数据。</p>}</section>{showCreate && <VersionCreateDialog baseVersion={currentVersion?.version_no} creating={creating} onCancel={() => setShowCreate(false)} onConfirm={handleCreate} />}{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
 }
 
 function VersionCreateDialog({ baseVersion, creating, onCancel, onConfirm }: { baseVersion?: string; creating: boolean; onCancel: () => void; onConfirm: (payload: { action: '去噪处理' | '人工修正'; note?: string; file?: File }) => void }) {
@@ -1455,7 +1007,7 @@ function ModelRepository({ refreshKey = 0, navigate }: { refreshKey?: number; na
   const openDetail = (model: Model) => { setDetailLoading(true); setSelectedModel(model); getModel(String(model.id)).then(setSelectedModel).catch(() => setNotice('模型详情暂时无法读取。')).finally(() => setDetailLoading(false)); };
   const handleExport = (version: ModelVersion) => { if (!selectedModel || exporting != null) return; setExporting(version.id); setNotice(null); exportModelVersion(selectedModel.id, version.id).then(() => setNotice(`已提交 ${version.version_no} 的 ONNX 导出任务。`)).catch(() => setNotice('模型导出暂时不可用，请稍后重试。')).finally(() => setExporting(null)); };
   const handleStatus = (version: ModelVersion, status: string) => { if (!selectedModel || updatingStatus != null) return; setUpdatingStatus(version.id); setNotice(null); updateModelVersionStatus(String(selectedModel.id), String(version.id), { status }).then((updated) => { setSelectedModel((current) => current ? { ...current, versions: current.versions?.map((item) => item.id === updated.id ? updated : item), status: updated.status, version: updated.version_no, metric: updated.metric, latest_version_id: updated.id } : current); return listModels(); }).then((res) => { setModels(res.models ?? []); setSummary(res.summary); }).catch(() => setNotice('模型状态更新失败，请稍后重试。')).finally(() => setUpdatingStatus(null)); };
-  return <div className="model-repository"><section className="model-repository-hero"><div className="model-repository-hero-icon"><Cpu size={25} /></div><div className="model-repository-hero-copy"><span className="eyebrow"><i />模型资产管理</span><h2>让每个模型版本都可追踪、可评估、可发布</h2><p>模型资产统一承接模型登记、版本管理、指标评估、权重导出和推理验证。</p></div><button className="primary-button" onClick={() => navigate('model-center/training')}><Play size={15} />开始一次训练</button></section><div className="repository-summary"><div><span>模型总数</span><strong>{summary?.total ?? '—'}</strong></div><div><span>生产候选</span><strong>{summary?.prod_candidates ?? '—'}</strong></div><div><span>最近训练</span><strong>{summary?.recent_training ? fmtDT(summary.recent_training) : '—'}</strong></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{repoLoading ? <p className="dataset-empty-state" role="status">模型资产加载中…</p> : models.length ? <div className="model-card-grid">{models.map((model) => <section className="panel model-card" key={model.id}><div className="model-card-top"><div className="model-logo"><Cpu size={17} /></div><StatusPill tone={model.status === '训练中' ? 'orange' : 'green'}>{model.status ?? '无版本'}</StatusPill><MoreHorizontal size={16} className="muted-icon" /></div><h2>{model.name}</h2><p>{model.type} · {model.version ?? '暂无版本'}</p><div className="model-metric"><span>核心指标</span><strong>{modelMetricText(model.metric)}</strong></div><div className="model-card-footer"><span>{model.description ?? '暂无模型描述'}</span><button className="ghost-button" onClick={() => openDetail(model)}>查看详情 <ArrowUpRight size={13} /></button></div></section>)}</div> : <><div className="model-catalog-heading"><div><h2>标准模型目录</h2><p>平台预留的三类模型能力入口，训练完成后会在这里生成版本。</p></div><button className="outline-button" onClick={() => navigate('model-center/training')}><Plus size={14} />新建训练任务</button></div><div className="model-catalog-grid">{modelCatalog.map(({ name, type, description, icon: Icon }) => <section className="panel model-catalog-card" key={name}><div className="model-catalog-icon"><Icon size={20} /></div><StatusPill tone="blue">待接入版本</StatusPill><h3>{name}</h3><span>{type}</span><p>{description}</p><button className="ghost-button" onClick={() => navigate('model-center/training')}>去创建版本 <ArrowUpRight size={13} /></button></section>)}</div></>}{selectedModel && <div className="app-dialog-backdrop" role="presentation" onClick={() => setSelectedModel(null)}><section className="app-dialog model-detail-dialog" role="dialog" aria-modal="true" aria-label="模型详情" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>{selectedModel.name}</h2><p>{selectedModel.type} · {selectedModel.description ?? '暂无描述'}</p></div><button className="icon-button" onClick={() => setSelectedModel(null)} aria-label="关闭">×</button></div>{detailLoading ? <p className="dataset-empty-state">详情加载中…</p> : <div className="model-version-list">{selectedModel.versions?.length ? selectedModel.versions.map((version) => <div className="model-version-row" key={version.id}><div><strong>{version.version_no}</strong><span>{version.status} · {modelMetricText(version.metric)}</span><small>{version.created_at ? fmtDT(version.created_at) : '暂无创建时间'}</small></div><div className="model-version-actions"><button className="outline-button" disabled={!version.file_key || exporting === version.id} onClick={() => handleExport(version)}><Download size={14} />{exporting === version.id ? '导出中…' : '导出 ONNX'}</button>{version.status === '生产候选' ? <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '实验版本')}>{updatingStatus === version.id ? '更新中…' : '退回实验版'}</button> : <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '生产候选')}>{updatingStatus === version.id ? '更新中…' : '设为生产候选'}</button>}</div></div>) : <p className="dataset-empty-state">该模型暂无版本。</p>}</div>}</section></div>}</div>;
+  return <div className="model-repository"><section className="model-repository-hero"><div className="model-repository-hero-icon"><Cpu size={25} /></div><div className="model-repository-hero-copy"><span className="eyebrow"><i />模型资产管理</span><h2>让每个模型版本都可追踪、可评估、可发布</h2><p>模型资产统一承接模型登记、版本管理、指标评估、权重导出和推理验证。</p></div><button className="primary-button" onClick={() => navigate('model-center/training')}><Play size={15} />开始一次训练</button></section><div className="repository-summary"><div><span>模型总数</span><strong>{summary?.total ?? '—'}</strong></div><div><span>生产候选</span><strong>{summary?.prod_candidates ?? '—'}</strong></div><div><span>最近训练</span><strong>{summary?.recent_training ? formatDateTime(summary.recent_training) : '—'}</strong></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{repoLoading ? <p className="dataset-empty-state" role="status">模型资产加载中…</p> : models.length ? <div className="model-card-grid">{models.map((model) => <section className="panel model-card" key={model.id}><div className="model-card-top"><div className="model-logo"><Cpu size={17} /></div><StatusPill tone={model.status === '训练中' ? 'orange' : 'green'}>{model.status ?? '无版本'}</StatusPill><MoreHorizontal size={16} className="muted-icon" /></div><h2>{model.name}</h2><p>{model.type} · {model.version ?? '暂无版本'}</p><div className="model-metric"><span>核心指标</span><strong>{modelMetricText(model.metric)}</strong></div><div className="model-card-footer"><span>{model.description ?? '暂无模型描述'}</span><button className="ghost-button" onClick={() => openDetail(model)}>查看详情 <ArrowUpRight size={13} /></button></div></section>)}</div> : <><div className="model-catalog-heading"><div><h2>标准模型目录</h2><p>平台预留的三类模型能力入口，训练完成后会在这里生成版本。</p></div><button className="outline-button" onClick={() => navigate('model-center/training')}><Plus size={14} />新建训练任务</button></div><div className="model-catalog-grid">{modelCatalog.map(({ name, type, description, icon: Icon }) => <section className="panel model-catalog-card" key={name}><div className="model-catalog-icon"><Icon size={20} /></div><StatusPill tone="blue">待接入版本</StatusPill><h3>{name}</h3><span>{type}</span><p>{description}</p><button className="ghost-button" onClick={() => navigate('model-center/training')}>去创建版本 <ArrowUpRight size={13} /></button></section>)}</div></>}{selectedModel && <div className="app-dialog-backdrop" role="presentation" onClick={() => setSelectedModel(null)}><section className="app-dialog model-detail-dialog" role="dialog" aria-modal="true" aria-label="模型详情" onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><div><h2>{selectedModel.name}</h2><p>{selectedModel.type} · {selectedModel.description ?? '暂无描述'}</p></div><button className="icon-button" onClick={() => setSelectedModel(null)} aria-label="关闭">×</button></div>{detailLoading ? <p className="dataset-empty-state">详情加载中…</p> : <div className="model-version-list">{selectedModel.versions?.length ? selectedModel.versions.map((version) => <div className="model-version-row" key={version.id}><div><strong>{version.version_no}</strong><span>{version.status} · {modelMetricText(version.metric)}</span><small>{version.created_at ? formatDateTime(version.created_at) : '暂无创建时间'}</small></div><div className="model-version-actions"><button className="outline-button" disabled={!version.file_key || exporting === version.id} onClick={() => handleExport(version)}><Download size={14} />{exporting === version.id ? '导出中…' : '导出 ONNX'}</button>{version.status === '生产候选' ? <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '实验版本')}>{updatingStatus === version.id ? '更新中…' : '退回实验版'}</button> : <button className="ghost-button" disabled={updatingStatus === version.id} onClick={() => handleStatus(version, '生产候选')}>{updatingStatus === version.id ? '更新中…' : '设为生产候选'}</button>}</div></div>) : <p className="dataset-empty-state">该模型暂无版本。</p>}</div>}</section></div>}</div>;
 }
 
 function InferencePanel() {
@@ -1503,40 +1055,6 @@ function InferencePanel() {
   return <section className="panel inference-panel"><div className="panel-heading"><div><h2>推理验证</h2><p>选择模型和样本，预览模型输出结果</p></div><StatusPill tone={statusTone}>{statusText}</StatusPill></div><input ref={fileRef} type="file" accept="image/*,video/*" hidden onChange={handleFile} /><div className="inference-layout"><div className="inference-drop"><Upload size={23} /><strong>选择测试样本</strong><span>{modelVersionId == null ? '请先完成模型训练并生成可用版本' : '支持图像、视频帧或时序信号'}</span><button className="outline-button" disabled={modelVersionId == null || jobStatus === 'running'} onClick={() => fileRef.current?.click()}>选择样本</button></div><div className="inference-result"><div className="result-placeholder"><ScanLine size={28} /><span>{inferSummary}</span></div><div className="result-row"><span>模型置信度</span><strong>{confText}</strong></div><div className="result-row"><span>推理耗时</span><strong>{inferRes ? `${inferRes.latency_ms}ms` : '—'}</strong></div></div></div></section>;
 }
 
-function Toolbar({ action, secondary, onAction, onRefresh, actionDisabled = false, exportType, exportRefIds }: { action?: string; secondary?: string; onAction?: () => void; onRefresh?: () => void; actionDisabled?: boolean; exportType?: string; exportRefIds?: unknown[] }) {
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const handleExport = () => {
-    if (!exportType || exporting) return;
-    setExportError(null);
-    const popup = window.open('', '_blank');
-    setExporting(true);
-    exportReport({ type: exportType, ref_ids: exportRefIds ?? [], format: 'pdf' })
-      .then((res) => {
-        const url = res.urls?.[0]?.url;
-        if (!url) throw new Error('empty export URL');
-        if (popup && !popup.closed) popup.location.href = url;
-        else window.location.href = url;
-      })
-      .catch((err) => {
-        if (popup && !popup.closed) popup.close();
-        setExportError('报告导出失败，请稍后重试');
-        console.warn('[export] exportReport failed', err);
-      })
-      .finally(() => setExporting(false));
-  };
-  return <div className="page-toolbar"><button className="ghost-button" onClick={onRefresh} disabled={!onRefresh}><RefreshCw size={14} />刷新</button>{secondary && <button className="outline-button" onClick={handleExport} disabled={exporting}><Download size={14} />{exporting ? '导出中…' : secondary}</button>}{action && <button className="primary-button" onClick={onAction} disabled={actionDisabled || !onAction}><Plus size={15} />{action}</button>}{exportError && <span className="toolbar-error" role="alert">{exportError}</span>}</div>;
-}
-
-function StatusPill({ children, tone = 'green' }: { children: React.ReactNode; tone?: 'green' | 'orange' | 'red' | 'blue' | 'muted' }) {
-  return <span className={`status ${tone}`}>{children}</span>;
-}
-
-function TextDialog({ title, label, initialValue = '', onCancel, onConfirm }: { title: string; label: string; initialValue?: string; onCancel: () => void; onConfirm: (value: string) => void }) {
-  const [value, setValue] = useState(initialValue);
-  return <div className="app-dialog-backdrop" role="presentation" onClick={onCancel}><div className="app-dialog" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}><div className="app-dialog-head"><h2>{title}</h2><button className="icon-button" onClick={onCancel} aria-label="关闭">×</button></div><label>{label}<input autoFocus value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') onCancel(); if (event.key === 'Enter' && value.trim()) onConfirm(value.trim()); }} /></label><div className="app-dialog-actions"><button className="outline-button" onClick={onCancel}>取消</button><button className="primary-button" disabled={!value.trim()} onClick={() => onConfirm(value.trim())}>确认</button></div></div></div>;
-}
-
 const mockWeldRows: WeldRow[] = [
   { id: 'WLD-20260815-0248', time: '2026-08-15 09:42', source: '产线相机 · 03号', machine: 'Fronius CMT', types: '视频 / 时序 / 声音', quality: '通过', version: 'v1.3' },
   { id: 'WLD-20260815-0247', time: '2026-08-15 09:18', source: '实训线 · 02号', machine: 'OTC FD-V8', types: '视频 / 时序', quality: '待复核', version: 'v2.0' },
@@ -1545,8 +1063,6 @@ const mockWeldRows: WeldRow[] = [
 ];
 
 /** 数据列表：每页条数 + tab 演示计数（API 返回后 active tab 显示响应 total）。 */
-const PAGE_SIZE = 10;
-
 /** 上传数据：分类型上传区配置（CSV / 图片 / 视频 / WAV 各自独立）。 */
 type UploadZoneKey = 'csv' | 'image' | 'video' | 'audio';
 const UPLOAD_ZONES: { key: UploadZoneKey; label: string; accept: string; hint: string }[] = [
@@ -1680,94 +1196,6 @@ function Registration() {
   };
 
   return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据上传" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />上传数据即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>上传数据</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">上传草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label className={flash.dataset ? 'field-flash' : undefined}><span>所属数据集<span className="required-mark"> *</span></span><select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span></span><input placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /></label><label className={flash.collected_at ? 'field-flash' : undefined}><span>采集时间<span className="required-mark"> *</span></span><input type="datetime-local" value={form.collected_at ?? ''} onChange={setField('collected_at')} /></label><label className={flash.weld_name ? 'field-flash' : undefined}><span>焊缝 / 批次名称<span className="required-mark"> *</span></span><input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option>Fronius CMT</option><option>OTC FD-V8</option><option>Panasonic YD-500</option></select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option>MAG焊</option><option>MIG焊</option><option>TIG焊</option></select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label></div><div className="form-section-title"><span>上传数据文件</span><i /></div><div className={`upload-zones${flash.file ? ' field-flash' : ''}`}>{UPLOAD_ZONES.map((zone) => { const st = uploads[zone.key]; return <div className="upload-zone" key={zone.key}><Upload size={16} /><strong>{zone.label}</strong><span>{zone.hint}</span>{st && <span className={st.status === 'error' ? 'toolbar-error' : 'accent-text'} role={st.status === 'error' ? 'alert' : undefined}>{st.status === 'uploading' ? `上传中：${st.fileName} ${st.progress ?? 0}%` : st.status === 'pending' ? `已选择：${st.fileName}（待上传）` : st.status === 'error' ? (st.errorMsg ?? `${st.fileName} 上传失败，请重试`) : `${st.fileName} 已上传`}</span>}<button className="outline-button" onClick={() => fileRefs.current[zone.key]?.click()}>{st?.status === 'pending' || st?.status === 'done' ? '更换文件' : '选择文件'}</button><input ref={(el) => { fileRefs.current[zone.key] = el; }} type="file" accept={zone.accept} style={{ display: 'none' }} onChange={(event) => handleFile(zone.key, event)} onClick={(e) => { e.currentTarget.value = ''; }} /></div>; })}</div><button className={`full-button${missingFields.length || submitting ? ' full-button--disabled' : ''}`} aria-disabled={missingFields.length > 0 || submitting} onClick={() => { if (submitting) return; if (missingFields.length) handleMissingClick(); else handleSubmit(); }}>{registered ? <><CheckCircle2 size={16} />上传成功：{regNo}</> : submitting ? <><FileCheck2 size={16} />上传中…</> : <><FileCheck2 size={16} />上传数据</>}</button>{(missingHint || regError) && <span className="toolbar-error" role="alert">{missingHint ?? regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>上传规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一编号', '原始文件与后续版本自动关联', '上传后触发入库前数据核验', '所有操作写入审计日志'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近上传</h2><p>最近 24 小时新增数据</p></div></div>{recentLoading ? <p className="dataset-empty-state" role="status">最近上传加载中…</p> : recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已上传</StatusPill></div>)}</section></aside></div></div>;
-}
-
-const CH = 720; const CW = 220; const AXIS_L = 44; const AXIS_B = 22; const PLOT_W = CH - AXIS_L; const PLOT_H = CW - AXIS_B;
-const dur = 5.42;
-const SAMPLES = 216;
-const t = Array.from({ length: SAMPLES }, (_, i) => (i / (SAMPLES - 1)) * dur);
-function seg(s: number, e: number) { return s <= t[0] ? 0 : e >= dur ? 1 : s / dur; }
-const arc = 0.42; const weldS = 0.78; const weldE = 4.28; const ext = 4.86;
-const isArc = (x: number) => x < arc;
-const isWeld = (x: number) => x >= weldS && x <= weldE;
-const isTail = (x: number) => x > ext;
-const anomalA: [number, number] = [1.92, 2.34];
-const anomalB: [number, number] = [3.58, 3.86];
-const isAnomA = (x: number) => x >= anomalA[0] && x <= anomalA[1];
-const isAnomB = (x: number) => x >= anomalB[0] && x <= anomalB[1];
-const isAnom = (x: number) => isAnomA(x) || isAnomB(x);
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-
-function currentAmp(x: number): number {
-  let b = 180;
-  if (isArc(x)) b = 60 + (x / arc) * 130;
-  else if (isTail(x)) b = 150 - (x - ext) * 90;
-  else if (isWeld(x)) b = 180;
-  const noise = isAnom(x) ? (Math.sin(x * 47) * 22 + Math.cos(x * 31) * 16) : (Math.sin(x * 25) * 7 + Math.cos(x * 18) * 4);
-  const drip = Math.sin(x * 38) * (isWeld(x) ? 11 : 0);
-  return clamp(b + noise + drip, 0, 300);
-}
-function voltVal(x: number): number {
-  let b = 22.4;
-  if (isArc(x)) b = 14 + (x / arc) * 9;
-  else if (isTail(x)) b = 22 - (x - ext) * 12;
-  else if (isWeld(x)) b = 22.4;
-  const noise = isAnom(x) ? (Math.sin(x * 53) * 3.4 + Math.cos(x * 29) * 2.6) : (Math.sin(x * 22) * 0.9 + Math.cos(x * 16) * 0.6);
-  return clamp(b + noise, 0, 40);
-}
-function gasVal(x: number): number {
-  if (isArc(x)) return clamp(12 + (x / arc) * 6, 0, 30);
-  if (isTail(x)) return clamp(18 - (x - ext) * 5, 0, 30);
-  const noise = isAnom(x) ? (Math.sin(x * 13) * 2.4) : (Math.cos(x * 7) * 0.6);
-  return clamp(18 + noise, 0, 30);
-}
-function wireVal(x: number): number {
-  if (isArc(x)) return clamp(3 + (x / arc) * 4, 0, 12);
-  if (isTail(x)) return clamp(7 - (x - ext) * 5, 0, 12);
-  const noise = isAnom(x) ? (Math.sin(x * 19) * 1.6) : (Math.cos(x * 11) * 0.4);
-  return clamp(7 + noise, 0, 12);
-}
-
-const sigCur = t.map(currentAmp);
-const sigVol = t.map(voltVal);
-const sigGas = t.map(gasVal);
-const sigWir = t.map(wireVal);
-
-type Chan = { id: string; name: string; unit: string; color: string; values: number[]; lo: number; hi: number; mean: string };
-/** 通道配色（后端不输出颜色，前端按通道 id 映射，与 mock 常量一致）。 */
-const chanColor: Record<string, string> = { cur: '#2c9caf', vol: '#67cdb0', gas: '#f0a34a', wir: '#75add1' };
-/** 后端信号通道 → 前端 Chan（values 已由 api 层降采样 ≤512 点）。 */
-function toChan(c: SignalChannel): Chan {
-  return { id: c.id, name: c.name, unit: c.unit, color: chanColor[c.id] ?? '#2c9caf', values: c.values, lo: c.lo, hi: c.hi, mean: `${c.mean} ${c.unit}` };
-}
-const mockChannels: Chan[] = [
-  { id: 'cur', name: '电流', unit: 'A', color: '#2c9caf', values: sigCur, lo: 0, hi: 300, mean: '180 ± 12 A' },
-  { id: 'vol', name: '电压', unit: 'V', color: '#67cdb0', values: sigVol, lo: 0, hi: 40, mean: '22.4 ± 1.8 V' },
-  { id: 'gas', name: '气体流量', unit: 'L/min', color: '#f0a34a', values: sigGas, lo: 0, hi: 30, mean: '18 L/min' },
-  { id: 'wir', name: '送丝速度', unit: 'm/min', color: '#75add1', values: sigWir, lo: 0, hi: 12, mean: '7 m/min' },
-];
-/** 加载期占位通道：保留通道骨架（名称/配色）但波形为空，避免 mock 波形闪现且不产生 undefined 取值。 */
-const emptyChannels: Chan[] = mockChannels.map((c) => ({ ...c, values: [], mean: '—' }));
-
-function fmt(s: number) {
-  const m = Math.floor(s / 60);
-  const r = (s - m * 60).toFixed(2).padStart(5, '0');
-  return `${String(m).padStart(2, '0')}:${r}`;
-}
-
-/** 通用波形 path 构建（对齐页轨道/原始波形共用）；toPath 为分析页固定视口的委托。 */
-function buildPath(values: number[], lo: number, hi: number, plotW: number, plotH: number, axisL = 0): string {
-  const range = hi - lo || 1;
-  const n = Math.max(values.length - 1, 1);
-  return values.map((v, i) => {
-    const px = axisL + (i / n) * plotW;
-    const py = (plotH * (1 - (v - lo) / range));
-    return `${i === 0 ? 'M' : 'L'}${px.toFixed(1)} ${py.toFixed(1)}`;
-  }).join(' ');
-}
-
-function toPath(values: number[], lo: number, hi: number): string {
-  return buildPath(values, lo, hi, PLOT_W, PLOT_H, AXIS_L);
 }
 
 type SplitPreviewSample = { index: number; start: number; end: number };
@@ -2363,7 +1791,7 @@ function Validation({ dataId }: { embedded?: boolean; dataId?: string }) {
   const failed = report?.failed ?? 0;
   const statusText = report ? (failed > 0 ? '异常' : warning > 0 ? '待复核' : '核验通过') : '加载中';
   const statusTone = report ? (failed > 0 ? 'red' : warning > 0 ? 'orange' : 'green') : 'blue';
-  const lastRun = report && report.created_at ? `最近核验：${fmtDT(report.created_at)} · 核验耗时 ${report.duration != null ? report.duration : '—'}s` : '正在加载核验结果…';
+  const lastRun = report && report.created_at ? `最近核验：${formatDateTime(report.created_at)} · 核验耗时 ${report.duration != null ? report.duration : '—'}s` : '正在加载核验结果…';
   const visibleRules = statusFilter === 'all' ? rules : rules.filter((rule) => rule.status === statusFilter);
   return <div className="page-wrap"><PageIntro eyebrow="数据质量中心" title="数据核验" description="通过标准化规则检查数据完整性、连续性与多模态一致性。支持自动规则核验，也支持人工点击重新核验并复核结果。" action={<Toolbar action={running ? '核验中…' : '执行核验'} secondary="下载核验报告" onAction={runNow} onRefresh={loadReport} exportType="validation" exportRefIds={report ? [report.id] : undefined} actionDisabled={running || !dataId || versionId == null} />} /><div className="validation-summary"><div className="validation-score"><div className="score-ring small"><div><strong>{report ? report.score : '—'}</strong><span>质量评分</span></div></div><div><h2>{dataId ?? '—'}</h2><p>{lastRun}</p><StatusPill tone={statusTone as 'green' | 'orange' | 'red' | 'blue'}>{statusText}</StatusPill></div></div><div className="validation-count"><div><strong>{passed}</strong><span>通过规则</span></div><div><strong className="warning-text">{warning}</strong><span>警告</span></div><div><strong className="danger-text">{failed}</strong><span>失败</span></div></div></div>{notice && <p className="dataset-empty-state" role="status">{notice}</p>}<section className="panel validation-panel"><div className="panel-heading"><div><h2>核验规则明细 <span className="inline-count">{visibleRules.length}/{rules.length} 项</span></h2><p>已覆盖图像、时序、视频、元数据与跨模态一致性检查</p></div><label className="filter-field">状态<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}><option value="all">全部状态</option><option value="passed">通过</option><option value="warning">警告</option><option value="failed">失败</option></select></label></div><div className="rule-grid">{visibleRules.length ? visibleRules.map((rule, index) => { const isWarn = rule.status === 'warning'; const isFail = rule.status === 'failed'; const tone = isFail ? 'red' : isWarn ? 'orange' : 'green'; const label = isFail ? '失败' : isWarn ? '警告' : '通过'; const msg = rule.message ?? (isWarn ? '存在警告，建议复核' : '检查通过 · 结果已记录'); return <div className="validation-rule" key={rule.rule_name || index}><div className={`validation-icon ${isWarn ? 'warning' : isFail ? 'failed' : ''}`}>{isFail || isWarn ? <AlertTriangle size={15} /> : <CheckCircle2 size={15} />}</div><div><strong>{rule.rule_name}</strong><span>{msg}</span></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{label}</StatusPill></div>; }) : <p className="dataset-empty-state" role="status">{loading ? '核验规则加载中…' : statusFilter === 'all' ? '暂无核验规则' : '没有符合该状态的规则'}</p>}</div></section></div>;
 }
@@ -2455,16 +1883,17 @@ function TrainingDataPreparation() {
     return () => { cancelled = true; };
   }, []);
   const dataset = datasets.find((item) => item.id === datasetId) ?? null;
+  const selectedDatasetNumericId = dataset?.id;
+  const selectedDatasetVersionId = dataset?.current_version_id;
   const isTrainable = dataset?.status === '可训练';
   const previewResult = buildResult ?? completedBuildResult;
   useEffect(() => {
     let cancelled = false;
-    const versionId = dataset?.current_version_id;
-    if (dataset == null || versionId == null) {
+    if (selectedDatasetNumericId == null || selectedDatasetVersionId == null) {
       setCompletedBuildResult(null);
       return () => { cancelled = true; };
     }
-    getDatasetVersion(String(dataset.id), String(versionId)).then((version) => {
+    getDatasetVersion(String(selectedDatasetNumericId), String(selectedDatasetVersionId)).then((version) => {
       if (cancelled || version.item_count <= 0) return;
       setCompletedBuildResult({
         item_count: version.item_count,
@@ -2476,7 +1905,7 @@ function TrainingDataPreparation() {
       if (!cancelled) console.warn('[training-data] current version restore failed', err);
     });
     return () => { cancelled = true; };
-  }, [dataset?.id, dataset?.current_version_id]);
+  }, [selectedDatasetNumericId, selectedDatasetVersionId]);
   const handleBuild = () => {
     if (datasetId == null || !isTrainable || buildJobId != null) return;
     setCompletedBuildResult(null);
@@ -2766,7 +2195,6 @@ function ModelTestLive() {
   return <div className="page-wrap"><PageIntro eyebrow="模型评估中心" title="模型测试" description="选择模型版本和测试数据集，执行一次可追踪的评估任务。" /><div className="model-test-layout"><section className="panel test-config"><div className="panel-heading"><div><h2>测试配置</h2><p>所有选项均来自模型资产和数据集版本</p></div><span className="draft-tag">{status === 'running' ? '执行中' : '待执行'}</span></div><div className="form-block"><label>模型版本</label><select className="native-select" value={modelVersionId ?? ''} onChange={(e) => setModelVersionId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择模型版本</option>{models.flatMap((m) => m.latest_version_id != null ? [<option key={m.latest_version_id} value={m.latest_version_id}>{m.name} {m.version ?? ''}</option>] : [])}</select></div><div className="form-block"><label>独立测试集</label><select className="native-select" value={datasetVersionId ?? ''} onChange={(e) => setDatasetVersionId(e.target.value ? Number(e.target.value) : null)}><option value="">请选择数据集版本</option>{datasets.flatMap((d) => d.current_version_id != null ? [<option key={d.current_version_id} value={d.current_version_id}>{d.name} {d.version ?? ''}</option>] : [])}</select></div><button className="full-button" disabled={status === 'running' || modelVersionId == null || datasetVersionId == null} onClick={run}>{status === 'running' ? <><Activity size={16} />测试进行中…</> : <><Play size={16} />开始测试</>}</button>{testError && <p className="dataset-empty-state" role="alert">{testError}</p>}</section><section className="panel test-result"><div className="panel-heading"><div><h2>测试结果</h2><p>{jobId ? `测试任务 · ${jobId}` : '开始测试后，这里将展示真实评估结果'}</p></div><StatusPill tone={status === 'failed' ? 'red' : status === 'running' ? 'orange' : 'green'}>{status === 'succeeded' ? '已完成' : status === 'failed' ? '失败' : status === 'running' ? '运行中' : '未开始'}</StatusPill></div>{result && metrics ? <><div className="metric-row four"><div><span>准确率</span><strong>{pct(metrics.accuracy)}</strong></div><div><span>召回率</span><strong>{pct(metrics.recall)}</strong></div><div><span>F1 值</span><strong>{pct(metrics.f1)}</strong></div><div><span>推理时延</span><strong>{metrics.latency_ms}ms</strong></div></div><div className="confusion-matrix"><div className="matrix-title"><h3>混淆矩阵</h3><span>真实结果</span></div><div className="matrix">{result.confusion_matrix.flatMap((row, i) => row.map((value, j) => <b className={i === j ? 'matrix-good' : 'matrix-warn'} key={`${i}-${j}`}>{value}</b>))}</div></div></> : <div className="training-empty-state"><BarChart3 size={30} /><span>暂无测试结果</span></div>}</section></div></div>;
 }
 
-function InfoRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={accent ? 'accent-text' : ''}>{value}</strong></div>; }
 
 type FeatureTableRow = { name: string; cur: string; vol: string; gas: string; wir: string };
 type VisionFeatureRow = { name: string; value: string; desc: string };

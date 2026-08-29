@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
-const workspace = source.slice(source.indexOf('function WorkspaceFrame('), source.indexOf('function PageIntro('));
-const toolbar = source.slice(source.indexOf('function Toolbar('), source.indexOf('function StatusPill('));
+const toolbar = readFileSync(new URL('./shared/components/Toolbar.tsx', import.meta.url), 'utf8');
+const workspace = source.slice(source.indexOf('function WorkspaceFrame('), source.indexOf('function SelectionSwitcher('));
 
  test('upload action is available only after entering dataset detail', () => {
   assert.match(workspace, /const \[isDatasetDetail, setIsDatasetDetail\]/);
