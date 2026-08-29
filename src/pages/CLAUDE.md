@@ -11,7 +11,7 @@
   - 成功 → `client.setToken(res.access_token)` 写 localStorage（key=`token`，后续请求由 client 自动注入 `Authorization`）+ 存 `res.user`（key=`user`，JSON 串，供侧边栏用户卡等消费；`LoginResult` 已含 user，**无需再调 `auth.getMe`**）→ 调 `onSuccess`。
   - 失败 → 仅 `setError(err.message)`（`ApiError` 的 message 即信封 message，如「用户名或密码错误」），**不刷新页面**。
   - 样式：复用 index.css 现有 `primary-button`；登录特有布局用文件内 `<style>`（类名前缀 `login-`，如 `.login-page`/`.login-card`/`.login-input`/`.login-error`），不污染全局样式、不引 UI 库。
-  - 视觉：深底 `#102d35` 居中卡片，品牌标为 `/logo-mark.png`（`data/logo.png` 裁圆标去字版，黑底已转透明；由 `scripts/make_logo_assets.py` 生成）+ 系统名「焊接工艺分析和建模机器学习平台」（副行 ForgeLab · 工业智能实验室），与 App 侧边栏一致（2026-08-29 起，替代原先的 ForgeLab 主标题）。
+  - 视觉：深底 `#102d35` 居中卡片，品牌标为 `/logo-mark.png`（`data/logo.png` 裁圆标去字版，黑底已转透明；由 `scripts/make_logo_assets.py` 生成）+ 系统名「焊接工艺分析和建模机器学习平台」，与 App 侧边栏一致（2026-08-29 起，替代原先的 ForgeLab 主标题；副标题已按用户要求删除）。
 
 ## 坑 / 限制
 

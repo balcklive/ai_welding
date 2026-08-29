@@ -55,9 +55,8 @@ button { border: 0; cursor: pointer; }
 .sidebar { width: 254px; min-height: 100vh; background: #102d35; color: #c2d0d1; padding: 28px 16px 18px; display: flex; flex-direction: column; flex-shrink: 0; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; float: left; margin-right: 10px; }
 .brand-mark img { width: 100%; height: 100%; object-fit: contain; }
-.brand-copy { padding-top: 1px; height: 54px; display: flex; flex-direction: column; gap: 3px; }
+.brand-copy { height: 34px; display: flex; align-items: center; }
 .brand-copy strong { color: #f1faf8; font-size: 13px; line-height: 1.3; letter-spacing: 0; }
-.brand-copy span { font-size: 10px; color: #789399; letter-spacing: .4px; }
 .workspace-label { margin: 26px 12px 10px; text-transform: uppercase; color: #66828a; font: 500 10px 'DM Mono', monospace; letter-spacing: 1.3px; }
 .main-nav { display: grid; gap: 5px; }
 .nav-item { position: relative; width: 100%; display: flex; align-items: center; gap: 12px; padding: 11px 12px; color: #a7bec2; background: transparent; border-radius: 9px; font-size: 13px; text-align: left; transition: .2s; }

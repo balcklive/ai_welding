@@ -55,7 +55,7 @@ export default function Login({ onSuccess }: LoginProps) {
       <form className="login-card" onSubmit={handleSubmit}>
         <div className="login-brand">
           <div className="login-brand-mark"><img src="/logo-mark.png" alt="三维互联" /></div>
-          <div className="login-brand-copy"><strong>焊接工艺分析和建模机器学习平台</strong><span>ForgeLab · 工业智能实验室</span></div>
+          <div className="login-brand-copy"><strong>焊接工艺分析和建模机器学习平台</strong></div>
         </div>
         <h1>欢迎回来</h1>
         <p className="login-sub">登录焊接工艺分析和建模机器学习平台</p>
@@ -96,7 +96,6 @@ export default function Login({ onSuccess }: LoginProps) {
         .login-brand-mark { width: 36px; height: 36px; display: grid; place-items: center; }
         .login-brand-mark img { width: 100%; height: 100%; object-fit: contain; }
         .login-brand-copy strong { display: block; color: #16343d; font-size: 16px; letter-spacing: -.2px; }
-        .login-brand-copy span { display: block; color: #789399; font-size: 10px; letter-spacing: .4px; }
         .login-card h1 { margin: 0 0 6px; color: #16343d; font-size: 24px; letter-spacing: -1px; }
         .login-sub { margin: 0 0 8px; color: #83979a; font-size: 12px; }
         .login-label { display: block; margin: 18px 0 7px; color: #6f8789; font-size: 11px; }
