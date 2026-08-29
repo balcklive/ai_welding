@@ -260,10 +260,6 @@ button { border: 0; cursor: pointer; }
 .spectrum-note svg { color:#48a38e; flex-shrink:0; }
 
 .feature-layout { display:grid; grid-template-columns:1fr 1fr 1fr; grid-template-rows:auto auto; gap:16px; }
-.feature-context { display:flex; flex-wrap:wrap; gap:22px; align-items:center; margin-bottom:16px; padding:13px 18px; }
-.feature-context > div { display:flex; flex-direction:column; gap:4px; min-width:120px; }
-.feature-context span { color:#9aadae; font-size:9px; }
-.feature-context strong { color:#3a5658; font:600 11px 'DM Mono',monospace; }
 .feature-history { margin-bottom:16px; padding:16px 18px; }
 .feature-history-list { display:flex; flex-direction:column; gap:7px; }
 .feature-history-row { display:grid; grid-template-columns:70px 70px 1fr; gap:12px; padding:7px 9px; background:#f9fcfb; border:1px solid #e8efef; border-radius:5px; color:#6b8585; font-size:9px; }
