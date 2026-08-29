@@ -213,4 +213,22 @@ jobs:
               exit 1
             fi
 
+            # 清理本仓库旧镜像，防止历次发布在服务器上堆积。只保留当前容器和
+            # rollback 容器正在使用的两个镜像（按镜像 ID 判断，与 tag 无关），
+            # 其余一律删除；顺带清理悬空层。
+            CURRENT_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$APP_CONTAINER_NAME")
+            ROLLBACK_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$BACKUP_CONTAINER" 2>/dev/null || true)
+            docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' \
+              "$ACR_REGISTRY/$ACR_REPOSITORY" | \
+              while read -r STALE_IMAGE_ID STALE_IMAGE_REF; do
+                if [ "$STALE_IMAGE_ID" = "$CURRENT_IMAGE_ID" ] || \
+                  [ "$STALE_IMAGE_ID" = "$ROLLBACK_IMAGE_ID" ]; then
+                  echo "Keep image in use: $STALE_IMAGE_REF ($STALE_IMAGE_ID)"
+                  continue
+                fi
+                echo "Removing stale image: $STALE_IMAGE_REF ($STALE_IMAGE_ID)"
+                docker rmi "$STALE_IMAGE_REF" >/dev/null 2>&1 || true
+              done
+            docker image prune -f >/dev/null 2>&1 || true
+
             printf '\nDocker deployment ready: %s (%s)\n' "$APP_CONTAINER_NAME" "$IMAGE_TAG"
