@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 const app = fs.readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
+const dataContext = fs.readFileSync(new URL('./features/data-context/DataContext.tsx', import.meta.url), 'utf8');
+const registrationPage = fs.readFileSync(new URL('./features/registration/RegistrationPage.tsx', import.meta.url), 'utf8');
 const types = fs.readFileSync(new URL('./api/types.ts', import.meta.url), 'utf8');
 
-const select = app.slice(app.indexOf('function AnalysisSelect('), app.indexOf('function VersionPanel('));
-const registration = app.slice(app.indexOf('function Registration('), app.indexOf('const CH = 720'));
+const select = dataContext.slice(dataContext.indexOf('function AnalysisSelect('), dataContext.indexOf('function VersionPanel('));
+const registration = registrationPage;
 const routesData = app.slice(app.indexOf('const routesRequiringData'), app.indexOf('const isRouteDisabled'));
 
 test('analysis select is dataset-first: dataset dropdown, then welds scoped by dataset_id', () => {
