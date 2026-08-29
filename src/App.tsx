@@ -27,6 +27,7 @@ import {
 import {
   createBuildTask,
   createDataset,
+  deleteDataset,
   createDatasetVersion,
   getDataset,
   getDatasetVersion,
@@ -1135,7 +1136,21 @@ function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, onDetai
   return <div className="dataset-workspace">{view === 'list' && <><div className="dataset-list-heading"><div><div className="dataset-breadcrumb">数据中心 / 数据集列表</div><h2>数据集列表</h2><p>管理和浏览平台中的全部数据集，查看快照、成员数据与训练状态。</p></div><button className="primary-button" onClick={() => setCreateDialog(true)}><Plus size={15} />新建数据集</button></div><div className="dataset-rule"><GitBranch size={14} /><span>数据集以固定快照保存；焊缝版本记录单条数据的处理历史。</span><span className="dataset-rule-count">可训练 {rows.filter((item) => item.status === '可训练').length} 个</span></div>{listLoading ? <p className="dataset-empty-state" role="status">数据集列表加载中…</p> : <div className="dataset-table">{rows.map((item) => <button className="dataset-list-row" onClick={() => selectDataset(item)} key={item.id}><span className="dataset-row-icon"><Box size={17} /></span><span className="dataset-row-main"><strong>{item.name}</strong><small>{item.id} · {item.task}</small></span><span><small>样本数</small><strong className="mono">{item.samples}</strong></span><span><small>标注完成度</small><strong className="mono">{item.progress}</strong></span><span><small>当前快照</small><strong className="mono">{item.version ? `快照 ${item.version}` : '未生成'}</strong></span><StatusPill tone={item.tone}>{item.status}</StatusPill><ArrowUpRight size={15} className="muted-icon" /></button>)}</div>}{createDialog && <TextDialog title="新建数据集" label="数据集名称" initialValue="新建数据集" onCancel={() => setCreateDialog(false)} onConfirm={handleCreate} />}</>}{view === 'overview' && dataset && <DatasetDetail dataset={dataset} versionId={selectedVersionId} onShowRecords={() => setView('records')} onShowAllRecords={() => setView('dataset-records')} onVersionChange={selectVersion} />}{view === 'dataset-records' && dataset && <DatasetSourceRecords dataset={dataset} onBack={() => setView('overview')} onSelectRecord={(record) => { setRecordBackView('dataset-records'); setSelectedRecordId(record.weld_id); setSelectedDataId(record.weld_id); setSelectedVersionId(record.latest_version_id ?? selectedVersionId); setSelectedRecordSplit(null); setView('record-detail'); }} />}{view === 'records' && dataset && selectedVersionId != null && <DatasetRecords dataset={dataset} versionId={selectedVersionId} onBack={() => setView('overview')} onVersionChange={(versionId) => { selectVersion(versionId); setView('records'); }} onSelectRecord={(row) => { if (!row.weld_id) return; setRecordBackView('records'); setSelectedRecordId(row.weld_id); setSelectedRecordSplit(row.split); setSelectedDataId(row.weld_id); setView('record-detail'); }} />}{view === 'record-detail' && dataset && selectedVersionId != null && selectedRecordId && <DatasetRecordDetail weldId={selectedRecordId} dataset={dataset} versionId={selectedVersionId} split={selectedRecordSplit} onBack={() => setView(recordBackView)} setSelectedDataId={setSelectedDataId} navigate={navigate} />}</div>;
 }
 
-function DatasetDetail({ dataset, versionId, onShowRecords, onShowAllRecords, onVersionChange }: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onShowAllRecords: () => void; onVersionChange: (versionId: number) => void }) {
+function DatasetDetail(props: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onShowAllRecords: () => void; onVersionChange: (versionId: number) => void }) {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const handleDelete = () => {
+    if (!window.confirm(`确定删除数据集“${props.dataset.name}”吗？该操作不可撤销。`)) return;
+    setDeleting(true);
+    deleteDataset(String(props.dataset.numericId ?? props.dataset.id))
+      .then(() => window.location.reload())
+      .catch((err) => setError(err instanceof Error ? err.message : '删除数据集失败'))
+      .finally(() => setDeleting(false));
+  };
+  return <><DatasetDetailContent {...props} /><div className="dataset-delete-bar">{error && <span role="alert">{error}</span>}<button className="danger-button" onClick={handleDelete} disabled={deleting}>{deleting ? '删除中…' : '删除数据集'}</button></div></>;
+}
+
+function DatasetDetailContent({ dataset, versionId, onShowRecords, onShowAllRecords, onVersionChange }: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onShowAllRecords: () => void; onVersionChange: (versionId: number) => void }) {
   const [detail, setDetail] = useState<Dataset | null>(null);
   // 初始为空：mock 仅作接口失败兜底（见下方 catch），不得在加载期闪现演示维度/血缘
   const [dims, setDims] = useState<DimensionStatus[]>([]);

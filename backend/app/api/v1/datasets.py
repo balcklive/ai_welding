@@ -86,6 +86,26 @@ def create_dataset(
     return ok(svc.dataset_payload(dataset))
 
 
+@router.delete("/datasets/{dataset_id}")
+def delete_dataset(
+    dataset_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """删除数据集；有焊缝或训练历史引用时拒绝删除。"""
+    dataset = svc.get_dataset_by_identifier(session, dataset_id)
+    if dataset is None:
+        return err(40401, "数据集不存在", status=404)
+    try:
+        result = svc.delete_dataset(session, dataset)
+    except svc.DatasetDeleteConflict as exc:
+        return err(40900, str(exc), status=409)
+    write_audit(session, current_user.id, "delete", "dataset", dataset.dataset_no,
+                {"name": dataset.name, **result})
+    session.commit()
+    return ok({"deleted": True, **result})
+
+
 @router.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: str, session: Session = Depends(get_session)) -> dict:
     """数据集详情：样本统计 / 当前版本 / 更新时间（`dataset_id` 兼容 DB id / dataset_no）。"""

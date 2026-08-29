@@ -48,7 +48,7 @@ from app.models.analysis import (
 from app.models.data import DataRecord, DataVersion
 from app.models.datasets import Dataset, DatasetBuildTask, DatasetItem, DatasetVersion
 from app.models.jobs import Job
-from app.models.models import TrainingTask
+from app.models.models import TestTask, TrainingTask
 from app.services.annotation import resolve_annotation_task, resolve_split_task
 from app.services.jobs import _iso_utc, create_job, mark_succeeded
 
@@ -105,6 +105,10 @@ _TASK_CATEGORY: dict[str, str] = {
 
 #: 构建任务来源类型白名单（契约 §3.5 DatasetSource.type）。
 BUILD_SOURCES: tuple[str, ...] = ("annotation_task", "split_task", "manual", "filter", "dataset_records")
+
+
+class DatasetDeleteConflict(ValueError):
+    """数据集仍被业务数据引用，不能安全删除。"""
 
 _VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
@@ -182,6 +186,48 @@ def create_dataset(
     session.add(dataset)
     session.flush()
     return dataset
+
+
+def delete_dataset(session: Session, dataset: Dataset) -> dict[str, int]:
+    """删除无业务数据引用的数据集及其固定版本元数据。"""
+    record_count = int(session.exec(
+        select(func.count(DataRecord.id)).where(DataRecord.dataset_id == dataset.id)
+    ).one())
+    if record_count:
+        raise DatasetDeleteConflict(
+            f"数据集仍包含 {record_count} 条焊缝数据，请先迁移或清理数据后再删除"
+        )
+
+    versions = session.exec(
+        select(DatasetVersion).where(DatasetVersion.dataset_id == dataset.id)
+    ).all()
+    version_ids = [version.id for version in versions if version.id is not None]
+    if version_ids:
+        training_count = int(session.exec(select(func.count(TrainingTask.id)).where(
+            TrainingTask.dataset_version_id.in_(version_ids)
+        )).one())
+        test_count = int(session.exec(select(func.count(TestTask.id)).where(
+            TestTask.dataset_version_id.in_(version_ids)
+        )).one())
+        if training_count or test_count:
+            raise DatasetDeleteConflict("数据集版本已被训练或测试任务使用，不能删除")
+        for version_id in version_ids:
+            for item in session.exec(select(DatasetItem).where(
+                DatasetItem.dataset_version_id == version_id
+            )).all():
+                session.delete(item)
+            for task in session.exec(select(DatasetBuildTask).where(
+                DatasetBuildTask.dataset_version_id == version_id
+            )).all():
+                session.delete(task)
+        dataset.current_version_id = None
+        session.flush()
+        for version in versions:
+            session.delete(version)
+
+    session.delete(dataset)
+    session.flush()
+    return {"deleted_versions": len(versions)}
 
 
 def dataset_payload(

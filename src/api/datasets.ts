@@ -30,6 +30,11 @@ export async function createDataset(body: {
   return request<Dataset>('/datasets', { method: 'POST', body });
 }
 
+/** 删除数据集；存在焊缝或训练历史引用时由后端拒绝。 */
+export async function deleteDataset(id: string): Promise<{ deleted: boolean; deleted_versions: number }> {
+  return request<{ deleted: boolean; deleted_versions: number }>(`/datasets/${id}`, { method: 'DELETE' });
+}
+
 /** 数据集详情：样本统计 / 训练验证测试划分 / 数据质量 / 更新时间。 */
 export async function getDataset(id: string): Promise<Dataset> {
   return request<Dataset>(`/datasets/${id}`);
