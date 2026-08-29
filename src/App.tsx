@@ -245,7 +245,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtraction embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
   else if (route === 'model-center/dataset-build') content = <TrainingDataPreparation />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} navigate={navigate} />;
-  else if (route === 'model-center/training') content = <><DatasetTrainingContext /><Training /></>;
+  else if (route === 'model-center/training') content = <Training />;
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
 
