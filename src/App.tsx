@@ -47,7 +47,7 @@ function AppShell() {
   });
   return <div className="app-shell">
     <aside className="sidebar">
-      <div className="brand-mark"><img src="/logo-mark.png" alt="三维互联" /></div><div className="brand-copy"><strong>ForgeLab</strong><span>工业智能实验室</span></div>
+      <div className="brand-mark"><img src="/logo-mark.png" alt="三维互联" /></div><div className="brand-copy"><strong>焊接工艺分析和建模机器学习平台</strong><span>ForgeLab · 工业智能实验室</span></div>
       <div className="workspace-label">工作空间</div><nav className="main-nav">{navStructure.map((group) => {
         const Icon = group.icon;
         if (group.route && !group.children) {
