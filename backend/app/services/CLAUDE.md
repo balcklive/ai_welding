@@ -188,11 +188,10 @@
     `model_payload` / `version_payload`。
   - `update_version_status`（PATCH：status 白名单 生产候选/训练中/实验版本 校验抛 ValueError；
     **note 无对应列仅接受不落库**，同 dataset_versions.name/note 约定）。
-  - `run_training`（训练 handler 领域逻辑）：进度逐步 → 确定性指标（mAP50≈0.94-0.96 /
-    precision≈0.96 / recall≈0.93，seed=`random.Random(f"train-{task.id}")`）+ 损失曲线
-    （train/val 数组长度=epochs，训练损失递减、验证略高）→ **同事务生成 `model_versions`
-    （version_no next、status=实验版本、metric、file_key=`models/{id}/weights.pt`）→ 权重
-    占位写 MinIO 尽力而为**；`base_model_id` 给定时新版本挂到其所属模型，否则自动新建
+  - `run_training`（训练 handler 领域逻辑）：进度逐步 → **CPU-only Torch 读取真实 DatasetItem/Sample/Annotation 后前向/反向训练**
+    （固定 seed、train/val loss、accuracy/precision/recall/F1）→ **同事务生成 `model_versions`
+    （version_no next、status=实验版本、metric、file_key=`models/{id}/weights.pt`）→ Torch
+    `state_dict` 写 MinIO 尽力而为**；`base_model_id` 给定时新版本挂到其所属模型，否则自动新建
     `Model`（name=`训练模型-{task.id}`）；回填 training_tasks.metrics/loss_curve →
     job.result `{metrics, loss_curve, model_version}`。
   - `run_test`（测试 handler）：metrics `{accuracy 0.968, recall 0.942, f1 0.955, latency_ms 18}`

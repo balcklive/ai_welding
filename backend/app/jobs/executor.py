@@ -28,6 +28,7 @@ from app.core.db import SessionLocal
 from app.core.audit import write_audit
 from app.models.jobs import Job
 from app.services.jobs import get_job_by_uid, mark_failed
+from app.integrations import mlflow as mlflow_integration  # MLFLOW-INTEGRATION
 
 #: job type → handler(job_id, session)。各域模块 import 时用 `@register_handler` 填充。
 HANDLERS: dict[str, Callable[[int, Session], None]] = {}
@@ -84,6 +85,11 @@ def _dispatch(session: Session, job_id: int) -> None:
     handler = HANDLERS.get(fresh.type)
     if handler is None:
         raise ValueError(f"Unregistered job type: {fresh.type!r}")
+    # MLFLOW-INTEGRATION: create one durable Run per model-center Job.
+    if fresh.mlflow_run_id is None and fresh.type in {"training", "test", "inference"}:
+        fresh.mlflow_run_id = mlflow_integration.start_run(fresh.job_uid, fresh.type)
+        session.add(fresh)
+        session.commit()
     handler(fresh.id, session)
     session.commit()
 
@@ -94,6 +100,8 @@ def _mark_failed_in(session: Session, job_id: int, message: str) -> None:
     failed = session.get(Job, job_id)
     if failed is not None:
         mark_failed(session, failed, {"message": message})
+        # MLFLOW-INTEGRATION: preserve failed task history in MLflow.
+        mlflow_integration.finish_run(failed.mlflow_run_id, "FAILED")
         _release_request_claim(session, failed)
         if failed.type == "feature_extraction":
             write_audit(

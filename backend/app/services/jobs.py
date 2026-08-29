@@ -65,6 +65,7 @@ def to_job_payload(job: Job) -> dict:
     return {
         "id": job.job_uid,
         "type": job.type,
+        "mlflow_run_id": job.mlflow_run_id,  # MLFLOW-INTEGRATION
         "status": job.status,
         "progress": job.progress,
         "result": job.result,

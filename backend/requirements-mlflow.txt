@@ -1,0 +1,6 @@
+# Compatibility set for the backend and MLflow. This file is useful for the
+# training worker image; the main API project declares the same constraints.
+mlflow>=3.0,<4
+pandas>=2.3,<3
+pyarrow>=24.0,<25
+torch==2.7.1

@@ -150,6 +150,7 @@ def test_to_job_payload_shape_and_iso_times(db_session) -> None:
     assert set(payload) == {
         "id",
         "type",
+        "mlflow_run_id",
         "status",
         "progress",
         "result",

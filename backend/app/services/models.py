@@ -29,6 +29,7 @@ from loguru import logger
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.core.config import settings
 from app.models.datasets import DatasetVersion
 from app.models.jobs import Job
 from app.models.models import (
@@ -39,6 +40,9 @@ from app.models.models import (
     TrainingTask,
 )
 from app.services.jobs import _iso_utc, mark_succeeded
+from app.integrations import mlflow as mlflow_integration  # MLFLOW-INTEGRATION
+from app.services import torch_training
+from app import storage
 
 #: 进度逐步递增点（与 split/annotation/dataset_build handler 一致）。
 _PROGRESS_STEPS: tuple[int, ...] = (20, 40, 60, 80, 100)
@@ -46,9 +50,6 @@ _PROGRESS_SLEEP: float = 0.005
 
 #: 模型版本状态白名单（契约 §3.18 / §3.6 PATCH）。
 MODEL_VERSION_STATUSES: tuple[str, ...] = ("生产候选", "训练中", "实验版本")
-
-#: 权重占位 blob（MinIO `models/{id}/weights.pt`，演示不承载真实模型权重）。
-_WEIGHTS_BLOB = b"mock-yolo-weights-placeholder-blob-v1"
 
 _IMAGE_TYPES = {"jpeg", "png", "webp", "bmp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".m4v"}
@@ -180,14 +181,13 @@ def update_version_status(
 
 
 def run_training(session: Session, task: TrainingTask, job: Job) -> dict:
-    """执行一次模拟训练，返回写入 `job.result` 的 dict。**不 commit 终态**（执行器提交）。
+    """执行一次基于真实样本的 CPU Torch 训练，返回写入 `job.result` 的 dict。
 
     步骤：
     1. 进度逐步 0→100（逐次 commit + 小睡，轮询可见）；
-    2. 确定性指标收敛（mAP50≈0.94-0.96 / precision≈0.96 / recall≈0.93，seed=task.id）
-       + 损失曲线（train/val 数组，长度=epochs，训练损失递减、验证略高于训练）；
+    2. CPU-only Torch 从 DatasetItem/Sample/Annotation 读取真实对象和标签，运行前向/反向传播；
     3. 同事务：生成 `model_versions`（version_no next、status=实验版本、metric、
-       file_key=`models/{id}/weights.pt`）→ 权重占位写 MinIO（尽力而为）；
+       file_key=`models/{id}/weights.pt`）→ Torch state_dict 写 MinIO（尽力而为）；
        `base_model_id` 给定时新版本挂到基础版本所属模型，否则自动新建 Model；
     4. 回填 `training_tasks.metrics/loss_curve`；
     5. `mark_succeeded(job, {metrics, loss_curve, model_version})`。
@@ -199,13 +199,14 @@ def run_training(session: Session, task: TrainingTask, job: Job) -> dict:
 
     hyperparams = task.hyperparams or {}
     epochs = max(1, int(hyperparams.get("epochs") or 50))
-    rng = random.Random(f"train-{task.id}")
-    metrics = {
-        "mAP50": round(rng.uniform(0.940, 0.960), 3),
-        "precision": round(rng.uniform(0.950, 0.970), 3),
-        "recall": round(rng.uniform(0.920, 0.940), 3),
-    }
-    loss_curve = _loss_curve(epochs, rng)
+    # REAL-DATA-TRAINING: load DatasetVersion samples and annotations from MinIO.
+    examples, classes = torch_training.load_real_examples(
+        session, task.dataset_version_id, storage.get_storage()
+    )
+    # TORCH-CPU: the actual optimizer loop is CPU-only; no CUDA dependency.
+    torch_result = torch_training.run(task.id, epochs, seed=task.id, examples=examples, classes=classes)
+    metrics = torch_result.metrics
+    loss_curve = torch_result.loss_curve
 
     model_id = _target_model_id(session, task)
     now = datetime.now(timezone.utc)
@@ -220,7 +221,7 @@ def run_training(session: Session, task: TrainingTask, job: Job) -> dict:
     session.flush()
     version.file_key = f"models/{version.id}/weights.pt"
     session.add(version)
-    _write_weights(version.file_key)
+    _write_weights(version.file_key, torch_result.weights)
 
     task.metrics = metrics
     task.loss_curve = loss_curve
@@ -230,8 +231,21 @@ def run_training(session: Session, task: TrainingTask, job: Job) -> dict:
         "metrics": metrics,
         "loss_curve": loss_curve,
         "model_version": version_payload(version),
+        "sample_count": torch_result.sample_count,
+        "classes": torch_result.classes,
         "progress": 100,
     }
+    # MLFLOW-INTEGRATION: publish the CPU Torch run result and artifacts.
+    mlflow_integration.record_training(
+        job.mlflow_run_id,
+        {**hyperparams, "dataset_version_id": task.dataset_version_id},
+        metrics, loss_curve, version.id, version.file_key,
+    )
+    # MLFLOW-INTEGRATION: close the Run after training artifacts are recorded.
+    mlflow_integration.finish_run(job.mlflow_run_id)
+    if job.mlflow_run_id:
+        result["mlflow"] = {"run_id": job.mlflow_run_id,
+                             "experiment": settings.mlflow_experiment}
     mark_succeeded(session, job, result)
     return result
 
@@ -319,6 +333,12 @@ def run_test(session: Session, task: TestTask, job: Job) -> dict:
     session.add(task)
 
     result = {"metrics": metrics, "confusion_matrix": confusion_matrix}
+    # MLFLOW-INTEGRATION: publish evaluation metrics and confusion matrix.
+    mlflow_integration.record_test(job.mlflow_run_id, metrics, confusion_matrix)
+    mlflow_integration.finish_run(job.mlflow_run_id)
+    if job.mlflow_run_id:
+        result["mlflow"] = {"run_id": job.mlflow_run_id,
+                             "experiment": settings.mlflow_experiment}
     mark_succeeded(session, job, result)
     return result
 
@@ -357,6 +377,14 @@ def run_inference(session: Session, task: InferenceTask, job: Job) -> dict:
     }
     task.result = result
     session.add(task)
+
+    # MLFLOW-INTEGRATION: publish inference latency and result artifact.
+    mlflow_integration.record_inference(job.mlflow_run_id, result)
+    mlflow_integration.finish_run(job.mlflow_run_id)
+    if job.mlflow_run_id:
+        result["mlflow"] = {"run_id": job.mlflow_run_id,
+                             "experiment": settings.mlflow_experiment}
+        task.result = result
 
     mark_succeeded(session, job, result)
     return result
@@ -485,15 +513,15 @@ def _recent_training(session: Session) -> str | None:
     return _iso_utc(job.finished_at) if job is not None else None
 
 
-def _write_weights(file_key: str) -> None:
-    """权重占位写 MinIO `models/{id}/weights.pt`。**尽力而为**：失败仅告警。"""
+def _write_weights(file_key: str, weights: bytes) -> None:
+    """写入真实 Torch 权重；存储不可达时不阻断训练。"""
     from app.storage import get_storage  # 延迟导入，避免 services 层启动依赖存储
 
     try:
         get_storage().upload_stream(
             file_key,
-            io.BytesIO(_WEIGHTS_BLOB),
-            len(_WEIGHTS_BLOB),
+            io.BytesIO(weights),
+            len(weights),
             "application/octet-stream",
         )
     except Exception:  # noqa: BLE001 - 存储不可达不阻断训练（demo 容错）

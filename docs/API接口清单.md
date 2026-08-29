@@ -112,7 +112,7 @@
 | `TrainingTask` | 训练任务（Job） | id, dataset_version_id, base_model_id, hyperparams, metrics, loss_curve, logs |
 | `TestTask` | 测试任务（Job） | id, model_version_id, dataset_version_id, tasks[], metrics, confusion_matrix |
 | `InferenceTask` | 推理任务（Job） | id, model_version_id, input, result{boxes, categories, confidence, latency} |
-| `Job` | 通用异步任务状态 | id, type, status, progress, result, error, created_at, finished_at |
+| `Job` | 通用异步任务状态 | id, type, mlflow_run_id?, status, progress, result, error, created_at, finished_at |
 
 ---
 
@@ -229,7 +229,7 @@
 | POST | `/api/v1/files/upload` | 上传文件到 MinIO（**小文件 <100MB** 代理转发），返回 object_key + URL | multipart: `file` |
 | POST | `/api/v1/files/presign-upload` | **大文件预签名直传**（≥100MB，登记原始文件 ≤2GB）：返回可 PUT 的 upload_url + object_key | body: `size`, `content_type`, `prefix`, `filename?`(可选，缺省 `"file"`，由服务端拼进 object_key) |
 | GET | `/api/v1/files/{object_key}/url` | 预签名下载/播放 URL（支持 Range 拖动播放） | query: `expires` |
-| GET | `/api/v1/jobs/{job_id}` | **通用任务状态轮询**（对齐/切分/训练/测试/数据集构建共用） | — 需登录 |
+| GET | `/api/v1/jobs/{job_id}` | **通用任务状态轮询**（对齐/切分/训练/测试/数据集构建共用；训练/测试/推理可附 `mlflow_run_id`） | — 需登录 |
 | POST | `/api/v1/reports/export` | 通用导出：核验报告/分析报告/标注集/特征集/测试报告/数据列表 | body: `type`, `ref_ids[]`, `format` |
 
 ---

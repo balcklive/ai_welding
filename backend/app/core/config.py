@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     feature_allow_partial: bool = False
     feature_allow_heuristic_vision: bool = False
     feature_vision_provider_url: str = ""
+    # MLFLOW-INTEGRATION: 默认内嵌 FastAPI；可切换为 server/off。
+    mlflow_mode: str = "embedded"
+    mlflow_tracking_uri: str = "sqlite:///./data/mlflow.db"
+    mlflow_registry_uri: str = ""
+    mlflow_experiment: str = "AI Welding"
+    mlflow_artifact_root: str = "s3://aiwelding/mlflow-artifacts"
+    mlflow_s3_endpoint_url: str = ""
+    torch_cpu_threads: int = 1
 
     @property
     def mysql_url(self) -> str:
