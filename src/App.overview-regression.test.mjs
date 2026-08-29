@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const source = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
-const overview = source.slice(source.indexOf('function Overview('), source.indexOf('function StatCard('));
+const source = readFileSync(new URL('./features/overview/OverviewPage.tsx', import.meta.url), 'utf8');
+const overview = source.slice(source.indexOf('export function OverviewPage('), source.indexOf('function StatCard('));
 
 test('overview uses dataset terminology and links to all datasets', () => {
   assert.match(overview, /<h2>数据集<\/h2>/);
