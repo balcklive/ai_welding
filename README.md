@@ -218,4 +218,4 @@ cd backend && uv run pytest
 
 ## 部署
 
-部署采用 Docker 私有化方案：推送到 `main` 后，GitHub Actions（`.github/workflows/deploy-docker.yml`）先执行前端 lint/typecheck/build 校验，再构建镜像推送到阿里云 ACR，并通过 SSH 在服务器拉取镜像、替换 FastAPI 容器（FastAPI 同时服务 `/api` 与前端静态文件）。详见 `docs/superpowers/specs/2026-08-26-docker-cicd-design.md`。
+部署采用 Docker 私有化方案：推送到 `main` 后，GitHub Actions（`.github/workflows/deploy-docker.yml`）先执行前端 lint/typecheck/build 校验，再构建镜像推送到阿里云 ACR。服务器先启动候选容器执行 `alembic upgrade head`，并通过数据库、迁移版本、关键表和 MinIO readiness；预检成功后才切换生产容器，正式容器失败会自动恢复上一容器。FastAPI 同时服务 `/api` 与前端静态文件。数据库迁移必须遵循 expand/contract；容器回滚不会自动 downgrade 数据库。详见 `docs/superpowers/specs/2026-08-26-docker-cicd-design.md`。

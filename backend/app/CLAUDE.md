@@ -4,7 +4,7 @@
 
 ## 脚本
 
-- `main.py`：FastAPI 实例 `app`。Task 1 直挂 `GET /api/v1/health`（返回统一信封 `{"code":0,"message":"ok","data":{"status":"ok"}}`）+ `AccessLogMiddleware`；另挂 `GZipMiddleware`（minimum_size=2048，波形/信号大 JSON 压缩 3~5x，配合 `/signals` 服务端抽稀把公网首屏从 ~26MB 降到几十 KB）；Task 3 `include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并 `register_exception_handlers(app)` 注册全局异常处理器（`RequestValidationError`→42200 / `HTTPException` 按 status 映射 / 兜底 `Exception`→50000）。异常错误码映射见本文件 docstring。Task 5 修复：`setup_logging()` 后检查 `settings.secret_key`/`settings.admin_password` 是否弱默认值（`change-me`/`admin123`），是则 `logger.warning` 提示生产改密。Task 6：lifespan 启动时 `with Session(engine) as s: seed_all(s, demo=settings.seed_demo)`（演示数据由 `SEED_DEMO` 控制、默认 false 不灌入；MySQL 不可达仅告警不阻塞）。
+- `main.py`：FastAPI 实例 `app`。`GET /api/v1/health` 保留兼容，`/health/live` 只检查进程存活，`/health/ready` 聚合数据库、Alembic revision、关键表与 MinIO 检查；部署与 Docker HEALTHCHECK 只使用 readiness。启动 seed 失败会中止 lifespan，不再带病启动；`JOB_EXECUTOR_ENABLED=false` 时不启动后台 Job executor，供候选部署容器预检。另挂 `GZipMiddleware`（minimum_size=2048）和 `AccessLogMiddleware`；`include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并注册统一异常处理器。
 - `core/seed.py`：**Task 6**。`seed_all/seed_admin/seed_demo`，详见 `core/CLAUDE.md`。
 - `core/__init__.py`：空。
 - `core/config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`。

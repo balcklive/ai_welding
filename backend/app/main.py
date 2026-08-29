@@ -27,6 +27,7 @@ from sqlmodel import Session
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.db import engine
+from app.core.health import readiness_report
 from app.core.logging import AccessLogMiddleware, setup_logging
 from app.core.seed import seed_all
 from app.jobs import executor
@@ -43,25 +44,26 @@ if settings.secret_key in ("change-me", "") or settings.admin_password in ("admi
 async def lifespan(app: FastAPI):
     """启动时 seed + 启动 Job 执行器；关闭时停止执行器。
 
-    1. seed（仅管理员和系统标签字典，幂等）：MySQL 不可达时记录告警并继续启动。
-    2. `executor.start()`：后台线程每 ~1s 轮询 pending 的 Job 并 dispatch 到对应 handler
-       （Task 13，见 `app/jobs/executor.py`）。
+    1. seed（仅管理员和系统标签字典，幂等）：失败直接中止启动，避免伪健康。
+    2. `executor.start()`：启用时由后台线程每 ~1s 轮询 pending 的 Job 并 dispatch 到
+       对应 handler；候选部署容器通过配置禁用（见 `app/jobs/executor.py`）。
     """
-    try:
-        with Session(engine) as session:
-            seed_all(session)
-        logger.info("Startup initialization completed")
-    except Exception:  # noqa: BLE001 - 启动期数据库不可达不应阻塞服务启动
-        logger.opt(exception=True).warning(
-            "Startup seeding failed (database may be unreachable); skipping seeding and continuing startup"
-        )
-    executor.start()
-    logger.info("Job executor started (background database polling)")
+    # 数据库不可达或 schema 不完整时必须阻止服务进入可用状态；生产镜像会在此之前
+    # 执行 Alembic，直接本地启动时也不再静默伪装成健康服务。
+    with Session(engine) as session:
+        seed_all(session)
+    logger.info("Startup initialization completed")
+    if settings.job_executor_enabled:
+        executor.start()
+        logger.info("Job executor started (background database polling)")
+    else:
+        logger.info("Job executor disabled for this process")
     try:
         yield
     finally:
-        executor.stop()
-        logger.info("Job executor stopped")
+        if settings.job_executor_enabled:
+            executor.stop()
+            logger.info("Job executor stopped")
 
 
 app = FastAPI(title="AI Welding Platform API", version="0.1.0", lifespan=lifespan)
@@ -73,8 +75,28 @@ app.add_middleware(AccessLogMiddleware)
 
 @app.get("/api/v1/health")
 def health() -> dict:
-    """健康检查（统一信封）。"""
+    """兼容旧监控的存活检查；部署门禁必须使用 `/health/ready`。"""
     return ok({"status": "ok"})
+
+
+@app.get("/api/v1/health/live")
+def health_live() -> dict:
+    """Liveness：进程能够响应 HTTP 即为存活，不检查外部依赖。"""
+    return ok({"status": "live"})
+
+
+@app.get("/api/v1/health/ready")
+def health_ready() -> object:
+    """Readiness：数据库、迁移、关键表和 MinIO 全部可用才返回 200。"""
+    ready, checks = readiness_report()
+    if not ready:
+        return err(
+            50300,
+            "服务未就绪",
+            detail={"status": "not_ready", "checks": checks},
+            status=503,
+        )
+    return ok({"status": "ready", "checks": checks})
 
 
 app.include_router(api_router, prefix="/api/v1")

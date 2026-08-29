@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     mlflow_artifact_root: str = "s3://aiwelding/mlflow-artifacts"
     mlflow_s3_endpoint_url: str = ""
     torch_cpu_threads: int = 1
+    # 候选容器只做迁移与 readiness 预检，不应抢占生产异步任务。
+    job_executor_enabled: bool = True
 
     @property
     def mysql_url(self) -> str:

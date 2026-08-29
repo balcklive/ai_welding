@@ -204,6 +204,23 @@ def test_bucket_ensure_checked_once() -> None:
     assert fake.made_bucket == []
 
 
+def test_check_ready_is_read_only_and_marks_existing_bucket_ready() -> None:
+    fake = FakeMinio(bucket_exists=True)
+    storage = _make(fake)
+    storage.check_ready()
+    storage.presign_get("a/1.mp4")
+    assert fake.bucket_exists_calls == 1
+    assert fake.made_bucket == []
+
+
+def test_check_ready_rejects_missing_bucket_without_creating_it() -> None:
+    fake = FakeMinio(bucket_exists=False)
+    storage = _make(fake)
+    with pytest.raises(RuntimeError, match="bucket is missing"):
+        storage.check_ready()
+    assert fake.made_bucket == []
+
+
 # ---------------------------------------------------------------------------
 # get_storage 懒加载单例
 # ---------------------------------------------------------------------------

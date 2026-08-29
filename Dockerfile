@@ -29,10 +29,13 @@ WORKDIR /app
 # Keep the original virtualenv path because console-script shebangs point to it.
 COPY --from=backend-dependencies /opt/backend/.venv /opt/backend/.venv
 COPY backend/app ./app
+COPY backend/alembic.ini ./alembic.ini
+COPY backend/alembic ./alembic
 COPY --from=frontend-builder /build/dist ./dist
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 迁移失败时 shell 立即退出，Uvicorn 不会启动，容器保持 unhealthy/exited。
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]

@@ -138,6 +138,12 @@ class StorageClient:
             self._client.make_bucket(self.bucket)
         self._bucket_ready = True
 
+    def check_ready(self) -> None:
+        """只读检查对象存储连接与目标桶，不在健康检查中隐式创建资源。"""
+        if not self._client.bucket_exists(self.bucket):
+            raise RuntimeError(f"MinIO bucket is missing: {self.bucket}")
+        self._bucket_ready = True
+
     # ---- 操作 ----
 
     def presign_put(

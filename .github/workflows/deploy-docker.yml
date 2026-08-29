@@ -115,12 +115,85 @@ jobs:
             test -f .env
 
             IMAGE_NAME="$ACR_REGISTRY/$ACR_REPOSITORY:$IMAGE_TAG"
+            CANDIDATE_CONTAINER="${APP_CONTAINER_NAME}-candidate"
+            BACKUP_CONTAINER="${APP_CONTAINER_NAME}-rollback"
+            READY_PATH="/api/v1/health/ready"
+
+            wait_ready() {
+              HEALTH_URL="$1"
+              CONTAINER="$2"
+              for attempt in $(seq 1 30); do
+                if curl --fail --silent --show-error \
+                  --connect-timeout 2 --max-time 5 \
+                  "$HEALTH_URL" >/dev/null; then
+                  echo "Readiness passed: $CONTAINER"
+                  return 0
+                fi
+                if ! docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -q true; then
+                  echo "Container exited before readiness passed: $CONTAINER"
+                  return 1
+                fi
+                echo "Readiness check failed (${attempt}/30): $CONTAINER"
+                sleep 2
+              done
+              return 1
+            }
+
+            rollback_previous() {
+              echo "Rolling back to previous application container..."
+              docker rm -f "$APP_CONTAINER_NAME" 2>/dev/null || true
+              if docker inspect "$BACKUP_CONTAINER" >/dev/null 2>&1; then
+                docker rename "$BACKUP_CONTAINER" "$APP_CONTAINER_NAME"
+                docker start "$APP_CONTAINER_NAME"
+                if wait_ready \
+                  "http://127.0.0.1:${HOST_PORT}${READY_PATH}" \
+                  "$APP_CONTAINER_NAME"; then
+                  echo "Rollback completed: $APP_CONTAINER_NAME"
+                else
+                  echo "Rollback container failed readiness; manual intervention required"
+                  docker logs --tail 200 "$APP_CONTAINER_NAME" 2>/dev/null || true
+                fi
+              else
+                echo "No previous container is available for rollback"
+              fi
+            }
+
             printf '%s' "$ACR_PASSWORD" | docker login "$ACR_REGISTRY" \
               --username "$ACR_USERNAME" --password-stdin
             docker pull "$IMAGE_NAME"
 
-            docker stop "$APP_CONTAINER_NAME" 2>/dev/null || true
-            docker rm "$APP_CONTAINER_NAME" 2>/dev/null || true
+            # 候选容器先在随机本地端口执行迁移和 readiness。禁用任务执行器，避免
+            # 与当前生产容器同时消费队列。此阶段失败不会触碰当前生产容器。
+            docker rm -f "$CANDIDATE_CONTAINER" 2>/dev/null || true
+            if ! docker run -d \
+              --name "$CANDIDATE_CONTAINER" \
+              --env-file .env \
+              -e JOB_EXECUTOR_ENABLED=false \
+              --restart no \
+              -p 127.0.0.1::8000 \
+              "$IMAGE_NAME"; then
+              docker logs --tail 200 "$CANDIDATE_CONTAINER" 2>/dev/null || true
+              exit 1
+            fi
+
+            CANDIDATE_PORT=$(docker port "$CANDIDATE_CONTAINER" 8000/tcp | awk -F: 'NR == 1 {print $NF}')
+            if [ -z "$CANDIDATE_PORT" ] || ! wait_ready \
+              "http://127.0.0.1:${CANDIDATE_PORT}${READY_PATH}" \
+              "$CANDIDATE_CONTAINER"; then
+              docker logs --tail 200 "$CANDIDATE_CONTAINER" 2>/dev/null || true
+              docker rm -f "$CANDIDATE_CONTAINER" 2>/dev/null || true
+              exit 1
+            fi
+            docker rm -f "$CANDIDATE_CONTAINER"
+
+            # 预检通过后才释放生产端口。当前容器保留为 rollback 副本；成功发布后
+            # 继续保留到下一次发布，便于人工或自动回退。
+            if docker inspect "$APP_CONTAINER_NAME" >/dev/null 2>&1; then
+              docker rm -f "$BACKUP_CONTAINER" 2>/dev/null || true
+              docker stop -t 30 "$APP_CONTAINER_NAME"
+              docker rename "$APP_CONTAINER_NAME" "$BACKUP_CONTAINER"
+            fi
+
             if ! docker run -d \
               --name "$APP_CONTAINER_NAME" \
               --env-file .env \
@@ -128,20 +201,16 @@ jobs:
               -p "$HOST_PORT:8000" \
               "$IMAGE_NAME"; then
               docker logs --tail 200 "$APP_CONTAINER_NAME" 2>/dev/null || true
+              rollback_previous
               exit 1
             fi
 
-            HEALTH_URL="http://127.0.0.1:${HOST_PORT}/api/v1/health"
-            for attempt in $(seq 1 30); do
-              if curl --fail --silent --show-error \
-                --connect-timeout 2 --max-time 5 \
-                "$HEALTH_URL"; then
-                printf '\nDocker deployment healthy: %s\n' "$APP_CONTAINER_NAME"
-                exit 0
-              fi
-              echo "Health check failed (${attempt}/30), waiting for application startup..."
-              sleep 2
-            done
+            if ! wait_ready \
+              "http://127.0.0.1:${HOST_PORT}${READY_PATH}" \
+              "$APP_CONTAINER_NAME"; then
+              docker logs --tail 200 "$APP_CONTAINER_NAME" 2>/dev/null || true
+              rollback_previous
+              exit 1
+            fi
 
-            docker logs --tail 200 "$APP_CONTAINER_NAME" || true
-            exit 1
+            printf '\nDocker deployment ready: %s (%s)\n' "$APP_CONTAINER_NAME" "$IMAGE_TAG"
