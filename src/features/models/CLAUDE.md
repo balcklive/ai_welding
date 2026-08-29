@@ -6,7 +6,7 @@
 
 - `ModelCenter.tsx`：
   - `TrainingDataPreparation`（`model-center/dataset-build`）：`listDatasets` 选数据集 + 来源单选（manual/split_task/annotation_task）→ `createDatasetVersion` 自动 `createBuildTask` + `useJob` → 展示 8:1:1 划分 + 样本总数/质量/快照。
-  - `ModelRepository`（`model-center/repository`）：`listModels` 汇总（总数/生产候选/最近训练）+ 模型卡片，「新建模型」← `createModel` + `refreshKey` 刷新计数。
+  - `ModelRepository`（`model-center/repository`）：`listModels` 汇总（总数/生产候选/最近训练）+ 模型卡片，「新建模型」← `createModel` + `refreshKey` 刷新计数。**标准模型目录常驻**（时序数据缺陷检测/目标检测/熔池分割三张能力入口卡，不再仅空状态显示），目录下方渲染模型卡片网格，无模型时显示空态文案。卡片图标按 `model.type` 经 `MODEL_TYPE_ICONS` 区分（时序分类→Activity、目标检测→Target、语义分割→ScanLine、多模态回归→BarChart3，未识别回退 `Cpu`，组件 `ModelTypeLogo`）。
   - `Training`（`model-center/training`）：`createTrainingTask`（超参读表单 `config`）+ `useJob` → 指标/损失曲线（`lossToPath` SVG path）/日志（`getTrainingLogs`）。`modelMetricText` 把 `metric` dict 转文案。
   - `ModelTestLive`（`model-center/testing`）：`createTestTask` + `useJob` → 指标 + 2×2 混淆矩阵。
   - `InferencePanel`（`model-center/inference`）：上传文件（`uploadFile`<100MB / `presignUpload`≥100MB + PUT，**PUT 后先查 `res.ok`**）→ `createInferenceTask` + `useJob` → 类别/置信度/耗时。
