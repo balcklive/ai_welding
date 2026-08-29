@@ -1689,7 +1689,8 @@ function Registration() {
     Promise.all([listDatasets(), listWelds({ tab: 'recent' })]).then(([datasetList, res]) => {
       if (cancelled) return;
       setDatasets(datasetList);
-      if (datasetList.length) setForm((prev) => ({ ...prev, dataset_id: prev.dataset_id || datasetList[0].id }));
+      // 上传是有副作用的新建操作，不应在用户未确认归属前自动选中第一个数据集。
+      // 保持占位项，强制用户明确选择目标数据集，避免误归属。
       setRecentRows(res.items.slice(0, 5).map((r) => ({ ...toWeldRow(r), time: (r.collected_at ?? r.created_at ?? '').replace('T', ' ').slice(0, 16) })));
     }).catch((err) => { if (!cancelled) { setRecentRows(mockWeldRows.slice(0, 3)); console.warn('[registration] registration context failed', err); } })
       .finally(() => { if (!cancelled) setRecentLoading(false); });
@@ -1866,6 +1867,7 @@ function toPath(values: number[], lo: number, hi: number): string {
 }
 
 type SplitPreviewSample = { index: number; start: number; end: number };
+const emptyPhaseValues: number[] = [];
 
 /** 按时间窗口从当前信号中取出样本缩略图数据。信号接口返回的点已抽稀，适合做小卡片预览。 */
 function sliceSignalWindow(channel: SignalChannel | undefined, start: number, end: number, duration: number): number[] {
@@ -1895,35 +1897,48 @@ function SampleWaveThumb({ sample, signals, duration }: { sample: SplitPreviewSa
 }
 
 
-function PhasePlot({ cursor, onCursor, data }: { cursor: number; onCursor: (s: number) => void; data?: PhaseData }) {
-  const w = 260; const h = 230; const pad = 26; const pw = w - pad * 2; const ph = h - pad * 2;
-  const fullX = { lo: 140, hi: 230 }; const fullY = { lo: 15, hi: 30 };
+function PhasePlot({ cursor, onCursor, data, loading }: { cursor: number; onCursor: (s: number) => void; data?: PhaseData; loading?: boolean }) {
+  const w = 520; const h = 300; const pad = 42; const pw = w - pad * 2; const ph = h - pad * 2;
+  const domain = (values: number[], fallback: { lo: number; hi: number }, minimumSpan: number) => {
+    let min = Infinity; let max = -Infinity;
+    for (const value of values) { if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); } }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return fallback;
+    const span = Math.max(max - min, minimumSpan);
+    const margin = Math.max(span * 0.06, minimumSpan * 0.08);
+    const center = (min + max) / 2;
+    return { lo: center - span / 2 - margin, hi: center + span / 2 + margin };
+  };
+  const rawCurrent = data?.current ?? emptyPhaseValues;
+  const rawVoltage = data?.voltage ?? emptyPhaseValues;
+  const fullX = useMemo(() => domain(data?.current ?? emptyPhaseValues, { lo: 140, hi: 230 }, 10), [data]);
+  const fullY = useMemo(() => domain(data?.voltage ?? emptyPhaseValues, { lo: 15, hi: 30 }, 2), [data]);
   const [xRange, setXRange] = useState(fullX);
   const [yRange, setYRange] = useState(fullY);
+  useEffect(() => { setXRange(fullX); setYRange(fullY); }, [fullX, fullY]);
   const cxLo = xRange.lo; const cxHi = xRange.hi; const cvLo = yRange.lo; const cvHi = yRange.hi;
   const toX = (c: number) => pad + ((c - cxLo) / (cxHi - cxLo)) * pw;
   const toY = (v: number) => pad + (1 - (v - cvLo) / (cvHi - cvLo)) * ph;
-  const curArr = data && data.current.length ? data.current : sigCur;
-  const volArr = data && data.voltage.length ? data.voltage : sigVol;
-  const n = Math.min(curArr.length, volArr.length);
-  const points = Array.from({ length: n }, (_, i) => {
+  const n = Math.min(rawCurrent.length, rawVoltage.length);
+  const step = Math.max(1, Math.ceil(n / 1800));
+  const points = Array.from({ length: Math.ceil(n / step) }, (_, bucket) => {
+    const i = Math.min(bucket * step, n - 1);
     const ts = (i / Math.max(n - 1, 1)) * dur;
-    return { x: toX(curArr[i]), y: toY(volArr[i]), ts, i, anom: isAnom(ts) };
-  });
+    return { x: toX(rawCurrent[i]), y: toY(rawVoltage[i]), ts, i, anom: isAnom(ts) };
+  }).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-  const cursorIdx = Math.min(points.length - 1, Math.max(0, Math.round((cursor / dur) * (points.length - 1))));
+  const cursorIdx = Math.min(Math.max(points.length - 1, 0), Math.max(0, Math.round((cursor / dur) * (points.length - 1))));
   const cp = points[cursorIdx];
   const x = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const relX = (e.clientX - rect.left) / rect.width * w;
     const c = cxLo + ((relX - pad) / pw) * (cxHi - cxLo);
     let best = 0; let bd = Infinity;
-    for (let i = 0; i < points.length; i++) { const d = Math.abs(curArr[i] - c); if (d < bd) { bd = d; best = i; } }
-    onCursor(points[best].ts);
+    for (let i = 0; i < n; i++) { const d = Math.abs(rawCurrent[i] - c); if (d < bd) { bd = d; best = i; } }
+    onCursor((best / Math.max(n - 1, 1)) * dur);
   };
   const zoomAt = (factor: number, focalX = (cxLo + cxHi) / 2, focalY = (cvLo + cvHi) / 2) => {
-    const nextXSpan = Math.max(8, Math.min(90, (cxHi - cxLo) * factor));
-    const nextYSpan = Math.max(2, Math.min(15, (cvHi - cvLo) * factor));
+    const nextXSpan = Math.max((fullX.hi - fullX.lo) * 0.08, Math.min(fullX.hi - fullX.lo, (cxHi - cxLo) * factor));
+    const nextYSpan = Math.max((fullY.hi - fullY.lo) * 0.08, Math.min(fullY.hi - fullY.lo, (cvHi - cvLo) * factor));
     const xRatio = (focalX - cxLo) / Math.max(cxHi - cxLo, 1);
     const yRatio = (focalY - cvLo) / Math.max(cvHi - cvLo, 1);
     const nextXLo = Math.max(fullX.lo, Math.min(fullX.hi - nextXSpan, focalX - xRatio * nextXSpan));
@@ -1942,12 +1957,12 @@ function PhasePlot({ cursor, onCursor, data }: { cursor: number; onCursor: (s: n
   };
   const reset = () => { setXRange(fullX); setYRange(fullY); };
   return <div className="phase-plot-wrap">
-    <div className="phase-zoom-tools" role="group" aria-label="相图缩放控制">
+    {points.length > 0 && <div className="phase-zoom-tools" role="group" aria-label="相图缩放控制">
       <button type="button" onClick={() => zoomAt(1 / 1.15)} aria-label="放大相图" title="放大"><Plus size={13} /></button>
       <button type="button" onClick={() => zoomAt(1.15)} aria-label="缩小相图" title="缩小"><Minus size={13} /></button>
       <button type="button" onClick={reset} aria-label="重置相图缩放" title="重置">1:1</button>
-    </div>
-    <svg viewBox={`0 0 ${w} ${h}`} className="phase-svg" onMouseMove={x} onWheel={onWheel} onMouseLeave={() => {}}>
+    </div>}
+    {!points.length ? <div className="phase-empty" role="status">{loading ? '真实 UI 相图加载中…' : '暂无真实 UI 相图数据'}</div> : <svg viewBox={`0 0 ${w} ${h}`} className="phase-svg" onMouseMove={x} onWheel={onWheel} onMouseLeave={() => {}}>
     <defs><clipPath id="phase-plot-clip"><rect x={pad} y={pad} width={pw} height={ph} /></clipPath></defs>
     <line x1={pad} y1={pad} x2={pad} y2={pad + ph} stroke="#e8efef" />
     <line x1={pad} y1={pad + ph} x2={pad + pw} y2={pad + ph} stroke="#e8efef" />
@@ -1956,8 +1971,8 @@ function PhasePlot({ cursor, onCursor, data }: { cursor: number; onCursor: (s: n
     <g clipPath="url(#phase-plot-clip)"><path d={path} fill="none" stroke="#2c9caf" strokeWidth="1.4" opacity="0.55" />
     {points.filter((p) => p.anom).map((p) => <circle key={p.i} cx={p.x} cy={p.y} r="2.4" fill="#e88d6c" opacity="0.7" />)}
     </g>
-    <circle cx={cp.x} cy={cp.y} r="5" fill="#fff" stroke="#e88d6c" strokeWidth="2.5" />
-    </svg><span className="phase-zoom-hint">滚轮缩放 · 指针定位</span>
+    {cp && <circle cx={cp.x} cy={cp.y} r="5" fill="#fff" stroke="#e88d6c" strokeWidth="2.5" />}
+    </svg>}<span className="phase-zoom-hint">滚轮缩放 · 指针定位 · 自动适配数据范围</span>
   </div>;
 }
 
@@ -2251,6 +2266,7 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   const [dwtData, setDwtData] = useState<DwtData | null>(null);
   const [waveletData, setWaveletData] = useState<WaveletData | null>(null);
   const [phaseData, setPhaseData] = useState<PhaseData | null>(null);
+  const [phaseLoading, setPhaseLoading] = useState(false);
   const [pddData, setPddData] = useState<PddData | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -2302,9 +2318,10 @@ function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string 
   useEffect(() => {
     if (!dataId || versionId == null || signalSource !== 'real') return;
     let cancelled = false;
+    setPhaseLoading(true);
     setPhaseData(null);
     const filter = filterOn ? { type: filterType, cutoff, cutoff2: filterType === '带通' ? cutoff2 : undefined } : undefined;
-    getAnalysisMode(dataId, String(versionId), 'phase', 'cur', filter).then((data) => { if (!cancelled) setPhaseData(data as PhaseData); }).catch((err) => { if (!cancelled) console.warn('[analysis] phase failed', err); });
+    getAnalysisMode(dataId, String(versionId), 'phase', 'cur', filter).then((data) => { if (!cancelled) setPhaseData(data as PhaseData); }).catch((err) => { if (!cancelled) console.warn('[analysis] phase failed', err); }).finally(() => { if (!cancelled) setPhaseLoading(false); });
     return () => { cancelled = true; };
   }, [dataId, versionId, signalSource, filterOn, filterType, cutoff, cutoff2]);
   // 侧边 PDD 分布（按所选通道）
@@ -3061,6 +3078,6 @@ function Training() {
   const loss = trainRes?.loss_curve ?? null;
   const trainPath = loss && loss.train.length > 1 ? lossToPath(loss.train) : '';
   const valPath = loss && loss.val.length > 1 ? lossToPath(loss.val) : '';
-  return <div className="page-wrap"><PageIntro eyebrow="模型工坊" title="模型训练" description="选择模型与数据集，创建可追踪的训练任务。" action={<button className={`primary-button ${isTraining ? 'training-button' : ''}`} onClick={() => { if (isTraining) { setIsTraining(false); setJobId(null); } else handleStart(); }}>{isTraining ? <Activity size={16} /> : <Play size={16} />}{isTraining ? '训练进行中' : '开始新训练'}</button>} /><div className="training-layout"><section className="panel config-panel"><div className="panel-heading"><div><h2>训练配置</h2><p>先选择要训练的模型，再选择一个或多个数据集版本</p></div><span className="draft-tag">{isTraining ? '执行中' : '草稿'}</span></div><div className="form-block"><label>模型类型</label><select className="native-select" value={modelType} onChange={(event) => { setModelType(event.target.value); setBaseModelVersionId(null); }}><option value="">请选择模型类型</option>{[...new Set(models.map((model) => model.type))].map((type) => <option key={type} value={type}>{type}</option>)}</select></div><div className="form-block"><label>基础模型 / 已训练模型（可选）</label><select className="native-select" value={baseModelVersionId ?? ''} onChange={(event) => setBaseModelVersionId(event.target.value ? Number(event.target.value) : null)} disabled={!modelType}><option value="">从零开始训练</option>{availableModels.flatMap((model) => model.latest_version_id ? [<option key={model.latest_version_id} value={model.latest_version_id}>{model.name} {model.version ?? ''} · {modelMetricText(model.metric)}</option>] : [])}</select></div><div className="form-block"><label>训练数据集（可多选）</label><div className="training-dataset-options">{datasets.length ? datasets.map((dataset) => { const versionId = dataset.current_version_id; const selected = versionId != null && selectedDatasetIds.includes(versionId); return <label className={`training-dataset-option ${selected ? 'selected' : ''}`} key={dataset.id}><input type="checkbox" disabled={versionId == null || dataset.status !== '可训练'} checked={selected} onChange={() => { if (versionId == null) return; setSelectedDatasetIds((ids) => ids.includes(versionId) ? ids.filter((id) => id !== versionId) : [...ids, versionId]); }} /><span><strong>{dataset.name}</strong><small>{dataset.version ?? '暂无版本'} · {dataset.sample_count.toLocaleString()} 条样本 · {dataset.status}</small></span></label>; }) : <p className="dataset-empty-state">暂无可用数据集。</p>}</div>{selectedDatasets.length > 0 && <small className="form-help">已选择 {selectedDatasets.length} 个数据集版本，共 {selectedDatasets.reduce((sum, dataset) => sum + dataset.sample_count, 0).toLocaleString()} 条样本</small>}</div><div className="parameter-grid"><div className="form-block"><label>训练轮数 <CircleHelp size={13} /></label><input className="input-field" type="number" min="1" value={config.epochs} readOnly /></div><div className="form-block"><label>批次大小 <CircleHelp size={13} /></label><input className="input-field" type="number" min="1" value={config.batch_size} readOnly /></div><div className="form-block"><label>学习率</label><input className="input-field" value={config.learning_rate} readOnly /></div><div className="form-block"><label>验证集比例</label><input className="input-field" value={`${config.val_ratio * 100}%`} readOnly /></div></div><button className="full-button" disabled={isTraining || !modelType || !selectedDatasetIds.length} onClick={handleStart}>{isTraining ? <><Activity size={16} />训练任务运行中</> : <><Play size={16} />开始训练任务</>}</button></section><section className="panel training-chart-panel"><div className="panel-heading"><div><h2>训练表现</h2><p>{jobId ? `任务 #${jobId} · 实时更新` : '开始训练后，这里将展示训练表现'}</p></div><span className={`run-status ${isTraining ? 'running' : ''}`}><i />{jobStatus === 'succeeded' ? '已完成' : jobStatus === 'failed' ? '失败' : isTraining ? `运行中 ${progress}%` : '未开始'}</span></div><div className="metric-row"><div><span>mAP@50</span><strong>{mAP}</strong></div><div><span>精确率</span><strong>{precision}</strong></div><div><span>召回率</span><strong>{recall}</strong></div></div>{loss ? <><div className="line-chart"><div className="chart-y"><span>1.0</span><span>0.8</span><span>0.6</span><span>0.4</span><span>0.2</span><span>0</span></div><svg viewBox="0 0 600 250" preserveAspectRatio="none" role="img" aria-label="训练指标曲线"><path d={trainPath} fill="none" stroke="#1d8fa5" strokeWidth="4" /><path d={valPath} fill="none" stroke="#f0a34a" strokeWidth="3" strokeDasharray="7 7" /></svg><div className="chart-x"><span>0</span><span>10</span><span>20</span><span>30</span><span>40</span><span>{config.epochs} epochs</span></div></div><div className="chart-key"><span><i className="legend-blue" />训练损失</span><span><i className="legend-orange" />验证损失</span></div></> : <div className="training-empty-state"><BarChart3 size={30} /><span>训练开始后显示指标和损失曲线</span></div>}</section></div><div className="training-note"><Terminal size={17} /><div><strong>训练日志</strong><p>{logs ?? (jobId ? '等待训练任务日志…' : '暂无训练日志')}</p></div><button className="ghost-button" disabled={!jobId} onClick={handleLogs}>查看完整日志 <ArrowUpRight size={14} /></button></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="模型工坊" title="模型训练" description="选择模型与数据集，创建可追踪的训练任务。" action={<button className={`primary-button ${isTraining ? 'training-button' : ''}`} onClick={() => { if (isTraining) { setIsTraining(false); setJobId(null); } else handleStart(); }}>{isTraining ? <Activity size={16} /> : <Play size={16} />}{isTraining ? '训练进行中' : '开始新训练'}</button>} /><div className="training-layout"><section className="panel config-panel"><div className="panel-heading"><div><h2>训练配置</h2><p>先选择要训练的模型，再选择一个或多个数据集版本</p></div><span className="draft-tag">{isTraining ? '执行中' : '草稿'}</span></div><div className="form-block"><label>模型类型</label><select className="native-select" value={modelType} onChange={(event) => { setModelType(event.target.value); setBaseModelVersionId(null); }}><option value="">请选择模型类型</option>{[...new Set(models.map((model) => model.type))].map((type) => <option key={type} value={type}>{type}</option>)}</select></div><div className="form-block"><label>基础模型 / 已训练模型（可选）</label><select className="native-select" value={baseModelVersionId ?? ''} onChange={(event) => setBaseModelVersionId(event.target.value ? Number(event.target.value) : null)} disabled={!modelType}><option value="">从零开始训练</option>{availableModels.flatMap((model) => model.latest_version_id ? [<option key={model.latest_version_id} value={model.latest_version_id}>{model.name} {model.version ?? ''} · {modelMetricText(model.metric)}</option>] : [])}</select></div><div className="form-block"><label>训练数据集（可多选）</label><div className="training-dataset-options">{datasets.length ? datasets.map((dataset) => { const versionId = dataset.current_version_id; const selected = versionId != null && selectedDatasetIds.includes(versionId); const readiness = datasetReadiness[dataset.id]; const trainable = readiness === '可训练'; return <label className={`training-dataset-option ${selected ? 'selected' : ''}`} key={dataset.id}><input type="checkbox" disabled={versionId == null || readiness == null || !trainable} checked={selected} onChange={() => { if (versionId == null || !trainable) return; setSelectedDatasetIds((ids) => ids.includes(versionId) ? ids.filter((id) => id !== versionId) : [...ids, versionId]); }} /><span><strong>{dataset.name}</strong><small>{dataset.version ?? '暂无版本'} · {dataset.sample_count.toLocaleString()} 条样本 · {readiness ?? '检查中…'}</small></span></label>; }) : <p className="dataset-empty-state">暂无可用数据集。</p>}</div>{selectedDatasets.length > 0 && <small className="form-help">已选择 {selectedDatasets.length} 个数据集版本，共 {selectedDatasets.reduce((sum, dataset) => sum + dataset.sample_count, 0).toLocaleString()} 条样本</small>}</div><div className="parameter-grid"><div className="form-block"><label>训练轮数 <CircleHelp size={13} /></label><input className="input-field" type="number" min="1" value={config.epochs} readOnly /></div><div className="form-block"><label>批次大小 <CircleHelp size={16} /></label><input className="input-field" type="number" min="1" value={config.batch_size} readOnly /></div><div className="form-block"><label>学习率</label><input className="input-field" value={config.learning_rate} readOnly /></div><div className="form-block"><label>验证集比例</label><input className="input-field" value={`${config.val_ratio * 100}%`} readOnly /></div></div><button className="full-button" disabled={isTraining || !modelType || !selectedDatasetIds.length} onClick={handleStart}>{isTraining ? <><Activity size={16} />训练任务运行中</> : <><Play size={16} />开始训练任务</>}</button>{trainingError && <p className="dataset-empty-state" role="alert">{trainingError}</p>}</section><section className="panel training-chart-panel"><div className="panel-heading"><div><h2>训练表现</h2><p>{jobId ? `任务 #${jobId} · 实时更新` : '开始训练后，这里将展示训练表现'}</p></div><span className={`run-status ${isTraining ? 'running' : ''}`}><i />{jobStatus === 'succeeded' ? '已完成' : jobStatus === 'failed' ? '失败' : isTraining ? `运行中 ${progress}%` : '未开始'}</span></div><div className="metric-row"><div><span>mAP@50</span><strong>{mAP}</strong></div><div><span>精确率</span><strong>{precision}</strong></div><div><span>召回率</span><strong>{recall}</strong></div></div>{loss ? <><div className="line-chart"><div className="chart-y"><span>1.0</span><span>0.8</span><span>0.6</span><span>0.4</span><span>0.2</span><span>0</span></div><svg viewBox="0 0 600 250" preserveAspectRatio="none" role="img" aria-label="训练指标曲线"><path d={trainPath} fill="none" stroke="#1d8fa5" strokeWidth="4" /><path d={valPath} fill="none" stroke="#f0a34a" strokeWidth="3" strokeDasharray="7 7" /></svg><div className="chart-x"><span>0</span><span>10</span><span>20</span><span>30</span><span>40</span><span>{config.epochs} epochs</span></div></div><div className="chart-key"><span><i className="legend-blue" />训练损失</span><span><i className="legend-orange" />验证损失</span></div></> : <div className="training-empty-state"><BarChart3 size={30} /><span>训练开始后显示指标和损失曲线</span></div>}</section></div><div className="training-note"><Terminal size={17} /><div><strong>训练日志</strong><p>{logs ?? (jobId ? '等待训练任务日志…' : '暂无训练日志')}</p></div><button className="ghost-button" disabled={!jobId} onClick={handleLogs}>查看完整日志 <ArrowUpRight size={14} /></button></div></div>;
 }
 export default App;
