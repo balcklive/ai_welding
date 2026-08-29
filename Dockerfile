@@ -8,6 +8,7 @@ RUN npm ci
 
 COPY index.html vite.config.ts tsconfig*.json tailwind.config.js postcss.config.js eslint.config.js ./
 COPY src ./src
+COPY public ./public
 RUN npm run build
 
 FROM python:3.12-slim-bookworm AS backend-dependencies
