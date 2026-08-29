@@ -268,6 +268,17 @@
     `session.rollback()` 再重取 ingest/job 写 failed，勿重抛，见 jobs/CLAUDE.md）。
   - **坑**：pandas ≥3.0 已移除 `fillna(method="ffill")`，须用 `.ffill()`；存储延迟导入
     （`from app.storage import get_storage`），测试 monkeypatch。
+  - **坑（幂等失败不重跑，2026-08-29 线上排查）**：`signal_ingests` 对
+    `(version_id, source_object_key)` 幂等——CSV 挂载时若**已有**该 CSV 的 ingest 行（含 failed），
+    `POST …/raw-files` 直接 `40900 "CSV 已存在导入任务"`，**永远不会自动重试**。因此若 CSV 是在
+    **旧代码/有 bug 的代码**下导入失败的（如 ISO 时间列在修复前被判全 NaN），即便当前代码已能解析，
+    这条"陈旧失败"也会一直卡住、信号预览持续 400「当前版本没有成功导入的真实时序信号」。
+    恢复办法：删除该焊缝的失败 `signal_ingests` 行（及其 failed Job），再用
+    `POST /registrations/{id}/raw-files` 重挂同 CSV key 触发重新导入。
+  - **坑（列名别名缺失导致信号静默丢弃）**：`_HEADER_ALIASES` 未覆盖的真实列名（如 `GasSpeed`、
+    `tag0`）进 `unknown`，仅 R2 warn、不落通道（缺失通道 Parquet 补零）。2026-08-29 已将
+    `GasSpeed`/`gas_speed`/`gasflowspeed` 补入 gas 别名——真实数据列名务必先查别名表，缺则补，
+    避免"有真实信号但通道全 0"。
 
 ## 坑/限制
 

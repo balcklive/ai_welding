@@ -90,8 +90,9 @@ def test_real_csv_iso_time_parses_r6_pass():
     column_map, unknown = svc.map_columns(list(df.columns))
     assert "time" in column_map
     assert "cur" in column_map and "vol" in column_map
-    # GasSpeed/tag0/tag1 未被别名识别 → 未知列 → R2 warn，属预期（本用例只关注时间解析）
-    assert "gasspeed" in [c.lower() for c in unknown]
+    # GasSpeed 已加入 gas 别名（2026-08-29 修复）→ 不再进未知列；tag0/tag1 仍未知 → R2 warn
+    assert "gas" in column_map and column_map["gas"] == "GasSpeed"
+    assert "gasspeed" not in [c.lower() for c in unknown]
 
     result = svc.validate_signal(df)
     # 时间解析不再是 fail 根因：R6 采样一致性必须 pass，overall 不因时间解析 fail
@@ -99,6 +100,14 @@ def test_real_csv_iso_time_parses_r6_pass():
     assert result["overall"] != "fail"
     assert result["fs"] is not None
     assert result["duration"] > 0
+
+
+def test_map_columns_gas_speed_aliases():
+    """GasSpeed / gas_speed / gasflowspeed 系列列名应映射到 gas 通道，而非未知列丢弃。"""
+    for header in ("GasSpeed", "gas_speed", "gas speed", "gasflow", "gas flow"):
+        cm, unknown = svc.map_columns([header])
+        assert cm.get("gas") == header, f"{header!r} 应映射到 gas 通道"
+        assert header not in unknown, f"{header!r} 不应进未知列"
 
 
 def _iso_weld_df(

@@ -54,7 +54,18 @@ _HEADER_ALIASES: dict[str, list[str]] = {
     "time": ["时间", "时间戳", "time", "timestamp", "t"],
     "cur": ["电流", "电流(a)", "电流a", "current", "current(a)", "cur", "i", "ia"],
     "vol": ["电压", "电压(v)", "电压v", "voltage", "voltage(v)", "vol", "u", "uv"],
-    "gas": ["气体流量", "气体流量(l/min)", "gas", "gas(l/min)", "gasflow", "gas_flow", "g"],
+    "gas": [
+        "气体流量",
+        "气体流量(l/min)",
+        "gas",
+        "gas(l/min)",
+        "gasflow",
+        "gas_flow",
+        "g",
+        "gasspeed",
+        "gas_speed",
+        "gasflowspeed",
+    ],
     "wir": ["送丝速度", "送丝速度(m/min)", "wire", "wire(m/min)", "wire_speed", "wir", "w"],
 }
 
