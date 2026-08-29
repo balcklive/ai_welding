@@ -8,13 +8,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(__dirname, 'App.tsx'), 'utf8');
 const datasetSource = fs.readFileSync(path.join(__dirname, 'features/datasets/DatasetWorkspace.tsx'), 'utf8');
 const dataContextSource = fs.readFileSync(path.join(__dirname, 'features/data-context/DataContext.tsx'), 'utf8');
+const alignmentSource = fs.readFileSync(path.join(__dirname, 'features/alignment/AlignmentWorkspace.tsx'), 'utf8');
 
 test('Alignment split panel exposes editable buffer seconds and wires them to split API', () => {
-  assert.match(source, /bufferSeconds/);
-  assert.match(source, /setBufferSeconds/);
-  assert.match(source, /type="number"/);
-  assert.match(source, /createSplitTask\([^\n]+keep_event_buffer:/s);
-  assert.doesNotMatch(source, /createSplitTask\([^\n]+keep_event_buffer:\s*0\.2/s);
+  assert.match(alignmentSource, /bufferSeconds/);
+  assert.match(alignmentSource, /setBufferSeconds/);
+  assert.match(alignmentSource, /type="number"/);
+  assert.match(alignmentSource, /createSplitTask\([^\n]+keep_event_buffer:/s);
+  assert.doesNotMatch(alignmentSource, /createSplitTask\([^\n]+keep_event_buffer:\s*0\.2/s);
 });
 
 test('version view buttons open the appropriate detail drawer', () => {
