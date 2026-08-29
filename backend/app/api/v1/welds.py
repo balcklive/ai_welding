@@ -177,6 +177,33 @@ def get_weld(
     return ok(svc.record_payload(session, record))
 
 
+@router.delete("/welds/{weld_id}")
+def delete_weld(
+    weld_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """删除单条焊缝及其版本产物；已进入切分/标注/固定快照时拒绝删除。"""
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    forbid_unless_record_owned(session, current_user, record)
+    try:
+        result = svc.delete_record(session, record)
+    except svc.WeldDeleteConflict as exc:
+        return err(40900, str(exc), status=409)
+    write_audit(
+        session,
+        current_user.id,
+        "delete",
+        "weld",
+        weld_id,
+        {"registration_no": record.registration_no, **result},
+    )
+    session.commit()
+    return ok({"deleted": True, **result})
+
+
 # ── 登记 ─────────────────────────────────────────────────────────────
 
 

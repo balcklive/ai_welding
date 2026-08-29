@@ -25,7 +25,12 @@ export async function listWelds(
 
 /** 单条焊缝详情（来源/焊机/模态/核验状态/最新版本）。 */
 export async function getWeld(weldId: string): Promise<DataRecord> {
-  return request<DataRecord>(`/welds/${weldId}`);
+  return request<DataRecord>(`/welds/${weldId}`, { cacheTtlMs: 15 * 1000 });
+}
+
+/** 删除单条焊缝；已进入切分/标注/固定快照时由后端拒绝。 */
+export async function deleteWeld(weldId: string): Promise<{ deleted: boolean; deleted_versions: number }> {
+  return request<{ deleted: boolean; deleted_versions: number }>(`/welds/${weldId}`, { method: 'DELETE' });
 }
 
 /** 新建登记：同时生成 v1.0「原始数据」版本，返回与 DataRecord 同构的登记信息。 */
@@ -71,7 +76,7 @@ export async function getRegistration(id: string): Promise<Registration> {
 
 /** 版本链（v1.0~v1.3 + 操作人/时间/动作）。 */
 export async function listVersions(weldId: string): Promise<DataVersion[]> {
-  return request<DataVersion[]>(`/welds/${weldId}/versions`);
+  return request<DataVersion[]>(`/welds/${weldId}/versions`, { cacheTtlMs: 15 * 1000 });
 }
 
 /** 新建数据版本（去噪处理/人工修正等加工动作，不覆盖旧版）。 */
@@ -94,7 +99,7 @@ export async function getVersion(
   weldId: string,
   versionId: string,
 ): Promise<DataVersion> {
-  return request<DataVersion>(`/welds/${weldId}/versions/${versionId}`);
+  return request<DataVersion>(`/welds/${weldId}/versions/${versionId}`, { cacheTtlMs: 15 * 1000 });
 }
 
 /** 执行核验（同步 15 项规则），返回质量评分 + 通过/警告/失败计数。 */

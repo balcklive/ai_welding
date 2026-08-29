@@ -31,6 +31,7 @@ from threading import Lock
 
 from sqlmodel import Session, func, or_, select
 
+from app.models.analysis import AlignmentTask, FeatureExtraction, SignalIngest, SplitTask
 from app.models.data import (
     DataRecord,
     DataVersion,
@@ -77,6 +78,10 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "sample_rate",
     "dataset_id",
 )
+
+
+class WeldDeleteConflict(ValueError):
+    """焊缝仍被不可逆业务产物引用，不能安全删除。"""
 
 _REGISTRATION_PAYLOAD_LOCK = Lock()
 _ACTIVE_REGISTRATION_KEYS: set[str] = set()
@@ -551,6 +556,45 @@ def list_welds(
 
 def get_record_by_weld_id(session: Session, weld_id: str) -> DataRecord | None:
     return session.exec(select(DataRecord).where(DataRecord.weld_id == weld_id)).first()
+
+
+def delete_record(session: Session, record: DataRecord) -> dict[str, int]:
+    """删除焊缝及其可安全删除的处理产物。"""
+    versions = session.exec(
+        select(DataVersion).where(DataVersion.record_id == record.id)
+    ).all()
+    version_ids = [version.id for version in versions if version.id is not None]
+    if version_ids:
+        # 固定数据集快照和切分/标注产物都是可复现资产，不能因删除原始焊缝而失效。
+        split_ids = [task.id for task in session.exec(
+            select(SplitTask).where(SplitTask.version_id.in_(version_ids))
+        ).all() if task.id is not None]
+        if split_ids:
+            raise WeldDeleteConflict("焊缝已进入固定数据集快照或标注流程，不能删除")
+
+        for version_id in version_ids:
+            for report in session.exec(select(ValidationReport).where(
+                ValidationReport.version_id == version_id
+            )).all():
+                for rule in session.exec(select(ValidationRuleResult).where(
+                    ValidationRuleResult.report_id == report.id
+                )).all():
+                    session.delete(rule)
+                session.delete(report)
+            for model in (AlignmentTask, FeatureExtraction, SignalIngest):
+                for item in session.exec(select(model).where(model.version_id == version_id)).all():
+                    session.delete(item)
+        record.latest_version_id = None
+        session.flush()
+        for version in versions:
+            session.delete(version)
+        # DataVersion.record_id 是父记录删除的外键；先实际删除版本，避免 MySQL
+        # 在同一次 flush 中错误地先删除 data_records。
+        session.flush()
+
+    session.delete(record)
+    session.flush()
+    return {"deleted_versions": len(versions)}
 
 
 def list_through_welds(session: Session, weld_ids: list[str] | None = None) -> list[DataRecord]:
