@@ -14,8 +14,10 @@
 - `功能验证测试清单.md`：**业务功能验证总清单**——在真实数据登记、核验和检测已跑通后，继续覆盖版本、对齐、切分、标注、特征、数据集、模型、报告、对象存储、审计、鉴权、异常、边界、并发和负载测试；每项包含编号、操作目标、通过标准和当前模拟实现边界。
 - `真实数据端到端走通记录.md`：**真实数据全流程走通实录**（登记→上传→信号导入→核验→分析，2026-08-25）——每步接口与结果、两个数据适配发现（time 列数值秒、量程放宽）、`detect_events` 阈值自适应 + 边界伪异常修复、复现方法与边界。
 - `工程大文件切割方案.md`：**大文件切割方案**——前端批次（App/features/CSS）已完成（`App.tsx` 收敛至 ~138 行）；后端批次（analysis/datasets/welds 大文件拆分）未执行，见文档 §6。
-- `业务流程与产品体验验收测试计划.md`：**业务流程与产品体验验收测试计划**（ForgeLab 业务闭环 + 产品/UI 评估 + 增量回归，原 `Playwright菜单功能测试计划.md`，2026-08-29 改名与内容对齐）——待执行。
+- `业务流程与产品体验验收测试计划.md`：**业务流程与产品体验验收测试计划**（平台业务闭环 + 产品/UI 评估 + 增量回归，原 `Playwright菜单功能测试计划.md`，2026-08-29 改名与内容对齐）——待执行。
 - `模型中心开源集成评估.md`：**MLflow 集成评估与落地方案**——第一阶段（embedded 模式嵌入 FastAPI）已落地；第二阶段（真实训练内核接入 + 模型注册）待执行。
+- `使用手册.md`：**面向最终用户的项目使用手册**（介绍为主）——项目简介、整体业务流程、四大模块逐页功能说明（嵌入 `images/manual/` 下 19 张 Playwright 实机截图）、全局使用约定与系统能力边界。配套交付版 `使用手册.docx` / `使用手册.pdf`（由 `使用手册.html` 经 pypandoc + Chromium 打印生成，改 md 后需重新导出）。
+- `images/manual/`：使用手册全部页面截图（00-login 至 18-inference，1600×900 视口，Playwright CLI 截取，登录账号走本地 dev 服务）。
 - `特征提取发布门禁.md`：**特征提取第二阶段发布门禁**——发布前运行 `scripts/feature_release_gate.py`，含视觉服务/连接探测/seed 关闭/PT 导出/前后端门禁验收清单，尚未执行。
 
 坑/限制：
@@ -24,6 +26,7 @@
 - **已回写差异（Task 25）**：① `POST /registrations/{id}/raw-files` 请求体新增可选 `storage_bytes`（缺省 0）；② `POST /files/presign-upload` 请求体新增可选 `filename`（缺省 `"file"`）；③ `GET /welds` 筛选映射说明（`tab=已归档`→`quality=='通过'`、`tab=最近`=created_at desc、`brand`→`machine` 前缀）；④ `DataVersion` 前端以 `record_id` 关联、`Project` 无 `id` 字段；⑤ `exportReport` 返回 `{urls:[{ref_id,url}]}`、`login` 返回含 `token_type`、`createDatasetVersion` 的 `name` 可选；⑥ `POST /datasets/{id}/versions` 的 `name`/`note` 与 `POST /datasets` 的 `source` 接受但不落库（表无列）；⑦ `数据库设计.md` §4 记录 `training_tasks.base_model_id` 无索引（与"所有任务表 FK 列均建索引"矛盾的既有设计）；⑧ `开发规范.md` §1.1 补"分页自写 `paginate()` helper"刻意不复用项。
 - **已回写差异（标注 kind 升级，2026-08-27）**：`annotations` 表新增 `kind`（box/segment/polygon）、`points`、`start_time`、`end_time` 四列（见 `数据库设计.md` §3.11 与计划 `docs/superpowers/plans/2026-08-27-annotation-kinds.md`）；`POST …/labels` 的 `LabelItem` 支持按 `kind` 分支校验（box 四元组 / segment 时间区间 / polygon 顶点），现有 bbox 标注与老数据兼容。
 - **已回写差异（标注 P2/P3，2026-08-28）**：① `label_categories` 新增"熔池"类别（共 6 类，视频语义分割单类）；② `POST /annotation-tasks` source 新增 `signal`/`video`（均需 `version_id`，同步生成 `meta.mode='signal'/'video'` 锚点样本，video 锚点含 `video_key`）；③ 新增 `POST /annotation-tasks/{id}/frames`（视频帧锚点，body 含 `timestamp`/`frame_width?`/`frame_height?`）；④ 新增 `POST /annotation-tasks/{id}/export`（P3：video → 帧图+掩膜 PNG，signal → segment JSON，写 `processed/{weld_id}/annotate/`）；⑤ 前端新增 `react-image-annotate@1.8.0`（peer 仅 React 16，`--legacy-peer-deps` 安装，非受控组件走 `onExit`）与后端 `pillow` 依赖。
+- **已回写差异（多模态数据字段，2026-09-05）**：① `data_records` 新增 `wire_feed_speed`/`welding_speed`（单值工艺参数，登记可填/CSV 导入稳态回填）与 `data_fields`（JSON 字段概览），迁移 `0012`；② `signal_ingest` 全列动态导入（Parquet schema_version=2，核心 4 + 扩展通道 `weld_speed`/`j1..j6`/`pool_*` + 自动保留数值列），`/signals` 不带 `channels` 即返回全部分量；③ 电压量程放宽至 0–700V（兼容客户 `data/多模态分析.csv`）。登记表单/数据详情/源记录表/波形预览按此扩展，详见 `数据库设计.md` §3.2、`API接口清单.md` §3.3/3.4、`真实数据准备与导入.md` §2.3。
 - 三份契约强相关：改接口需同步 `API接口清单.md` + `数据库设计.md`（表/字段）+ `OSS存储设计.md`（对象键）+ 两端代码。
 - `POST /files/presign-upload` 为 OSS 设计补充的扩展端点（大文件直传），已回写进 `API接口清单.md`。
 - 登记原始文件挂载（`POST /registrations/{id}/raw-files` → `data_versions.object_keys`、`data_records.storage_bytes`）与标注任务（`POST /annotation-tasks` + `annotation_tasks` 表，`jobs.type` 含 annotation）是为覆盖前端功能补齐的修订，改动时勿删。

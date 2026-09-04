@@ -48,6 +48,8 @@ class RegistrationCreate(BaseModel):
     thickness: str | None = None
     current_voltage: str | None = None
     sample_rate: str | None = None
+    wire_feed_speed: str | None = None
+    welding_speed: str | None = None
 
 
 class RegistrationUpdate(BaseModel):
@@ -64,6 +66,8 @@ class RegistrationUpdate(BaseModel):
     thickness: str | None = None
     current_voltage: str | None = None
     sample_rate: str | None = None
+    wire_feed_speed: str | None = None
+    welding_speed: str | None = None
 
 
 class RawFilesRequest(BaseModel):

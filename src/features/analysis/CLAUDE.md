@@ -17,7 +17,7 @@
 
 ## 关键规则/坑
 
-- **通道 id `cur/vol/gas/wir` 前后端一致**；后端不输出颜色 → `chanColor` 按 id 映射。
+- **通道 id `cur/vol/gas/wir` 前后端一致**；后端不输出颜色 → `chanColor` 按 id 映射（`chartData.chanColorOf` 对扩展通道/未知通道按顺序/哈希稳定取色）。**2026-09**：时域波形 `getSignals` 不再写死 `channels` 过滤 → 后端返回该焊缝全部分量（核心 4 + 焊接速度/六轴/熔池扩展）；默认勾选核心 4，新增通道可在 toggle 中叠加查看。
 - `getSignals` 返回 `values` 已由 api 层抽稀 ≤512，`toPath` 按 `values.length` 归一化横轴（**勿按 mock 的 `SAMPLES`**）。
 - 六种图表都吃后端数组（`freqs/psd`、`magnitude`、`bands+approx`、`bands`、`current+voltage`、`bins+counts+kde`），未取到 API 时用 `values` 走原内部计算兜底（SVG 结构不动）；`DwtChart`/`WaveletDecomp` 有 API 时标签用后端 `band.name`。
 - 滤波由后端计算（请求带 `filter_type/cutoff/cutoff2`），前端不再本地 `applyFilter`。

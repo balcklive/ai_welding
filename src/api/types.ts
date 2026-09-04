@@ -70,6 +70,11 @@ export interface DataRecord {
   thickness: string | null;
   current_voltage: string | null;
   sample_rate: string | null;
+  /** 单值工艺参数：送丝速度 / 焊接速度（登记可填；标准 CSV 导入后按稳态中位数回填）。 */
+  wire_feed_speed: string | null;
+  welding_speed: string | null;
+  /** 导入字段概览：全通道稳态代表值 [{id,name,unit,value}]（CSV 导入自动写）。 */
+  data_fields: DataFieldSummaryItem[] | null;
   product: string | null;
   dataset_id: number;
   modalities: string[];
@@ -80,6 +85,14 @@ export interface DataRecord {
   created_at: string | null;
   updated_at: string | null;
   latest_version: DataVersion | null;
+}
+
+/** 一条焊缝数据记录的字段概览项（对应 CSV 一个通道列的稳态代表值）。 */
+export interface DataFieldSummaryItem {
+  id: string;
+  name: string;
+  unit: string;
+  value: number | null;
 }
 
 /**
@@ -578,6 +591,8 @@ export interface RegistrationForm {
   thickness?: string | null;
   current_voltage?: string | null;
   sample_rate?: string | null;
+  wire_feed_speed?: string | null;
+  welding_speed?: string | null;
 }
 
 export interface AnnotationTaskCreate {

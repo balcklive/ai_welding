@@ -91,7 +91,7 @@
 | 实体 | 说明 | 关键字段 |
 |---|---|---|
 | `User` | 用户（暂不细分角色） | id, username, display_name, role, avatar |
-| `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, weld_name, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, product, **dataset_id**(归属数据集 FK, 登记必填), modalities, quality, operator, storage_bytes, latest_version_id |
+| `DataRecord` | 焊缝数据登记（一条焊缝 = 一条记录） | id, weld_id, weld_name, registration_no, source, collected_at, machine, weld_method, material, thickness, current_voltage, sample_rate, **wire_feed_speed / welding_speed**(单值工艺参数，登记可填/CSV 导入稳态回填), **data_fields**(JSON 字段概览 `[{id,name,unit,value}]`，导入自动写), product, **dataset_id**(归属数据集 FK, 登记必填), modalities, quality, operator, storage_bytes, latest_version_id |
 | `DataVersion` | 数据版本（原始/去噪/对齐/人工修正…） | id, **record_id**(关联焊缝，后端序列化如此，前端经它关联所属焊缝), version_no, action, operator, object_keys[], created_at, note |
 | `ValidationReport` | 数据核验报告 | id, version_id, score, passed, warning, failed, duration, rules[] |
 | `ValidationRule` | 核验规则结果（15 项） | name, status(passed/warning/failed), message |
@@ -148,7 +148,7 @@
 > - `brand` → 映射 `machine` 前缀（`machine LIKE 'brand%'`，无 brand 列）；`source` → `source LIKE '前缀%'`；`status` → `quality` 精确匹配。
 > - `dataset_id` → `dataset_id` 精确匹配（列已有索引）；`dataset_id` 指向不存在的数据集 → `40401 数据集不存在`。
 | GET | `/api/v1/welds/{weld_id}` | 单条焊缝详情（来源/焊机/模态/核验状态/最新版本） | — 需登录 |
-| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `dataset_id`, `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`；`dataset_id` 必填，登记不得成为孤立数据（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填） |
+| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `dataset_id`, `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`, `wire_feed_speed?`, `welding_speed?`；`dataset_id` 必填，登记不得成为孤立数据（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填；`wire_feed_speed`/`welding_speed` 可由挂载标准多模态 CSV 导入后按稳态中位数自动回填，`data_fields` 不接受客户端） |
 | GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
 | PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息（含 `dataset_id` 可将数据移动到另一数据集） | body 同 POST（部分字段可选） |
 | POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量）。**含 `.csv` 对象键时自动创建 `signal_ingest` 任务**（解析+校验+写 MinIO Parquet，幂等：同文件不重复建任务）；**含视频扩展名 key 时自动创建 `media_prep` 任务**（探测编码 → 非浏览器友好（如 mpeg4）转 H.264+faststart 预览版写 `processed/{weld_id}/video/`，已是 h264+faststart 免转；失败不阻塞登记） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0) |
@@ -166,7 +166,7 @@
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/alignment-tasks` | 提交多模态对齐任务（**异步**；成功后自动生成新版本 `action=时间对齐` 并更新 `latest_version_id`） | body: `modalities[]` |
 | GET | `/api/v1/alignment-tasks/{task_id}` | 对齐任务状态/结果（**已真实化**）：`result` 内嵌 `events`（真实信号 `detect_events`，无导入回退生成并以 `event_source=real\|generated` 如实标注）、`tracks[]`（每条 `{channel, modality, availability(available\|generated\|unavailable), source, aligned, asset, object_key, metadata, reason}`，**部分成功语义**——缺失模态不阻塞任务）、`assets[]`（真实产物：`timeseries.csv`/`timeseries_weld.csv`/`keyframes/{event}.jpg`/`tracks.json`，经 `files.getFileUrl` 下载；视频不重编码，前端播放 `track.object_key` 指向的 raw 原始对象） | 轮询（Job 结构） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/alignment-tasks/latest` | 恢复指定焊缝版本最近一次对齐任务；无历史任务返回 `null`，用于刷新/重新进入页面恢复状态 | 需登录并校验焊缝归属 |
-| GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形（电流/电压/气体/送丝）。响应含 `source`(`real`=读导入的真实信号 / `generated`=确定性生成)。**波形预览两级加载**：`max_points`(2~20000) 触发服务端 **min-max 池化抽稀**（保留瞬态尖峰），每通道附 `times[]`（秒，与 values 等长且非均匀，前端按 [t,v] 画点）；`start`/`end`(秒) 只取时间窗（缩放增量取细节）。不传参数返回全分辨率（兼容旧调用方）；DSP 分析端点不受影响 | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`, `max_points`, `start`, `end` |
+| GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形。**真实信号（source=real）返回"核心 4（cur 电流/vol 电压/gas 气体流量/wir 送丝速度）+ 导入 CSV 的全部扩展通道"**（多模态分析格式含焊接速度 `weld_speed`、六轴关节 `j1..j6`、熔池几何 `pool_width/pool_height/pool_area/pool_perimeter` 及自动保留的数值列）；不传 `channels[]` 即返回全部分量，前端据此勾选；`generated` 仅核心 4。响应含 `source`。**波形预览两级加载**：`max_points`(2~20000) 触发服务端 **min-max 池化抽稀**（保留瞬态尖峰），每通道附 `times[]`（秒，与 values 等长且非均匀，前端按 [t,v] 画点）；`start`/`end`(秒) 只取时间窗。DSP 分析端点不受影响 | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`, `max_points`, `start`, `end` |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/{mode}` | 单视图分析数据：`mode` ∈ `psd\|stft\|dwt\|wavelet\|phase\|pdd` | query: `channel`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`（可选，滤波后计算，与信号页滤波联动） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/result` | AI 异常检测结果：焊接稳定度、正常/电弧不稳/飞溅比例、异常区段列表 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交数据切分任务（**异步**） | body: `fixed_rate`(帧/样本), `keep_event_buffer`(±s), `task_format`(目标检测/图像分类/语义分割/时序分类) |

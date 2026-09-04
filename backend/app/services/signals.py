@@ -25,14 +25,41 @@ import numpy as np
 
 #: 4 通道规格（id/name/unit/量程，对齐 App.tsx channels 常量）。
 #: 量程按真实焊接范围放宽（Task 18 数据导入实测：MAG 短路过渡电流峰值 ~530A、
-#: 电压峰值 ~70V，超出原演示档 300A/40V）。R5 量程校验与启发式阈值均以此 span 推导，
+#: 电压峰值 ~70V，超出原演示档 300A/40V）。电压档 2026-09 再次放宽到 0-700V：
+#: 客户产线多模态文件（data/多模态分析.csv）电压实测到 ~600V（源系统量纲/采集档不同），
+#: 过窄会让 R5 把整份真实文件判 fail。R5 量程校验与启发式阈值均以此 span 推导，
 #: 前端 y 轴经 channel.lo/hi 读取——改这里会同时影响导入校验、事件检测与图表量程。
 CHANNEL_SPECS: list[dict] = [
     {"id": "cur", "name": "电流", "unit": "A", "lo": 0.0, "hi": 600.0},
-    {"id": "vol", "name": "电压", "unit": "V", "lo": 0.0, "hi": 80.0},
+    {"id": "vol", "name": "电压", "unit": "V", "lo": 0.0, "hi": 700.0},
     {"id": "gas", "name": "气体流量", "unit": "L/min", "lo": 0.0, "hi": 60.0},
     {"id": "wir", "name": "送丝速度", "unit": "m/min", "lo": 0.0, "hi": 20.0},
 ]
+
+#: 标准扩展字段规格（多模态分析.csv 客户格式：焊接速度 / 六轴机械臂关节 / 熔池视觉几何）。
+#: 以通道形式随真实信号逐点导入/回放；lo/hi 给宽默认，导入时按实际数据 min/max 覆盖。
+#: DSP 事件/生成/42 维特征只依赖核心 4 通道（CHANNEL_SPECS），扩展字段不进这些计算。
+EXTRA_CHANNEL_SPECS: list[dict] = [
+    {"id": "weld_speed", "name": "焊接速度", "unit": "", "lo": 0.0, "hi": 1_000_000.0},
+    {"id": "j1", "name": "机器人关节1", "unit": "°", "lo": -360.0, "hi": 360.0},
+    {"id": "j2", "name": "机器人关节2", "unit": "°", "lo": -360.0, "hi": 360.0},
+    {"id": "j3", "name": "机器人关节3", "unit": "°", "lo": -360.0, "hi": 360.0},
+    {"id": "j4", "name": "机器人关节4", "unit": "°", "lo": -360.0, "hi": 360.0},
+    {"id": "j5", "name": "机器人关节5", "unit": "°", "lo": -360.0, "hi": 360.0},
+    {"id": "j6", "name": "机器人关节6", "unit": "°", "lo": -360.0, "hi": 360.0},
+    {"id": "pool_width", "name": "熔池宽度", "unit": "px", "lo": 0.0, "hi": 1_000_000.0},
+    {"id": "pool_height", "name": "熔池高度", "unit": "px", "lo": 0.0, "hi": 1_000_000.0},
+    {"id": "pool_area", "name": "熔池面积", "unit": "px²", "lo": 0.0, "hi": 1_000_000.0},
+    {"id": "pool_perimeter", "name": "熔池周长", "unit": "px", "lo": 0.0, "hi": 1_000_000.0},
+]
+
+#: 完整标准通道目录 = 核心 4 + 标准扩展字段（顺序：核心在前，扩展在后）。
+CHANNEL_CATALOG: list[dict] = [*CHANNEL_SPECS, *EXTRA_CHANNEL_SPECS]
+
+
+def channel_spec(channel_id: str) -> dict | None:
+    """按通道 id 取规格（核心+扩展），未收录返回 None。"""
+    return next((s for s in CHANNEL_CATALOG if s["id"] == channel_id), None)
 
 #: 焊接事件时间点（s），对齐 App.tsx。
 DURATION: float = 5.42

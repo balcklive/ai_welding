@@ -46,6 +46,11 @@ class DataRecord(SQLModel, table=True):
     thickness: str | None = Field(default=None, max_length=32)
     current_voltage: str | None = Field(default=None, max_length=32)
     sample_rate: str | None = Field(default=None, max_length=32)
+    # 单值工艺参数（可登记表单录入；标准 CSV 导入后按稳态中位数自动回填）。
+    wire_feed_speed: str | None = Field(default=None, max_length=32)
+    welding_speed: str | None = Field(default=None, max_length=32)
+    # 导入字段概览（JSON：全通道稳态代表值 [{id,name,unit,value}]，导入自动写，前端展示用）。
+    data_fields: list | None = Field(default=None, sa_column=Column(JSON))
     product: str | None = Field(default=None, max_length=128)
     # 每条登记必须归属一个数据集；历史数据通过迁移清理/归属后不允许为空。
     dataset_id: int | None = Field(default=None, foreign_key="datasets.id", index=True)

@@ -6,7 +6,7 @@
 
 - `DatasetWorkspace.tsx`：
   - `DatasetWorkspace`（入口，`view` 状态机：list / overview / records / dataset-records / record-detail）；含**删除数据集**入口（`deleteDataset`，后端引用检查拒绝）。
-  - 内部组件：`DatasetDetail`（概览 + 删除条）/ `DatasetDetailContent` / `DatasetRecords`（快照成员）/ `DatasetSourceRecords`（全部焊缝）/ `RawSignalPreview`（原始多通道波形，复用 `/signals`）/ `RawMediaPreview`（视频/图片预览）/ `DatasetRecordDetail`（成员详情，设置 `selectedDataId`）/ `DatasetInputPanel`（输入维度）/ `ModelReadiness`（模型适配检查）。
+  - 内部组件：`DatasetDetail`（概览 + 删除条）/ `DatasetDetailContent` / `DatasetRecords`（快照成员）/ `DatasetSourceRecords`（全部焊缝）/ `RawSignalPreview`（原始多通道波形，复用 `/signals`）/ `RawMediaPreview`（视频/图片预览）/ `DatasetRecordDetail`（成员详情，设置 `selectedDataId`）/ `DatasetInputPanel`（输入维度）/ `ModelReadiness`（模型适配检查）。**2026-09 多模态字段**：`RawSignalPreview` 不再写死 `channels` 过滤 → 后端返回该焊缝全部分量通道（核心 4 + 焊接速度/六轴/熔池扩展）逐个 toggle；`DatasetSourceRecords` 源记录表新增「送丝 / 焊接速度」列；`DatasetRecordDetailContent` 数据详情加「送丝速度/焊接速度」InfoRow，且含 `record.data_fields` 时额外渲染「采集字段概览」段（全通道稳态代表值）。
 - `fallbacks.ts`：`fallbackDatasetOptions`——接口失败时的兜底数据集选项（仅 catch 分支使用）。
 - `weldRows.ts`：`toWeldRow(record)`——`DataRecord → WeldRow` 映射；`mockWeldRows`——兜底焊缝行（仅接口失败时用）。
 

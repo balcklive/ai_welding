@@ -441,7 +441,8 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     setSignalSource(null);
     setWeldDuration(null);
     setChannels(emptyChannels);
-    const opts: SignalQuery = { channels: ['cur', 'vol', 'gas', 'wir'], max_points: 2048 };
+    // 不传 channels 过滤：后端返回该焊缝全部分量通道（核心 4 + 扩展），默认仅勾选核心 4。
+    const opts: SignalQuery = { max_points: 2048 };
     if (filterOn) { opts.filter_type = filterType; opts.cutoff = cutoff; if (filterType === '带通') opts.cutoff2 = cutoff2; }
     getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
     return () => { cancelled = true; };

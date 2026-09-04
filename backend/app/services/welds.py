@@ -76,6 +76,8 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "thickness",
     "current_voltage",
     "sample_rate",
+    "wire_feed_speed",
+    "welding_speed",
     "dataset_id",
 )
 
@@ -200,6 +202,8 @@ def registration_request_key(data: dict, operator: str) -> str:
         "thickness": data.get("thickness"),
         "current_voltage": data.get("current_voltage"),
         "sample_rate": data.get("sample_rate"),
+        "wire_feed_speed": data.get("wire_feed_speed"),
+        "welding_speed": data.get("welding_speed"),
         "operator": operator,
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -322,6 +326,8 @@ def create_registration(
         thickness=data.get("thickness"),
         current_voltage=data.get("current_voltage"),
         sample_rate=data.get("sample_rate"),
+        wire_feed_speed=data.get("wire_feed_speed"),
+        welding_speed=data.get("welding_speed"),
         product=data.get("product"),
         dataset_id=int(data["dataset_id"]),
         modalities=[],
@@ -919,6 +925,9 @@ def _record_dict(record: DataRecord, latest: DataVersion | None) -> dict:
         "thickness": record.thickness,
         "current_voltage": record.current_voltage,
         "sample_rate": record.sample_rate,
+        "wire_feed_speed": record.wire_feed_speed,
+        "welding_speed": record.welding_speed,
+        "data_fields": record.data_fields,
         "product": record.product,
         "dataset_id": record.dataset_id,
         "modalities": record.modalities or [],

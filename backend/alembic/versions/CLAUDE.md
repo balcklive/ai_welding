@@ -15,6 +15,7 @@ Alembic 迁移脚本目录（逐版本推进，全部由 `alembic revision` 生�
 - `0009_feature_extraction_metadata.py`：`feature_extractions` 元数据补充。
 - `0010_job_request_key.py`：Job 层 `request_key` 幂等（active_request_key 释放语义）。
 - `0011_mlflow_run_id.py`：`jobs.mlflow_run_id`（模型中心 Job ↔ MLflow Run 关联，Task 16 真实训练）。
+- `0012_registration_fields.py`：`data_records` 新增 `wire_feed_speed`/`welding_speed`（单值工艺参数，可表单录入/导入稳态回填）与 `data_fields`（JSON 字段概览，CSV 导入自动写），三列均 nullable（多模态分析.csv 全字段导入配套）。
 
 ## 调用链
 

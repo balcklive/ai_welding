@@ -52,11 +52,30 @@ export const sigGas = t.map(gasVal);
 export const sigWir = t.map(wireVal);
 
 export type Chan = { id: string; name: string; unit: string; color: string; values: number[]; lo: number; hi: number; mean: string };
-/** 通道配色（后端不输出颜色，前端按通道 id 映射，与 mock 常量一致）。 */
+/** 核心通道配色（后端不输出颜色，前端按通道 id 映射，与 mock 常量一致）。 */
 export const chanColor: Record<string, string> = { cur: '#2c9caf', vol: '#67cdb0', gas: '#f0a34a', wir: '#75add1' };
+/** 标准扩展通道顺序（多模态 CSV：焊接速度/六轴关节/熔池几何），按序分配稳定配色。 */
+const EXTRA_CHANNEL_ORDER = [
+  'weld_speed', 'j1', 'j2', 'j3', 'j4', 'j5', 'j6',
+  'pool_width', 'pool_height', 'pool_area', 'pool_perimeter',
+];
+const EXTRA_CHANNEL_COLORS = [
+  '#ef5350', '#7e57c2', '#ec407a', '#5c6bc0', '#d4a017',
+  '#8d6e63', '#26a69a', '#29b6f6', '#9ccc65', '#f06292', '#ffa726',
+];
+const FALLBACK_CHANNEL_COLORS = ['#bdbdbd', '#90a4ae', '#e57373', '#64b5f6', '#ffb74d'];
+/** 通道 id → 稳定配色：核心走 chanColor；标准扩展走 EXTRA 顺序；未知 id 哈希回退调色板。 */
+export function chanColorOf(id: string): string {
+  if (chanColor[id]) return chanColor[id];
+  const idx = EXTRA_CHANNEL_ORDER.indexOf(id);
+  if (idx >= 0) return EXTRA_CHANNEL_COLORS[idx % EXTRA_CHANNEL_COLORS.length];
+  let hash = 0;
+  for (let i = 0; i < id.length; i += 1) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
+  return FALLBACK_CHANNEL_COLORS[hash % FALLBACK_CHANNEL_COLORS.length];
+}
 /** 后端信号通道 → 前端 Chan（values 已由 api 层降采样 ≤512 点）。 */
 export function toChan(c: SignalChannel): Chan {
-  return { id: c.id, name: c.name, unit: c.unit, color: chanColor[c.id] ?? '#2c9caf', values: c.values, lo: c.lo, hi: c.hi, mean: `${c.mean} ${c.unit}` };
+  return { id: c.id, name: c.name, unit: c.unit, color: chanColorOf(c.id), values: c.values, lo: c.lo, hi: c.hi, mean: `${c.mean} ${c.unit}` };
 }
 export const mockChannels: Chan[] = [
   { id: 'cur', name: '电流', unit: 'A', color: '#2c9caf', values: sigCur, lo: 0, hi: 300, mean: '180 ± 12 A' },

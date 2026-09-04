@@ -14,8 +14,15 @@ DSP/特征/报告 → load_signal_bundle(session, weld_id, version_id)
 ```
 
 契约要点（勿破，见 docs/API接口清单.md §3.4）：
-- 还原出的 `SignalBundle.channels` 必须是 4 通道、id 精确 `cur/vol/gas/wir`、values 一维 float；
-  长度 = duration × sample_rate；`events`/`anomalies` 结构不变（real 时来自启发式）。
+- `SignalBundle.channels`：**真实信号为"核心 4（恒在）+ 本次 CSV 出现的全部扩展通道"**——
+  核心 id 精确 `cur/vol/gas/wir`（DSP 事件/生成/特征只认核心 4），扩展通道（weld_speed/
+  j1..j6/pool_* 及自动保留的数值列）逐点保留用于回放/概览；生成回退仍是纯核心 4。
+  values 一维 float、长度 = duration × sample_rate；`events`/`anomalies` 结构不变（real 时
+  来自启发式）。
+- 未知列不再静默丢弃：可数值解析的列由 `map_columns`+`_adopt_numeric_unknowns` 自动按
+  规范化表头收为通道并随 Parquet 保留；非数值列才进 `unknown`（R2 warn）。
+- 导入成功后回填 `DataRecord`：`data_fields`（字段概览 JSON）+ `wire_feed_speed`/
+  `welding_speed`（稳态中位数），供登记列表/详情/表单展示。
 - CSV 校验**不并入** welds.py 的 15 条 `VALIDATION_RULES`（seed/测试/前端逐字一致，勿动），
   结果写 `signal_ingests.validation` 与 `job.result`。
 - `source` 加法字段：`signals`/`analysis/result` 响应 data 新增 `source`，前端零改动。
@@ -29,6 +36,7 @@ DSP/特征/报告 → load_signal_bundle(session, weld_id, version_id)
 from __future__ import annotations
 
 import io
+import math
 import re
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -44,12 +52,20 @@ from app.models.analysis import SignalIngest
 from app.models.data import DataRecord, DataVersion
 from app.services import signals
 from app.services.jobs import mark_failed, mark_succeeded
-from app.services.signals import CHANNEL_SPECS, Channel, SignalBundle
+from app.services.signals import (
+    CHANNEL_CATALOG,
+    CHANNEL_SPECS,
+    Channel,
+    SignalBundle,
+    channel_spec,
+)
 
 #: 导入文件大小上限（字节），超过直接 fail（防 get_object 全量读爆内存）。
 MAX_INGEST_BYTES = 200 * 1024 * 1024
 
 #: CSV 表头别名 → 通道 id（time 为时间列，其余为信号通道）。
+#: 扩展字段（多模态分析.csv：焊接速度 / 六轴关节 / 熔池视觉几何）同样给标准别名；
+#: 别名未覆盖的可数值列由 `map_columns`/`validate_signal` 按规范化表头自动保留。
 _HEADER_ALIASES: dict[str, list[str]] = {
     "time": ["时间", "时间戳", "time", "timestamp", "t"],
     "cur": ["电流", "电流(a)", "电流a", "current", "current(a)", "cur", "i", "ia"],
@@ -66,9 +82,31 @@ _HEADER_ALIASES: dict[str, list[str]] = {
         "gas_speed",
         "gasflowspeed",
     ],
-    "wir": ["送丝速度", "送丝速度(m/min)", "wire", "wire(m/min)", "wire_speed", "wir", "w"],
+    "wir": [
+        "送丝速度",
+        "送丝速度(m/min)",
+        "wire",
+        "wire(m/min)",
+        "wire_speed",
+        "wirefeedspeed",
+        "wirefeed",
+        "wir",
+        "w",
+    ],
+    "weld_speed": ["焊接速度", "weld_speed", "weldspeed", "weldingspeed", "welding_speed"],
+    "j1": ["j1", "关节1", "机器人关节1", "joint1", "axis1"],
+    "j2": ["j2", "关节2", "机器人关节2", "joint2", "axis2"],
+    "j3": ["j3", "关节3", "机器人关节3", "joint3", "axis3"],
+    "j4": ["j4", "关节4", "机器人关节4", "joint4", "axis4"],
+    "j5": ["j5", "关节5", "机器人关节5", "joint5", "axis5"],
+    "j6": ["j6", "关节6", "机器人关节6", "joint6", "axis6"],
+    "pool_width": ["width", "熔池宽度", "池宽", "pool_width", "weld_width", "melt_width"],
+    "pool_height": ["height", "熔池高度", "池高", "pool_height", "weld_height", "melt_height"],
+    "pool_area": ["square", "area", "熔池面积", "池面积", "pool_area", "weld_area"],
+    "pool_perimeter": ["perimeter", "熔池周长", "周长", "pool_perimeter", "weld_perimeter"],
 }
 
+#: 核心信号通道（事件检测 / DSP / 生成信号 / 42 维特征只依赖这 4 路，勿改）。
 _SIGNAL_IDS = ("cur", "vol", "gas", "wir")
 
 
@@ -87,6 +125,8 @@ def map_columns(columns: list[str]) -> tuple[dict[str, str], list[str]]:
     """CSV 列 → 通道映射。返回 `(column_map: {通道id: CSV列名}, unknown: [未知列])`。
 
     `column_map` 只含识别到的列（含 time）；未知列进 `unknown`（校验 R2 处理）。
+    别名未覆盖但**可数值解析**的列由 `validate_signal` 调 `_adopt_numeric_unknowns`
+    按规范化表头自动收为通道——保证真实 CSV 的列不被静默丢弃。
     """
     column_map: dict[str, str] = {}
     unknown: list[str] = []
@@ -97,6 +137,32 @@ def map_columns(columns: list[str]) -> tuple[dict[str, str], list[str]]:
         elif cid is None:
             unknown.append(col)
     return column_map, unknown
+
+
+def _adopt_numeric_unknowns(
+    df: pd.DataFrame,
+    column_map: dict[str, str],
+    unknown: list[str],
+) -> None:
+    """把 unknown 中可数值解析的列按规范化表头作为额外通道收进 column_map（就地）。"""
+    if not unknown:
+        return
+    retained: list[str] = []
+    for col in unknown:
+        key = _norm_header(col)
+        if not key or key == "time" or key in column_map or key in _ALIAS_TO_CHANNEL:
+            retained.append(col)
+            continue
+        try:
+            numeric = pd.to_numeric(df[col], errors="coerce")
+        except Exception:  # noqa: BLE001 - 解析不了视为不可导入
+            retained.append(col)
+            continue
+        if numeric.notna().mean() > 0.5:
+            column_map[key] = col
+        else:
+            retained.append(col)
+    unknown[:] = retained
 
 
 def _parse_csv(data: bytes) -> tuple[pd.DataFrame | None, str | None]:
@@ -161,44 +227,48 @@ def validate_signal(
         }
     columns = list(df.columns)
     column_map, unknown = map_columns(columns)
+    _adopt_numeric_unknowns(df, column_map, unknown)
     rules: list[dict] = []
     row_count = len(df)
 
     # R1 文件读取
     rules.append(_rule("文件读取", "pass", f"读取 {row_count} 行"))
 
-    # R2 表头识别
+    # R2 表头识别（数值未知列已自动保留为通道，unknown 只剩非数值/冲突列）
     if unknown:
-        rules.append(_rule("表头识别", "warn", f"未知列已忽略: {', '.join(unknown[:8])}"))
+        rules.append(_rule("表头识别", "warn", f"非数值未知列已忽略: {', '.join(unknown[:8])}"))
     if not column_map:
         rules.append(_rule("表头识别", "fail", "未识别到任何已知列"))
 
-    # R3 通道覆盖
-    signal_cols = [column_map[c] for c in _SIGNAL_IDS if c in column_map]
-    if signal_cols:
-        rules.append(_rule("通道覆盖", "pass", f"识别信号通道: {', '.join(signal_cols)}"))
+    # R3 通道覆盖（time 之外的全部映射列都是信号通道）
+    signal_items = [(cid, col) for cid, col in column_map.items() if cid != "time"]
+    if signal_items:
+        names = [col for _, col in signal_items]
+        shown = ", ".join(names[:16])
+        rules.append(_rule("通道覆盖", "pass", f"识别信号通道 {len(names)} 路: {shown}"))
     else:
-        rules.append(_rule("通道覆盖", "fail", "未识别到任何信号通道 (cur/vol/gas/wir)"))
+        rules.append(_rule("通道覆盖", "fail", "未识别到任何信号通道"))
 
-    # R4 数值类型（映射列全部可转 float）
+    # R4 数值类型（全部映射通道列可转 float）
     non_numeric = 0
-    for cid in _SIGNAL_IDS:
-        if cid in column_map:
-            col = column_map[cid]
-            non_numeric += int(pd.to_numeric(df[col], errors="coerce").isna().sum() - df[col].isna().sum())
+    for cid, col in signal_items:
+        non_numeric += int(
+            pd.to_numeric(df[col], errors="coerce").isna().sum() - df[col].isna().sum()
+        )
     if non_numeric > 0:
         rules.append(_rule("数值类型", "fail", f"{non_numeric} 个单元格非数值"))
     else:
         rules.append(_rule("数值类型", "pass", "映射列均为数值"))
 
-    # R5 量程（lo/hi ±10% span 容差）
+    # R5 量程（仅对收录量程规格的标准通道做 lo/hi ±10% span 容差）
     out_of_range = 0
-    for cid in _SIGNAL_IDS:
-        if cid in column_map:
-            spec = next(s for s in CHANNEL_SPECS if s["id"] == cid)
-            span = spec["hi"] - spec["lo"]
-            vals = pd.to_numeric(df[column_map[cid]], errors="coerce")
-            out_of_range += int(((vals < spec["lo"] - 0.1 * span) | (vals > spec["hi"] + 0.1 * span)).sum())
+    for cid, col in signal_items:
+        spec = channel_spec(cid)
+        if spec is None:
+            continue  # 自动保留的未知数值列无量程定义，不判量程
+        span = spec["hi"] - spec["lo"]
+        vals = pd.to_numeric(df[col], errors="coerce")
+        out_of_range += int(((vals < spec["lo"] - 0.1 * span) | (vals > spec["hi"] + 0.1 * span)).sum())
     if out_of_range == 0:
         rules.append(_rule("量程", "pass", "全部在量程内"))
     elif out_of_range <= max(1, int(row_count * 0.01)):
@@ -235,9 +305,8 @@ def validate_signal(
 
     # R7 空值
     nan_total = 0
-    for cid in _SIGNAL_IDS:
-        if cid in column_map:
-            nan_total += int(df[column_map[cid]].isna().sum())
+    for cid, col in signal_items:
+        nan_total += int(df[col].isna().sum())
     if nan_total == 0:
         rules.append(_rule("空值", "pass", "无缺失值"))
     elif nan_total <= max(1, int(row_count * 0.01)):
@@ -390,6 +459,7 @@ def detect_events(
 def _channel_values(
     df: pd.DataFrame, column_map: dict[str, str], n: int, fs: int
 ) -> dict[str, np.ndarray]:
+    """构建 Parquet 列值：`t` + 核心 4 通道（缺失补零，保兼容）+ 全部额外映射通道。"""
     t = (
         _time_column_to_seconds(df[column_map["time"]]).to_numpy()
         if "time" in column_map
@@ -403,6 +473,12 @@ def _channel_values(
             if col
             else np.zeros(n)
         )
+    for cid, col in column_map.items():
+        if cid == "time" or cid in _SIGNAL_IDS:
+            continue
+        data[cid] = (
+            pd.to_numeric(df[col], errors="coerce").ffill().fillna(0.0).to_numpy(dtype=float)
+        )
     return data
 
 
@@ -415,13 +491,18 @@ def to_parquet_bytes(
     ingest_id: int,
     source_key: str,
 ) -> bytes:
-    """按列 schema `t,cur,vol,gas,wir` 构建 Parquet 字节并写文件级元数据。"""
+    """按动态列 schema 构建 Parquet 字节并写文件级元数据（schema_version="2"）。
+
+    列 = `t` + 核心 4（恒写，缺失补零）+ 本次 CSV 出现的全部额外通道（weld_speed/
+    j1..j6/pool_* 及自动保留的数值列）。旧版（v1，固定 5 列）文件仍可被 `_parse_parquet`
+    读取——核心 4 列都存在，无额外列自然返回。
+    """
     n = len(df)
     data = _channel_values(df, column_map, n, fs)
     table = pa.Table.from_pydict({k: v for k, v in data.items()})
-    real_channels = [cid for cid in _SIGNAL_IDS if cid in column_map]
+    real_channels = [cid for cid in column_map if cid != "time"]
     metadata = {
-        "schema_version": "1",
+        "schema_version": "2",
         "weld_id": record.weld_id,
         "version_id": str(version.id),
         "signal_ingest_id": str(ingest_id),
@@ -437,11 +518,26 @@ def to_parquet_bytes(
     return buf.getvalue()
 
 
+def _data_range(values: np.ndarray) -> tuple[float, float]:
+    """按数据实际 min/max 推导 (lo, hi)，供扩展/自动通道回放量程用（pad 5%）。"""
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    lo = float(finite.min())
+    hi = float(finite.max())
+    if hi <= lo:
+        pad = max(abs(hi) * 0.05, 1.0)
+        return lo - pad, hi + pad
+    pad = (hi - lo) * 0.05
+    return lo - pad, hi + pad
+
+
 def _parse_parquet(data: bytes) -> tuple[int, int, dict[str, np.ndarray]]:
     """Parquet 字节 → (点数, 元数据兜底采样率, {通道 id: float64 数组（可写 master）})。
 
-    master 数组**可写**（pandas 读回可能是只读视图，pywt.dwt 要求可写）；调用方直接把
-    master 交给 DSP 前须自行 `copy()`（缓存 master 被原地修改会跨请求串数据）。
+    返回除 `t` 外的**全部存在列**（核心 4 恒在，外加额外/自动通道；缺列不再补零，由
+    `_bundle_from_parsed` 对核心通道补零）。master 数组**可写**（pandas 读回可能是只读
+    视图，pywt.dwt 要求可写）；调用方直接把 master 交给 DSP 前须自行 `copy()`。
     """
     table = pq.read_table(io.BytesIO(data))
     pdf = table.to_pandas()
@@ -451,12 +547,10 @@ def _parse_parquet(data: bytes) -> tuple[int, int, dict[str, np.ndarray]]:
     except (TypeError, ValueError):
         fs_meta = 1000
     cols: dict[str, np.ndarray] = {}
-    for cid in _SIGNAL_IDS:
-        cols[cid] = (
-            np.array(pdf[cid].to_numpy(dtype=float), dtype=float, copy=True)
-            if cid in pdf.columns
-            else np.zeros(n)
-        )
+    for c in pdf.columns:
+        if str(c) == "t":
+            continue
+        cols[str(c)] = np.array(pdf[c].to_numpy(dtype=float), dtype=float, copy=True)
     return n, fs_meta, cols
 
 
@@ -488,26 +582,49 @@ def _cached_parquet(parquet_key: str) -> tuple[int, int, dict[str, np.ndarray]] 
 def _bundle_from_parsed(
     parsed: tuple[int, int, dict[str, np.ndarray]], ingest: SignalIngest, weld_id: str
 ) -> SignalBundle:
-    """`_parse_parquet` 结果 + ingest 行 → SignalBundle（channels 取 master 的可写副本）。"""
+    """`_parse_parquet` 结果 + ingest 行 → SignalBundle（channels 取 master 的可写副本）。
+
+    顺序：核心 4（恒在，缺失补零）→ 收录的扩展通道（在列才含）→ 自动保留的未知通道。
+    核心通道量程取 CHANNEL_SPECS；扩展/自动通道量程按数据实际 min/max 推导（_data_range）。
+    """
     n, fs_meta, cols = parsed
     fs = ingest.sample_rate or fs_meta
     duration = ingest.duration or (n / fs if fs else n / 1000.0)
     channels: list[Channel] = []
-    for spec in CHANNEL_SPECS:
+
+    def _make_channel(channel_id: str, spec: dict | None, values: np.ndarray) -> Channel:
         # copy()：master 在缓存中跨请求共享，DSP（pywt/scipy）约定不可原地改输入，
-        # 副本隔离保证缓存不被污染（29MB memcpy ~10ms，可忽略）。
-        values = cols[spec["id"]].copy()
-        channels.append(
-            Channel(
-                id=spec["id"],
-                name=spec["name"],
-                unit=spec["unit"],
-                values=values,
-                lo=spec["lo"],
-                hi=spec["hi"],
-                mean=round(float(np.mean(values)), 2),
-            )
+        # 副本隔离保证缓存不被污染（memcpy ~ms 级，可忽略）。
+        values = values.copy()
+        if spec is not None and channel_id in _SIGNAL_IDS:
+            lo, hi = spec["lo"], spec["hi"]
+        else:
+            lo, hi = _data_range(values)
+        return Channel(
+            id=channel_id,
+            name=spec["name"] if spec else channel_id,
+            unit=spec["unit"] if spec else "",
+            values=values,
+            lo=lo,
+            hi=hi,
+            mean=round(float(np.mean(values)), 2),
         )
+
+    for spec in CHANNEL_SPECS:
+        values = cols.get(spec["id"])
+        if values is None:
+            values = np.zeros(n)
+        channels.append(_make_channel(spec["id"], spec, values))
+    known = {spec["id"] for spec in CHANNEL_CATALOG}
+    for spec in CHANNEL_CATALOG:
+        cid = spec["id"]
+        if cid in _SIGNAL_IDS or cid not in cols:
+            continue
+        channels.append(_make_channel(cid, spec, cols[cid]))
+    for cid, values in cols.items():
+        if cid in known:
+            continue
+        channels.append(_make_channel(cid, None, values))
     return SignalBundle(
         weld_id=weld_id,
         duration=duration,
@@ -589,6 +706,79 @@ def load_real_signal_bundle(
     return _bundle_from_parsed(parsed, ingest, weld_id)
 
 
+# ── 字段概览（每条焊缝导入字段的稳态代表值） ──────────────────────────
+
+
+def _steady_window(n: int, events: dict, fs: int) -> tuple[int, int]:
+    """取代表值的样本窗：优先焊接段（weld_segment），否则全段。"""
+    seg = (events or {}).get("weld_segment") or []
+    if len(seg) == 2:
+        try:
+            start, end = float(seg[0]), float(seg[1])
+        except (TypeError, ValueError):
+            start = end = None
+        if start is not None and end is not None and 0.0 <= start < end:
+            i0 = max(0, min(n, int(start * fs)))
+            i1 = max(i0, min(n, math.ceil(end * fs)))
+            if i1 - i0 >= max(10, n // 100):
+                return i0, i1
+    return 0, n
+
+
+def _channel_median(df: pd.DataFrame, col: str, i0: int, i1: int) -> float | None:
+    """映射通道列在 [i0,i1) 内有限值的稳健中位数。"""
+    vals = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+    clean = vals[i0:i1]
+    clean = clean[np.isfinite(clean)]
+    if clean.size == 0:
+        return None
+    return float(np.median(clean))
+
+
+def build_field_summary(
+    df: pd.DataFrame, column_map: dict[str, str], events: dict, fs: int
+) -> list[dict]:
+    """每条焊缝导入字段概览 `[{id,name,unit,value}]`（全通道稳态代表值，用于前端展示）。"""
+    n = len(df)
+    i0, i1 = _steady_window(n, events, fs)
+    summary: list[dict] = []
+    for cid, col in column_map.items():
+        if cid == "time":
+            continue
+        spec = channel_spec(cid)
+        med = _channel_median(df, col, i0, i1)
+        if med is None or not np.isfinite(med):
+            continue
+        summary.append(
+            {
+                "id": cid,
+                "name": spec["name"] if spec else cid,
+                "unit": spec["unit"] if spec else "",
+                "value": round(med, 4),
+            }
+        )
+    return summary
+
+
+def fill_record_params(
+    record: DataRecord,
+    df: pd.DataFrame,
+    column_map: dict[str, str],
+    events: dict,
+    fs: int,
+) -> None:
+    """导入成功后回填登记单值工艺列（送丝速度/焊接速度，取稳态中位数，2 位小数）。"""
+    n = len(df)
+    i0, i1 = _steady_window(n, events, fs)
+    for cid, attr in (("wir", "wire_feed_speed"), ("weld_speed", "welding_speed")):
+        col = column_map.get(cid)
+        if col is None:
+            continue
+        med = _channel_median(df, col, i0, i1)
+        if med is not None and np.isfinite(med):
+            setattr(record, attr, f"{med:.2f}")
+
+
 # ── handler 领域逻辑 ──────────────────────────────────────────────────
 
 
@@ -638,6 +828,12 @@ def run_ingest(session: Session, ingest: SignalIngest, job) -> None:
 
         # 校验通过（pass/warn）→ 启发式事件 + 写 Parquet
         events, anomalies = detect_events(df, result["column_map"], result["fs"])
+        # 导入成功后回填登记单值工艺列与字段概览（executor 事务统一提交）
+        if record is not None:
+            record.data_fields = build_field_summary(
+                df, result["column_map"], events, result["fs"]
+            )
+            fill_record_params(record, df, result["column_map"], events, result["fs"])
         session.flush()  # 拿 ingest.id 作 Parquet 键
         parquet_key = f"processed/{record.weld_id}/signals/{ingest.id}.parquet"
         pb = to_parquet_bytes(

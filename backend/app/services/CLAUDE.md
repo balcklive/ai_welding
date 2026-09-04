@@ -58,7 +58,7 @@
   全部 numpy→list 走 `.tolist()`。坑：`sosfiltfilt` 要求输入 ≥31 点；wavedec 返回
   `[cA_n, cD_n, …, cD_1]`，即 `coeffs[0]` 是最末层近似、`coeffs[level]` 是 D1。
 - `signals.py`：**Task 11**。`generate_signals(weld_id, sample_rate=1000) -> SignalBundle`——
-  确定性生成 4 通道（cur/vol/gas/wir，量程已按真实焊接范围放宽为 cur 0-600A / vol 0-80V /
+  确定性生成 4 通道（cur/vol/gas/wir，量程已按真实焊接范围放宽为 cur 0-600A / vol 0-700V /
   gas 0-60 L/min / wir 0-20 m/min）焊接信号，形态复刻 App.tsx
   currentAmp/voltVal/gasVal/wireVal（起弧 ramp → 稳态 → 收弧 ramp + 两个异常区段低频
   正弦噪声），duration 5.42s、events `{arc:0.42, weld_segment:[0.78,4.28], tail:4.86}`、
@@ -68,6 +68,10 @@
   抽样不丢瞬态尖峰（焊接缺陷恰表现为瞬时毛刺），910k 点 ~300ms；供 `/signals` 波形预览
   `max_points` 参数用（DSP 分析端点不吃它）。**坑：种子用 `zlib.crc32(weld_id)`，
   不要用内置 `hash()`——Python 对 str 的 hash 每次进程随机（PYTHONHASHSEED），跨进程不可复现。**
+  **2026-09 多模态字段扩展**：新增 `EXTRA_CHANNEL_SPECS`/`CHANNEL_CATALOG`/`channel_spec(id)`
+  （核心 4 + 焊接速度 `weld_speed` + 六轴 `j1..j6` + 熔池 `pool_width/pool_height/pool_area/
+  pool_perimeter`）。核心 4（`CHANNEL_SPECS`）语义不变（生成信号/DSP 事件/42 维特征只认它）；
+  扩展字段仅供真实信号逐点导入/回放/概览。
 - `features.py`：**Task 12**。多模态特征提取（真实计算，非罐头数字），供 `POST /features/extract`：
   `ts_features(x, fs=1000)` 8 维（均值/方差/峰值/偏度/峰度/RMS + FFT 主频 + 小波细节能量）；
   `vision_features()` 8 维（合成熔池掩膜 → skimage regionprops 几何 4 + graycomatrix GLCM
@@ -275,10 +279,14 @@
     这条"陈旧失败"也会一直卡住、信号预览持续 400「当前版本没有成功导入的真实时序信号」。
     恢复办法：删除该焊缝的失败 `signal_ingests` 行（及其 failed Job），再用
     `POST /registrations/{id}/raw-files` 重挂同 CSV key 触发重新导入。
-  - **坑（列名别名缺失导致信号静默丢弃）**：`_HEADER_ALIASES` 未覆盖的真实列名（如 `GasSpeed`、
-    `tag0`）进 `unknown`，仅 R2 warn、不落通道（缺失通道 Parquet 补零）。2026-08-29 已将
-    `GasSpeed`/`gas_speed`/`gasflowspeed` 补入 gas 别名——真实数据列名务必先查别名表，缺则补，
-    避免"有真实信号但通道全 0"。
+  - **2026-09 全列导入与字段回填（覆盖上面"列名别名缺失静默丢弃"坑的新语义）**：`map_columns` +
+    `_adopt_numeric_unknowns` 把**可数值解析的列全部**按规范化表头自动收为通道（标准头走
+    `_HEADER_ALIASES` 别名，已补 `WireFeedSpeed→wir`、`WeldingSpeed→weld_speed`、`j1..j6`、
+    `width/height/square/perimeter→pool_*`）；仅非数值列进 `unknown`（R2 warn）。Parquet 列 schema
+    变动态（`schema_version="2"`：恒写 `t,cur,vol,gas,wir` + 本次出现的额外列），`_parse_parquet`/
+    `_bundle_from_parsed` 读全列，核心 4 恒在、扩展/自动通道量程按 `_data_range` 实际 min/max。
+    导入成功回填 `DataRecord.wire_feed_speed/welding_speed`（稳态中位数）与 `data_fields`
+    （`build_field_summary`/`fill_record_params`）。测试：`tests/test_signal_ingest_extra_columns.py`。
 
 ## 坑/限制
 

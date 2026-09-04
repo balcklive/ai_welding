@@ -33,6 +33,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `app.services.welds.delete_record`，测试 `tests/test_weld_delete.py`。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。**Task 4 修复**：除管理员外，列表/详情/登记编辑/版本/核验均按 `audit_logs(create,weld).user_id` 的稳定 owner ACL；`record.operator` 仅作展示。
     错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
+  - **2026-09 多模态字段**：`RegistrationCreate/Update` 新增可空 `wire_feed_speed`/`welding_speed`（同 `EDITABLE_FIELDS`/幂等键/`_record_dict` 已同步）；`data_fields` 不接受客户端，由 CSV 导入自动写。
 - `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
