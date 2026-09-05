@@ -185,6 +185,22 @@ def test_delete_object_passes_through() -> None:
     assert fake.calls[0] == ("delete", "aiwelding", "processed/WLD-001/split/1.jpg")
 
 
+def test_dual_endpoint_presign_uses_sign_client_data_uses_client() -> None:
+    """双端点（2026-09 内网化）：预签名走 sign_client（公网），数据面走 client（内网）。"""
+    data = FakeMinio()  # 模拟内网数据面客户端
+    sign = FakeMinio()  # 模拟公网预签名客户端
+    storage = StorageClient(client=data, sign_client=sign, bucket="aiwelding")
+    url = storage.presign_get("raw/REG-001/a.mp4")
+    key, _put = storage.presign_put("raw", "b.mp4", 10, "video/mp4")
+    storage.upload_stream("raw/c.mp4", io.BytesIO(b"x"), 1, "text/plain")
+    # 预签名只落在 sign 客户端上
+    assert [c[0] for c in sign.calls] == ["get", "put"]
+    # 数据面只落在 data 客户端上
+    assert [c[0] for c in data.calls] == ["upload"]
+    assert url.endswith("?expires=3600")
+    assert key == "raw/b.mp4"
+
+
 def test_bucket_ensure_makes_bucket_when_missing() -> None:
     fake = FakeMinio(bucket_exists=False)
     storage = _make(fake)

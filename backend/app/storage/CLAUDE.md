@@ -1,8 +1,14 @@
 # CLAUDE.md — backend/app/storage/
 
 MinIO 对象存储客户端（Task 4）。桶与连接信息来自 `app.core.config.settings`
-（`MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`/`MINIO_BUCKET`）。
-对象键契约见 `docs/OSS存储设计.md` §2（单桶 `aiwelding` + 前缀体系）。
+（`MINIO_ENDPOINT`/`MINIO_SERVER_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`
+/`MINIO_SECURE`/`MINIO_BUCKET`）。对象键契约见 `docs/OSS存储设计.md` §2（单桶 `aiwelding` + 前缀体系）。
+
+**双端点（2026-09 内网化）**：`_client` = 服务端数据面（上传/下载/删除/stat/读），优先
+`MINIO_SERVER_ENDPOINT`（同宿主容器直连内网，避免绕公网 hairpin），未配置回退
+`MINIO_ENDPOINT`；`_sign_client` = 预签名端点，**恒用 `MINIO_ENDPOINT`（公网）**，只有
+交到浏览器/外部的 URL 才用它。`presign_put`/`presign_get` 走 `_sign_client`，其余操作走
+`_client`。`.env.example`/`docker-compose.yml`（mlflow `MLFLOW_S3_ENDPOINT_URL`）已同步。
 
 ## 脚本
 
@@ -13,7 +19,9 @@ MinIO 对象存储客户端（Task 4）。桶与连接信息来自 `app.core.con
     直接剔除，主干清洗空则回退 `file`；结果不含 `/`、`\`、`..`，不以 `.` 开头。
   - `normalize_key(prefix, filename)`：对象键 `{prefix}/{规范化文件名}`；prefix 首尾
     `/` 去除，空 prefix 抛 `ValueError`。
-  - `StorageClient`：包 `minio.Minio`。
+  - `StorageClient`：包 `minio.Minio`；构造可注入 `client`（数据面）/`sign_client`
+    （预签名），只注入单个 `client` 时两者用同一实例（测试/兼容），生产则分别指向
+    内网/公网端点（`_minio_for`）。
     - `presign_put(prefix, filename, size, content_type) -> (object_key, upload_url)`：
       大文件直传预签名 PUT URL（30 分钟有效）；`size`/`content_type` 为契约参数
       （Task 9 端点校验用），预签名本身只传 expires（minio SDK 的

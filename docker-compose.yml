@@ -59,7 +59,9 @@ services:
     volumes:
       - mlflow_data:/var/lib/mlflow
     environment:
-      MLFLOW_S3_ENDPOINT_URL: "http://${MINIO_ENDPOINT}"
+      # 服务端 artifact→MinIO 走内网端点 MINIO_SERVER_ENDPOINT（同宿主容器直连 172.18.0.1:9000，
+      # 避免绕公网 hairpin）；未配置则回退公网 MINIO_ENDPOINT（已实测 compose 支持嵌套默认）。
+      MLFLOW_S3_ENDPOINT_URL: "http://${MINIO_SERVER_ENDPOINT:-${MINIO_ENDPOINT}}"
       AWS_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY}"
       AWS_SECRET_ACCESS_KEY: "${MINIO_SECRET_KEY}"
       AWS_DEFAULT_REGION: "${MINIO_REGION:-us-east-1}"

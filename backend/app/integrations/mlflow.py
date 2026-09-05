@@ -39,7 +39,9 @@ def _client():
         s3_endpoint = settings.mlflow_s3_endpoint_url
         if not s3_endpoint and settings.minio_endpoint:
             scheme = "https" if settings.minio_secure else "http"
-            s3_endpoint = f"{scheme}://{settings.minio_endpoint}"
+            # 服务端数据面优先走内网端点（同宿主避免绕公网），未配置回退公网
+            endpoint = settings.minio_server_endpoint or settings.minio_endpoint
+            s3_endpoint = f"{scheme}://{endpoint}"
         if s3_endpoint:
             os.environ.setdefault("MLFLOW_S3_ENDPOINT_URL", s3_endpoint)
         if settings.minio_access_key:

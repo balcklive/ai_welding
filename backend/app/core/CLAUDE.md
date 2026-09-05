@@ -5,7 +5,7 @@
 ## 脚本
 
 - `__init__.py`：空包。
-- `config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`；`job_executor_enabled` 允许候选容器禁用任务消费。
+- `config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`；`job_executor_enabled` 允许候选容器禁用任务消费。**2026-09 新增 `minio_server_endpoint`**（`MINIO_SERVER_ENDPOINT`，服务端内网端点，空则回退公网——配合 storage 双端点内网化，见 `storage/CLAUDE.md`）。
 - `logging.py`：`setup_logging()`（loguru 控制台 + 轮转文件）+ 纯 ASGI `AccessLogMiddleware`。
 - `db.py`：**Task 2**。模块级 `engine`（MySQL，`settings.mysql_url`，`pool_pre_ping=True`）、`SessionLocal`（`sessionmaker`，`expire_on_commit=False`）、`get_session()`（FastAPI 依赖，`yield` 一个 `Session`）。
 - `health.py`：readiness 聚合。数据库检查 `SELECT 1`、Alembic 当前 revision、关键表（users/jobs/data_records）；对象存储检查 MinIO 目标桶存在。对外仅返回检查项状态，异常详情只写日志。

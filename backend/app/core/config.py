@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     )
     # MinIO
     minio_endpoint: str = ""
+    # 服务端内网端点（可选）：app/LS/mlflow 与 MinIO 同宿主时，填容器可直连的内网地址
+    # （如 docker 网关 172.18.0.1:9000 或宿主私网 IP:9000），让服务端数据面不走公网 hairpin；
+    # 留空则服务端数据面回退用 minio_endpoint。**交到浏览器/外部的预签名 URL 恒用 minio_endpoint**。
+    minio_server_endpoint: str = ""
     minio_secure: bool = False
     minio_access_key: str = ""
     minio_secret_key: str = ""

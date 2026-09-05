@@ -3,7 +3,14 @@
 封装 `minio.Minio` 提供：对象键规范化（`normalize_key`）、预签名直传
 （`presign_put`）、后端代理上传（`upload_stream`）、对象删除（`delete_object`）、
 预签名下载/播放（`presign_get`）。桶与连接信息来自 `app.core.config.settings`
-（`MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`/`MINIO_BUCKET`）。
+（`MINIO_ENDPOINT`/`MINIO_SERVER_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`
+/`MINIO_SECURE`/`MINIO_BUCKET`）。
+
+**双端点（2026-09 内网化）**：`_client` = 服务端**数据面**（上传/下载/删除/stat/读），
+优先用内网 `MINIO_SERVER_ENDPOINT`（同宿主时容器直连，避免绕公网 hairpin），
+未配置回退 `MINIO_ENDPOINT`；`_sign_client` = 预签名端点，**恒用 `MINIO_ENDPOINT`
+（公网）**——只有交到浏览器/外部的 URL 才用它（内部地址外部不可达）。
+`presign_put`/`presign_get` 走 `_sign_client`，其余操作走 `_client`。
 
 **惰性**：`get_storage()` 首次调用才构建客户端（懒加载单例）；桶存在性检查
 （`bucket_exists` → 否则 `make_bucket`）在各操作首次使用时才触发并记忆，测试
@@ -23,6 +30,17 @@ from typing import BinaryIO
 from minio import Minio
 
 from app.core.config import settings
+
+
+def _minio_for(endpoint: str) -> Minio:
+    """按给定端点构建 Minio 客户端（凭据/加密取自 settings）。"""
+    return Minio(
+        endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key,
+        secure=settings.minio_secure,
+    )
+
 
 # 文件名中仅允许保留的字符（规范化后为小写字母/数字/点/下划线/连字符）
 _UNSAFE_RE = re.compile(r"[^a-z0-9._\-]")
@@ -104,16 +122,26 @@ def normalize_key(prefix: str, filename: str) -> str:
 class StorageClient:
     """MinIO 客户端（Task 4）。桶默认取 `settings.minio_bucket`（`aiwelding`）。
 
-    `client`/`bucket` 参数供测试注入假客户端（生产直接用默认值从 settings 构建）。
-    所有读写均走预签名 URL 或后端代理，桶保持私有（OSS §5）。
+    `client`/`bucket`/`sign_client` 参数供测试注入假客户端（生产直接用默认值从
+    settings 构建）。只注入单个 `client` 时数据面与预签名用同一客户端（行为不变）；
+    生产则 `_client` 走 `MINIO_SERVER_ENDPOINT`（内网，空则公网）、`_sign_client`
+    恒走 `MINIO_ENDPOINT`（公网）。所有读写均走预签名 URL 或后端代理，桶保持私有（OSS §5）。
     """
 
-    def __init__(self, client: Minio | None = None, bucket: str | None = None) -> None:
-        self._client = client if client is not None else Minio(
-            settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=settings.minio_secure,
+    def __init__(
+        self,
+        client: Minio | None = None,
+        bucket: str | None = None,
+        sign_client: Minio | None = None,
+    ) -> None:
+        # 数据面：内网优先；预签名：恒公网（交到外部的 URL 需公网可达）
+        self._client = client if client is not None else _minio_for(
+            settings.minio_server_endpoint or settings.minio_endpoint
+        )
+        self._sign_client = (
+            sign_client
+            if sign_client is not None
+            else (client if client is not None else _minio_for(settings.minio_endpoint))
         )
         self.bucket = bucket or settings.minio_bucket
         self._bucket_ready = False  # 首次使用才检查桶，之后记忆
@@ -158,7 +186,7 @@ class StorageClient:
         """
         self._ensure_bucket()
         object_key = self.normalize_key(prefix, filename)
-        upload_url = self._client.presigned_put_object(
+        upload_url = self._sign_client.presigned_put_object(
             self.bucket, object_key, expires=timedelta(minutes=30)
         )
         return object_key, upload_url
@@ -186,7 +214,7 @@ class StorageClient:
         `expires` 单位秒；长视频可用更长有效期（如 24h=86400）。
         """
         self._ensure_bucket()
-        return self._client.presigned_get_object(
+        return self._sign_client.presigned_get_object(
             self.bucket, object_key, expires=timedelta(seconds=expires)
         )
 

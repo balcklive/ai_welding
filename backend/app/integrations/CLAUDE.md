@@ -6,7 +6,7 @@
 
 - `__init__.py`：空包。
 - `mlflow.py`：MLflow 跟踪集成（2026-08-29，Task 16 真实训练配套）。走公开 `MlflowClient` API：
-  - `_client()`：按 `settings.mlflow_mode`（`off`/`embedded`/`server`）创建客户端；`server` 模式无 `mlflow_tracking_uri` 时返回 `None`（不启用）；从 `settings` 注入 `MLFLOW_S3_ENDPOINT_URL`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_DEFAULT_REGION`（MinIO 作 artifact store）。任何异常/缺包 → `None` 并告警。
+  - `_client()`：按 `settings.mlflow_mode`（`off`/`embedded`/`server`）创建客户端；`server` 模式无 `mlflow_tracking_uri` 时返回 `None`（不启用）；从 `settings` 注入 `MLFLOW_S3_ENDPOINT_URL`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_DEFAULT_REGION`（MinIO 作 artifact store）。**2026-09**：未显式配置 `MLFLOW_S3_ENDPOINT_URL` 时回退用 `minio_server_endpoint or minio_endpoint`（服务端数据面优先内网，双端点内网化，见 `storage/CLAUDE.md`）。任何异常/缺包 → `None` 并告警。
   - `start_run(job_uid, kind, tags)`：建 RUNNING Run（experiment 不存在则创建，`artifact_location=mlflow_artifact_root`）→ 返回 run_id；由 `app/jobs/executor.py` 在模型中心 Job 首次运行时创建，写入 `Job.mlflow_run_id`。
   - `log_params`/`log_metrics`/`log_json_artifact`：逐条 try/except，失败仅告警。
   - `finish_run(run_id, status)`：终止 Run；Job failed 时由执行器调 `finish_run(run_id, "FAILED")`。
