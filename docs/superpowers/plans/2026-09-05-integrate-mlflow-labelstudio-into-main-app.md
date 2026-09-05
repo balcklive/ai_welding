@@ -29,7 +29,7 @@
 - 镜像版本 pin 不动（LS `1.23.0`、MLflow digest `e72e…`）；改版走 mirror workflow。
 - 改接口/表/对象键同步三份契约 + 涉及目录 CLAUDE.md；LS/MLflow 后端暂 SQLite 落卷，规模上来再评估。
 - **标签类别权威口径 = 平台 6 类（含熔池）**；LS 各项目标签 schema 为映射目标，不一致时按标注语义校准（必要时经 LS API 改项目模板并回写映射）。
-- **同宿主服务走内网、浏览器走公网（双端点，2026-09-05 已实测定案·只改 MinIO）**：app/LS/mlflow/MinIO 同机（MinIO/MySQL 为**同机宿主进程**非容器，`182.61.59.135` 上 8290/8206 是云边缘→本机 9000/3306 的端口映射）。服务端数据面绕公网 hairpin 吃 ~5-6Mbps 公网入口瓶颈（见 memory `deploy-server-upload-bandwidth`）。**落点（代码已落地）**：后端 `_client`（数据面）走内网 `MINIO_SERVER_ENDPOINT`（= `172.18.0.1:9000` docker 网关，容器直连已验证 1ms；空则回退 `MINIO_ENDPOINT`）；预签名 `_sign_client` 恒走公网 `MINIO_ENDPOINT`（182.61.59.135:8290，交到浏览器的 URL）；compose mlflow `MLFLOW_S3_ENDPOINT_URL=http://${MINIO_SERVER_ENDPOINT:-${MINIO_ENDPOINT}}`（嵌套默认已实测可用）。LS 媒体接入时按"LS 服务端拉取走内网、浏览器直开走公网"分。**MySQL 仅绑 `127.0.0.1`，容器不可直连 → 本期不改**（小查询非带宽瓶颈）。**生效仍需服务器 `.env` 设 `MINIO_SERVER_ENDPOINT=172.18.0.1:9000` 后重部署/重起 compose**（见 Execution Handoff）。
+- **同宿主服务走内网、浏览器走公网（双端点，2026-09-05 已实测定案·只改 MinIO）**：app/LS/mlflow/MinIO 同机（MinIO/MySQL 为**同机宿主进程**非容器，`182.61.59.135` 上 8290/8206 是云边缘→本机 9000/3306 的端口映射）。服务端数据面绕公网 hairpin 吃 ~5-6Mbps 公网入口瓶颈（见 memory `deploy-server-upload-bandwidth`）。**落点（代码已落地）**：后端 `_client`（数据面）走内网 `MINIO_SERVER_ENDPOINT`（= `172.18.0.1:9000` docker 网关，容器直连已验证 1ms；空则回退 `MINIO_ENDPOINT`）；预签名 `_sign_client` 恒走公网 `MINIO_ENDPOINT`（182.61.59.135:8290，交到浏览器的 URL）；compose mlflow `MLFLOW_S3_ENDPOINT_URL=http://${MINIO_SERVER_ENDPOINT:-${MINIO_ENDPOINT}}`（嵌套默认已实测可用）。LS 媒体接入时按"LS 服务端拉取走内网、浏览器直开走公网"分。**MySQL 仅绑 `127.0.0.1`，容器不可直连 → 本期不改**（小查询非带宽瓶颈）。**已生效（2026-09-05）**：服务器 `.env` 已设 `MINIO_SERVER_ENDPOINT=172.18.0.1:9000`，mlflow 与 app 已重部署并验证内网（commit `632e939`/`ac477bf`，详情见 `docs/机器学习平台集成进展与方向.md`）。
 
 ---
 
