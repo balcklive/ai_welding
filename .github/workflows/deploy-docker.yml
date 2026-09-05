@@ -91,6 +91,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # 把 docker-compose.yml 同步到服务器（编排 label-studio / mlflow 辅助服务，
+      # 见 docs/superpowers/plans/2026-09-05-compose-deploy.md）
+      - name: Upload docker-compose.yml
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: docker-compose.yml
+          target: ${{ vars.DEPLOY_PATH || '/home/wwwroot/code/ai_welding' }}
+
       - name: Pull and run image over SSH
         uses: appleboy/ssh-action@v1.2.2
         env:
@@ -162,6 +177,11 @@ jobs:
               --username "$ACR_USERNAME" --password-stdin
             docker pull "$IMAGE_NAME"
 
+            # 确保外部网络 + 辅助服务（label-studio / mlflow）在跑（幂等；docker-compose.yml 已由 scp 步骤同步）。
+            # 辅助服务失败不阻断 app 发布：MLflow 写入本就是 best-effort。
+            docker network create aiwelding-net >/dev/null 2>&1 || true
+            docker compose up -d >/dev/null 2>&1 || echo "compose up 警告：辅助服务未就绪（不阻断 app 发布）"
+
             # 候选容器先在随机本地端口执行迁移和 readiness。禁用任务执行器，避免
             # 与当前生产容器同时消费队列。此阶段失败不会触碰当前生产容器。
             docker rm -f "$CANDIDATE_CONTAINER" 2>/dev/null || true
@@ -170,6 +190,7 @@ jobs:
               --env-file .env \
               -e JOB_EXECUTOR_ENABLED=false \
               --restart no \
+              --network aiwelding-net \
               -p 127.0.0.1::8000 \
               "$IMAGE_NAME"; then
               docker logs --tail 200 "$CANDIDATE_CONTAINER" 2>/dev/null || true
@@ -198,6 +219,7 @@ jobs:
               --name "$APP_CONTAINER_NAME" \
               --env-file .env \
               --restart unless-stopped \
+              --network aiwelding-net \
               -p "$HOST_PORT:8000" \
               "$IMAGE_NAME"; then
               docker logs --tail 200 "$APP_CONTAINER_NAME" 2>/dev/null || true

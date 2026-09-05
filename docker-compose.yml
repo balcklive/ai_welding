@@ -1,0 +1,76 @@
+# Docker Compose — Label Studio / MLflow 辅助服务编排（私有化部署）
+#
+# 设计（2026-09-05，spec docs/superpowers/specs/2026-09-05-mlflow-dataset-annotation-design.md §4）：
+#   - app 主应用（FastAPI + 前端）仍走 deploy-docker.yml 的单容器蓝绿 docker run，
+#     不放进本 compose（保留其 candidate/rollback 回滚语义）。
+#   - 本 compose 只编排两个「阶段性子系统」：label-studio（人工标注工作台）与
+#     mlflow（独立 Tracking Server），二者与 app 共享外部网络 aiwelding-net，
+#     app 容器以服务名 http://mlflow:5000 / http://label-studio:8080 访问。
+#   - 长期目标是把二者能力吸收入主应用；故本编排保持薄：持久化用命名卷，
+#     MLflow artifact 走既有 MinIO（s3://${MINIO_BUCKET}/mlflow-artifacts 前缀），
+#     不引入独立 DB 服务（LS/MLflow 后端均 SQLite 落卷，规模上来再迁 MySQL/Postgres）。
+#
+# 用法：
+#   cd <DEPLOY_PATH>   # 与 .env 同目录；compose 自动读取 .env 做变量替换
+#   docker compose up -d          # 启动/更新两个服务
+#   docker compose down           # 停（数据保留在命名卷）
+#   docker compose down -v        # 停并删卷（慎用，清空 LS/MLflow 数据）
+#
+# 镜像来源（实测）：LS = ACR mirror（服务器直拉 Docker Hub 被 reset）；MLflow = GHCR 直拉，按 digest 固定。
+name: aiwelding
+
+networks:
+  aiwelding-net:
+    name: aiwelding-net
+
+volumes:
+  ls_data:
+    name: label-studio-data
+  mlflow_data:
+    name: mlflow-data
+
+services:
+  label-studio:
+    image: crpi-v5j14rjtcacf9f23.cn-shanghai.personal.cr.aliyuncs.com/aliyun_kaka/label-studio:1.23.0
+    container_name: label-studio
+    restart: unless-stopped
+    networks:
+      - aiwelding-net
+    ports:
+      - "${LABEL_STUDIO_PORT:-8224}:8080"
+    volumes:
+      - ls_data:/label-studio/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+  mlflow:
+    # 按 digest 固定（对应 3.16.0，实测 /health=OK）
+    image: ghcr.io/mlflow/mlflow@sha256:e72e134e4fd38a229cfbce1b8a8c19c6b4e8928f1ceb5dc136c891855212e998
+    container_name: mlflow
+    restart: unless-stopped
+    networks:
+      - aiwelding-net
+    ports:
+      - "${MLFLOW_PORT:-8225}:5000"
+    volumes:
+      - mlflow_data:/var/lib/mlflow
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: "http://${MINIO_ENDPOINT}"
+      AWS_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY}"
+      AWS_SECRET_ACCESS_KEY: "${MINIO_SECRET_KEY}"
+      AWS_DEFAULT_REGION: "${MINIO_REGION:-us-east-1}"
+    command: >
+      mlflow server
+      --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////var/lib/mlflow/mlflow.db
+      --default-artifact-root s3://${MINIO_BUCKET}/mlflow-artifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
