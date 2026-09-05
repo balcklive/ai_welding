@@ -1,0 +1,95 @@
+# Mirror 第三方镜像到阿里云 ACR
+#
+# 背景（实测 2026-09-05，见 docs/superpowers/plans/2026-09-05-mirror-third-party-images.md）：
+#   - Label Studio 镜像在 Docker Hub（heartexlabs/label-studio），生产服务器（182.61.59.135）
+#     直拉 Docker Hub 会被 connection reset，**必须 mirror 到 ACR** 后由服务器从 ACR 拉取。
+#   - GitHub Actions runner 运行在云端、能访问 Docker Hub，且 deploy 已配置 ALIYUN_ACR_* secrets，
+#     是 mirror 的唯一可行执行点。
+#   - MLflow server 镜像在 GHCR（ghcr.io/mlflow/mlflow），生产服务器可直接拉取（实测 247s/369MB，
+#     smoke /health=OK），**无需 mirror**；本 workflow 的 mirror-mlflow job 仅为可选统一管理。
+#
+# 用法：GitHub → Actions → 该 workflow → Run workflow（可改 tag 输入）。
+# 上游镜像用 tag 固定（默认值即当前验证版本）；升级时改输入重跑，不进 main 自动发布链。
+
+name: Mirror 3rd-party images to ACR
+
+on:
+  workflow_dispatch:
+    inputs:
+      label_studio_tag:
+        description: "Label Studio 版本 tag（Docker Hub: heartexlabs/label-studio）"
+        required: true
+        default: "1.23.0"
+      mirror_mlflow:
+        description: "是否同时 mirror MLflow 到 ACR（默认关：服务器可直拉 GHCR）"
+        type: boolean
+        default: false
+      mlflow_tag:
+        description: "MLflow 版本（tag 用 vX.Y.Z；关 mirror_mlflow 时忽略）"
+        required: false
+        default: "3.16.0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mirror-3rd-party
+  cancel-in-progress: false
+
+env:
+  ACR_REGISTRY: crpi-v5j14rjtcacf9f23.cn-shanghai.personal.cr.aliyuncs.com
+  ACR_NAMESPACE: aliyun_kaka
+  # 上游不可变引用（可选，用于确定性 pin，见计划文档）
+  MLFLOW_DIGEST: sha256:e72e134e4fd38a229cfbce1b8a8c19c6b4e8928f1ceb5dc136c891855212e998
+
+jobs:
+  mirror-label-studio:
+    name: Mirror Label Studio to ACR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Pull upstream (Docker Hub)
+        run: docker pull heartexlabs/label-studio:${{ inputs.label_studio_tag }}
+
+      - name: Tag & push to ACR
+        run: |
+          ACR_IMG="$ACR_REGISTRY/$ACR_NAMESPACE/label-studio:${{ inputs.label_studio_tag }}"
+          docker tag heartexlabs/label-studio:${{ inputs.label_studio_tag }} "$ACR_IMG"
+          docker push "$ACR_IMG"
+
+      - name: Report ACR digest
+        run: |
+          docker image inspect "$ACR_REGISTRY/$ACR_NAMESPACE/label-studio:${{ inputs.label_studio_tag }}" \
+            --format 'ACR digest={{ index .RepoDigests 0 }}'
+
+  mirror-mlflow:
+    name: Mirror MLflow to ACR (optional)
+    if: inputs.mirror_mlflow == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Login to Aliyun ACR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+      - name: Pull upstream by digest (GHCR)
+        run: docker pull ghcr.io/mlflow/mlflow@${{ env.MLFLOW_DIGEST }}
+
+      - name: Tag & push to ACR
+        run: |
+          ACR_IMG="$ACR_REGISTRY/$ACR_NAMESPACE/mlflow:v${{ inputs.mlflow_tag }}"
+          docker tag "ghcr.io/mlflow/mlflow@${{ env.MLFLOW_DIGEST }}" "$ACR_IMG"
+          docker push "$ACR_IMG"
+
+      - name: Report ACR digest
+        run: |
+          docker image inspect "$ACR_REGISTRY/$ACR_NAMESPACE/mlflow:v${{ inputs.mlflow_tag }}" \
+            --format 'ACR digest={{ index .RepoDigests 0 }}'
