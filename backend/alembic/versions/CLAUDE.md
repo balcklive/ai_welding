@@ -16,6 +16,8 @@ Alembic 迁移脚本目录（逐版本推进，全部由 `alembic revision` 生�
 - `0010_job_request_key.py`：Job 层 `request_key` 幂等（active_request_key 释放语义）。
 - `0011_mlflow_run_id.py`：`jobs.mlflow_run_id`（模型中心 Job ↔ MLflow Run 关联，Task 16 真实训练）。
 - `0012_registration_fields.py`：`data_records` 新增 `wire_feed_speed`/`welding_speed`（单值工艺参数，可表单录入/导入稳态回填）与 `data_fields`（JSON 字段概览，CSV 导入自动写），三列均 nullable（多模态分析.csv 全字段导入配套）。
+- `0013_label_studio_integration.py`：**LS 集成（2026-09-05）**——`annotation_tasks` 新增 `ls_status`（VARCHAR(16) NOT NULL default `legacy`，存量回填 legacy）＋ 新表 `annotation_ls_sync`（§3.25，`(annotation_task_id, sample_id)` 复合唯一）。**坑**：用 `ADD COLUMN ... NOT NULL DEFAULT 'legacy'` 单条完成存量回填 + 新行默认 + 蓝绿 expand 兼容，勿拆成"可空列+UPDATE+contract"。
+- `0014_label_category_pool.py`：**LS 集成决策 4（2026-09-06）**——`label_categories` 补第 6 类「熔池」（颜色 `#f032e6` 对齐 LS 项目4），纯数据迁移（无表结构变更），`INSERT ... ON DUPLICATE KEY UPDATE` 幂等。
 
 ## 调用链
 

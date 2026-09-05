@@ -187,7 +187,9 @@
 
 - `torch_training.py`：**2026-08-29 真实训练内核**（Task 16 由模拟升级为真实 CPU 训练）。
   `load_real_examples(session, dataset_version_id, storage)`：读固定 `dataset_items`→`Sample`→`Annotation`
-  真实样本，标签折叠为 正常/缺陷 两类；`_features_from_sample` 从 MinIO 取样本首个支持的
+  真实样本，标签折叠为 正常/缺陷 两类（**决策 6 / 验证 §2**：用模块常量 `DEFECT_LABELS`（焊瘤/气孔/
+  未熔合/咬边/未焊透/焊穿）**缺陷白名单**折叠——只认白名单内类别为缺陷，熔池/正常等非缺陷剔除，
+  避免"有非缺陷标注（熔池）的样本被误折为缺陷"污染二分类；）。`_features_from_sample` 从 MinIO 取样本首个支持的
   图片/CSV/JSON 对象算 8 维统计特征（CSV/JSON 取全数值、图片 resize 32×32 灰图 + 8 维统计），
   兼容旧快照仅存 `meta.version_id` 的对象键回退；`run(task_id, epochs, seed, examples, classes)`：
   两层 MLP + CrossEntropy + SGD 在 CPU 训练，返回 `CpuTrainingResult`（metrics/loss_curve/weights
@@ -287,6 +289,19 @@
     `_bundle_from_parsed` 读全列，核心 4 恒在、扩展/自动通道量程按 `_data_range` 实际 min/max。
     导入成功回填 `DataRecord.wire_feed_speed/welding_speed`（稳态中位数）与 `data_fields`
     （`build_field_summary`/`fill_record_params`）。测试：`tests/test_signal_ingest_extra_columns.py`。
+
+- `annotation_ls.py`：**LS 标注集成服务层（2026-09-05，best-effort，已对真实 LS + 真实库走通 e2e）**。
+  `task_to_waiting`/`mark_synced`（等待态联动：`annotation_tasks.ls_status`）、
+  `push_samples_to_ls`（逐样本建 LS task + 写 `annotation_ls_sync`，单个样本失败不中断；`_media_data_for`
+  按 `_kind_of` 分派媒体字段 image/csv、`_pick_media_key` 挑 jpg/图像或 csv；LS off → 返回 0 不炸）、
+  `handle_annotation_event`（webhook→拉 LS 标注→`convert_region` 转换→幂等回写→任务 synced，返回
+  `{task_id,samples}`；`_extract_ls_task_id` 兼容 `task_id`/`task.id`/`annotation.task`；无有效标注→None）、
+  `writeback_annotation`（删旧插新覆盖写样本 `annotations`，**annotator=LS 用户名**（`extract_annotator`），
+  confidence 沿用先前同类别值）、`reconcile_pending`（真实对账：对 `annotating` 行调
+  `handle_annotation_event` 补回写，未回写的刷新过期媒体 URL）、`to_task_payload`。供
+  `api/v1/labelstudio.py` 调用。调用 `integrations/labelstudio`。策略：业务库权威 + LS 捕获层；
+  等待态与 Job 快速终态解耦（决策 2）。测试 `tests/test_labelstudio_integration.py`；真实 e2e
+  `scripts/premise_validation/e2e_ls_roundtrip.py`。
 
 ## 坑/限制
 

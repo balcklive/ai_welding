@@ -18,6 +18,9 @@
 2. **`annotation_task` 完成语义 = 一等公民的「LS 等待」态**：与 Job 快速终态解耦；executor **不抢占**等待态任务；数据集构建/训练 readiness 闸门 =「标注已实际回写」而非 job 终态；终态由 webhook/轮询对账驱动，幂等。
 3. **媒体访问 = MinIO 预签名长 TTL**（覆盖标注会话周期，按天/周）+ 适配层**对账刷新**已过期 task data；不经 `/api` 代理；保持"LS 不复制媒体本体"（个别媒体若 LS 实测回源不稳，再评估 copy_data 本地缓存，MinIO 仍权威）。
 4. **标签类别补回第 6 类「熔池」**：`label_categories` seed/迁移补 6 类（与文档口径一致，消除"文档 6 类/代码 5 类"漂移）；LS 项目标签 schema 与平台类别**按标注语义校准**（见轨道 A）。
+5. **iframe embed 落点定案 = 嵌入**：LS 站点**无 `X-Frame-Options`、CSP 为 Report-Only 且无 `frame-ancestors`**（已实测 `/` `user/login/` `project/` `api` 4 路径）→ 平台**直接 iframe 嵌入 LS**（决策 1 的 hedge 落点为 embed），不再优先新标签页；仍保留"新标签页 + 回平台刷新"作为 LS 不支持嵌入时的备选。见验证报告 §5。
+6. **熔池不是缺陷，是语义分割目标**：`load_real_examples` 折叠**改「缺陷类别白名单」**（焊瘤/气孔/未熔合/咬边/未焊透/焊穿），只对白名单类别折叠为缺陷；熔池/正常等一律当非缺陷剔除，并入独立语义分割（桥接 LS 项目4 单类熔池）。见验证报告 §2。
+7. **存量旧任务迁移原则：删除或转移为 LS 任务**：迁移后存量 `annotation_tasks` 一律删除，或转移为对应 LS 项目任务（检测→项目3、熔池→项目4、时序→项目5）写入 `annotation_ls_sync` 呈「LS 等待」态；**不回填为「annotating」**，默认取「legacy/待转移」；`on` 模式不保留模拟/旧路径任务（`off` 才回退旧路径）。见验证报告 §4。
 
 ## Global Constraints
 
@@ -44,6 +47,8 @@
 ## 一期·轨道 A：LS 标注集成（原 M1，含前端；代码优先）
 
 **目标**：主应用「标注」链路走 LS——标注员在 LS 完成、结果回写 `annotations`、数据集构建/训练沿用；平台新标注任务经 UI 路由 LS（决策 1）。
+
+> **进度（2026-09-06）**：SDK + 集成骨架已用**真实 LS + 真实 MySQL + 真实 MinIO 走通 e2e**（`backend/scripts/premise_validation/e2e_ls_roundtrip.py`：真样本→推 LS→SDK 标注→**本机模拟 webhook** 回写→幂等→清理，BOX/POLY 两路）。基于 e2e 已闭环下列 TODO：SDK 方法名（`dir(client)` 核对 `tasks.create/get/list/update/delete`、`annotations.create`、`projects.get`）、`convert_region` 真实 region 类型串（**`rectanglelabels`/`polygonlabels`/`timeserieslabels`**，坐标 0-100% 以 `original_width/height` 换算像素）、`refresh_task_media`（保留 data 其它键）、`_media_data_for` 分派（image/csv）、annotator 取 LS 用户名。离线回归 `tests/test_labelstudio_integration.py`（mock SDK，11 项）。迁移 `0013`/`0014` 已落地真实库；`label_categories` 补熔池第 6 类（决策 4）；`load_real_examples` 改缺陷白名单折叠（决策 6）。**剩余**：前端录入切换路由 LS + 后端标注任务创建入口接 LS（`POST /annotation-tasks` mode=on 时建任务后 push + 置等待态）+ 服务器 webhook/对账心跳部署验证。
 
 **Files**（建议）：
 - Create: `backend/app/integrations/labelstudio.py`（client 初始化 + 项目映射 + 建 task + 拉标注→转换 + 幂等回写 + 预签名 TTL 刷新）
@@ -108,13 +113,13 @@
 
 ## 待核实前提（写细粒度计划前先验，不阻塞里程碑拆分）
 
-- [ ] **iframe embed**：LS 标注页响应是否带 `X-Frame-Options`/CSP `frame-ancestors`，决定平台"嵌入 vs 新标签页"（决策 1 hedge 的落点）。
-- [ ] **预签名 TTL 上限**：MinIO/S3 预签名默认上限 7 天；确认存储层 `presign_get` 支持 >1 天 expires（`/files/url` 路由封顶 1 天 ≠ 存储层能力），与"长 TTL + 对账刷新"一致。
+- [x] **iframe embed（已核实，2026-09-05）**：LS 站点**无 `X-Frame-Options`、CSP 为 Report-Only 且无 `frame-ancestors`**（实测 4 路径）→ 平台可 iframe 嵌入；决策 1 落点定为嵌入（见已确认决策 5）。
+- [x] **预签名 TTL 上限（已核实，2026-09-05）**：minio SDK `presigned_get_object` **仅接受 1 秒~7 天**，>7 天抛 `ValueError`；`StorageClient.presign_get` 正确透传 expires。**存储层能力 = 7 天**；`/files/url` 路由封顶 1 天只是路由层限制（要 >1 天需直接 `storage.presign_get(expires=...)` 或扩路由上限）。长 TTL 建议设 ≤7 天（如 3 天）+ 对账刷新。
 - [x] **网络端点拓扑（已核实，2026-09-05）**：SSH 核实 MinIO/MySQL = 同机宿主进程（非容器）。MinIO 绑 `*:9000`，容器经 `172.18.0.1:9000` / `192.168.31.79:9000` 直连可达（HTTP 200 / 1ms）；MySQL 仅绑 `127.0.0.1:3306`，容器不可直连 → 双端点只内网化 MinIO（代码已落地），MySQL 不动。
-- [ ] **历史数据回填**：加「LS 等待」状态列时存量 annotation_tasks 的默认值/回填 + 蓝绿 expand/contract 兼容。
-- [ ] **LS 等待态前端表达**：等待期前端不做进度 spinner，改"去 LS 标注"链接 + 刷新按钮/轮询（随决策 1 UI 切片定义）。
-- [ ] **LS 项目4 工具**：平台视频帧是多边形顶点（`kind=polygon`），LS id4 现为 BrushLabels——定"LS 改 PolygonLabels 模板"还是"接受掩膜回写→轮廓/rle 存储"（影响 `annotations` 存储与导出）。
-- [ ] **熔池/正常标签的训练消费**：熔池入 `label_categories` 后与训练二分类折叠（`load_real_examples` 按"正常→正常、其余→缺陷"）的关系待定——熔池是分割对象非缺陷，需明确熔池是否参与训练折叠或仅语义分割专用（产品裁决）。
+- [x] **历史数据回填（已核实，2026-09-05）**：单条 `ALTER TABLE ... ADD COLUMN ls_status ... NOT NULL DEFAULT 'annotating'` 即同时完成存量回填、新行默认、蓝绿 expand 兼容；但**回填值语义按决策 7 取「legacy/待转移」**（存量从未进 LS，不是"annotating"）。
+- [x] **LS 等待态前端表达（已定，2026-09-05）**：随决策 1 落点（iframe 嵌入）切片——等待期前端不渲染进度 spinner，改为「去 LS 标注」入口（embed iframe）+ 刷新/轮询回写状态，非独立技术前提。
+- [x] **LS 项目4 工具（已核实并定案，2026-09-05）**：原实测 id=4 =「熔池语义分割 Segmentation」= **BrushLabels 单类熔池**。**已评审定案：改为 PolygonLabels（用户授权 2026-09-05，经 LS API 更新项目4 `label_config` 成功，`parsed_label_config.label.type=PolygonLabels`、单类熔池）**——与平台 `kind=polygon` 一致，回写直接 polygon 顶点、无损免掩膜转换。已验证项目 id 4 无已有标注任务（`num_tasks_with_annotations=0`），改模板无数据影响。
+- [x] **熔池/正常标签的训练消费（已评审定案，2026-09-05）**：熔池是分割目标**非缺陷**；训练折叠改用**缺陷类别白名单**排除熔池（见已确认决策 6）。验证详情见 `docs/superpowers/plans/2026-09-05-integration-premise-verification.md`。
 
 ## Execution Handoff
 

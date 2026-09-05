@@ -13,7 +13,7 @@ from app.models.data import User
 
 LABEL_CATEGORIES: tuple[tuple[str, str], ...] = (
     ("焊瘤", "#d16f69"), ("气孔", "#d69b4b"), ("未熔合", "#5b8def"),
-    ("咬边", "#9b78c8"), ("正常", "#58a889"),
+    ("咬边", "#9b78c8"), ("正常", "#58a889"), ("熔池", "#f032e6"),
 )
 
 

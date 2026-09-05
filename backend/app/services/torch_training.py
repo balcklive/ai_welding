@@ -23,6 +23,11 @@ from app.models.analysis import Annotation, Sample
 from app.models.data import DataVersion
 from app.models.datasets import DatasetItem
 
+#: 缺陷类别白名单（决策 6 / 验证 §2）：只把这些类别折叠为「缺陷」；熔池/正常等非缺陷剔除，
+#: 避免"有非缺陷标注（熔池）的样本被误折为缺陷"污染二分类训练。统计口径未焊透/焊穿亦属缺陷，
+#: 一并列出（若出现在标注中则折叠）。
+DEFECT_LABELS = frozenset({"焊瘤", "气孔", "未熔合", "咬边", "未焊透", "焊穿"})
+
 
 @dataclass(frozen=True)
 class TrainingExample:
@@ -72,7 +77,8 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
         if sample.id is None:
             continue
         sample_annotations = by_sample.get(sample.id, [])
-        label_name = "缺陷" if any(a.category for a in sample_annotations) else "正常"
+        # 缺陷白名单折叠：只认白名单内的类别为缺陷；熔池/正常等非缺陷剔除（决策 6）。
+        label_name = "缺陷" if any(a.category in DEFECT_LABELS for a in sample_annotations) else "正常"
         examples.append(TrainingExample(sample.id, item.split, _features_from_sample(storage, sample, session, feature_cache), label_ids[label_name], label_name))
     if not examples:
         raise ValueError("数据集版本没有可训练的真实样本")

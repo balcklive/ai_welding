@@ -22,6 +22,7 @@
 ## 后端（backend/）
 
 - Python 一律 uv：`cd backend && uv sync && uv run pytest`；运行服务 `uv run uvicorn app.main:app --reload`（`package=false`，非打包安装）。
+- **Label Studio 集成（一期·轨道 A，2026-09-06 已走通 e2e）**：`label-studio-sdk`（v2.1.1）+ `backend/app/integrations/labelstudio.py` + `services/annotation_ls.py` + `api/v1/labelstudio.py`（webhook secret 鉴权 + `/labelstudio/tasks/{id}` + `/labelstudio/sync`）。LS region 类型实为 `rectanglelabels`/`polygonlabels`/`timeserieslabels`（0-100% 坐标以 `original_width/height` 换算像素），项目映射 box→3 / polygon→4(PolygonLabels 熔池) / segment→5。`LABEL_STUDIO_MODE=on` 时新标注任务路由 LS、等待态不被 executor 抢占、完成由回写驱动。真实全链路（真样本→推 LS→回写→幂等）见 `backend/scripts/premise_validation/e2e_ls_roundtrip.py`；离线回归 `tests/test_labelstudio_integration.py`。迁移 `0013`（ls_status + annotation_ls_sync）、`0014`（熔池类）；契约已同步 `docs/数据库设计.md`。
 - **配置读取**：`backend/app/core/config.py` 的 `Settings` 用 `env_file=Path(__file__).resolve().parents[3] / ".env"` 指向**仓库根 `.env`**（与 cwd 无关，勿改成相对 `.env`）。
 - **接口轮转日志**：loguru + `backend/app/core/logging.py::AccessLogMiddleware`（纯 ASGI），写 `backend/logs/api.log`（相对目录自动锚定到 backend/ 下），脱敏 password/token/secret，规范见 `docs/开发规范.md` §2。
 - 访问日志只覆盖 `/api/v1` 路由；健康检查 `GET /api/v1/health` 返回统一信封 `{code:0,...}`。

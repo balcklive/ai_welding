@@ -38,6 +38,10 @@ backend/.pytest_cache/
 backend/*.log
 logs/
 data/
+docs/images/manual/
+# premise_validation / LS e2e 生成的探针结果（git 只留脚本，不入 JSON 结果）
+backend/scripts/premise_validation/report.json
+backend/scripts/premise_validation/probe_live_report.json
 
 # --- Python 通用 ---
 __pycache__/

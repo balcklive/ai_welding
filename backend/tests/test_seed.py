@@ -29,7 +29,7 @@ def test_seed_all_is_idempotent_and_contains_no_business_demo_data(engine: Engin
         first = {model: _count(session, model) for model in models}
         seed_all(session, demo=True)
         assert {model: _count(session, model) for model in models} == first
-        assert first[LabelCategory] == 5
+        assert first[LabelCategory] == 6  # 6 类：焊瘤/气孔/未熔合/咬边/正常/熔池（LS 集成决策 4）
         assert first[User] == 1
         assert first[DataRecord] == 0
         assert first[Dataset] == 0

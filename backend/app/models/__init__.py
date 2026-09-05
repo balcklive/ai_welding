@@ -6,6 +6,7 @@
 from .analysis import (
     AlignmentTask,
     Annotation,
+    AnnotationLsSync,
     AnnotationTask,
     FeatureExtraction,
     LabelCategory,
@@ -44,6 +45,7 @@ __all__ = [
     "LabelCategory",
     "FeatureExtraction",
     "SignalIngest",
+    "AnnotationLsSync",
     # datasets.py
     "Dataset",
     "DatasetVersion",

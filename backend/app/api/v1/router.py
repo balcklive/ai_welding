@@ -13,6 +13,7 @@ from app.api.v1 import (
     datasets,
     files,
     jobs,
+    labelstudio,
     models,
     reports,
     welds,
@@ -28,3 +29,4 @@ api_router.include_router(models.router)
 api_router.include_router(files.router)
 api_router.include_router(jobs.router)
 api_router.include_router(reports.router)
+api_router.include_router(labelstudio.router)

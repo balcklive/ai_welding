@@ -135,7 +135,7 @@ def resolve_split_task(session: Session, identifier: str) -> SplitTask | None:
 
 
 def list_label_categories(session: Session) -> list[dict]:
-    """`GET /label-categories`：模型口径 5 类（seed），按 id 升序。"""
+    """`GET /label-categories`：模型口径 6 类（seed，含熔池——LS 集成决策 4），按 id 升序。"""
     cats = session.exec(select(LabelCategory).order_by(LabelCategory.id)).all()
     return [{"id": c.id, "name": c.name, "color": c.color} for c in cats]
 

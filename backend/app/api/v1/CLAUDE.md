@@ -180,6 +180,11 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `data-list`：`ref_ids=[]` → 全量单份（ref_id=`all`）；非空 → 逐标识（DB id/weld_id/
     registration_no）解析过滤，缺失 404。
 
+- `labelstudio.py`：**Label Studio 集成（2026-09-05，已对真实 LS 走通 e2e）**。router 无前缀（完整路径 `/api/v1/labelstudio/*`）。
+  - `POST /labelstudio/webhook`：LS 事件回调，**不挂全局 JWT**（LS 无平台 token），用共享 secret（`LABEL_STUDIO_WEBHOOK_SECRET`，Header `X-LS-Secret`，`secrets.compare_digest`）校验，不依赖来源 IP；调 `annotation_ls.handle_annotation_event`（幂等）→ 路由 commit。
+  - `GET /labelstudio/tasks/{task_id}`：LS 同步状态（`task_id` 兼容 job_uid），**挂 JWT**；`POST /labelstudio/sync`：手动对账（挂 JWT）。
+  - 业务逻辑在 `app.services.annotation_ls`；错误码 40100（secret 无效）/40401(任务不存在)/50000。**坑：本 router 刻意不沿用其它域的 router 级 `Depends(get_current_user)`（webhook 例外），手动端点单独挂。**
+
 ## 坑/限制
 
 - 返回统一走 `app.schemas.common` 的 `ok(data)` / `err(code, message, detail=..., status=...)` 信封；列表分页载荷用 `paginate(items, total, page, page_size)`。

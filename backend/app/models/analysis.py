@@ -59,7 +59,12 @@ class Sample(SQLModel, table=True):
 
 
 class AnnotationTask(SQLModel, table=True):
-    """§3.10 annotation_tasks 标注任务（1:1 关联 jobs）"""
+    """§3.10 annotation_tasks 标注任务（1:1 关联 jobs）
+
+    `ls_status`（LS 集成）：native 标注任务与「LS 等待」解耦——**存量=legacy**（迁移默认，旧模拟任务
+    未进 LS）；`mode=on` 新建时为 `pending_ls`，随 LS 回写/对账推进 `annotating→syncing→synced`；
+    任务"完成"由回写驱动，而非 Job 快速终态（见计划决策 2）。
+    """
 
     __tablename__ = "annotation_tasks"
 
@@ -70,6 +75,7 @@ class AnnotationTask(SQLModel, table=True):
     )
     name: str | None = Field(default=None, max_length=128)
     source: str = Field(max_length=32)
+    ls_status: str = Field(default="legacy", max_length=16, index=True)
     created_at: datetime | None = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
@@ -142,6 +148,39 @@ class FeatureExtraction(SQLModel, table=True):
     started_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     finished_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     created_by: int | None = Field(default=None, foreign_key="users.id", index=True)
+
+
+class AnnotationLsSync(SQLModel, table=True):
+    """§3.25 annotation_ls_sync 标注任务样本 ↔ LS task 映射/同步状态（LS 集成）
+
+    per-sample 记录：平台 sample ↔ LS project/task 的绑定，及标注回写状态。幂等靠
+    `(annotation_task_id, sample_id)` 复合唯一；回写幂等 + task data 内嵌 sample_id
+    兜底（LS task 不确定时按 data.sample_id 查询补建）。
+    """
+
+    __tablename__ = "annotation_ls_sync"
+    __table_args__ = (
+        UniqueConstraint(
+            "annotation_task_id", "sample_id", name="uq_annotation_ls_sync_task_sample"
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    annotation_task_id: int = Field(
+        foreign_key="annotation_tasks.id", index=True
+    )
+    sample_id: int = Field(foreign_key="samples.id", index=True)
+    ls_project_id: int
+    ls_task_id: int | None = Field(default=None)
+    ls_annotation_id: int | None = Field(default=None)
+    sync_status: str = Field(default="pending_ls", max_length=16)
+    idempotency_key: str | None = Field(default=None, max_length=128)
+    created_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    updated_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
 
 
 class SignalIngest(SQLModel, table=True):

@@ -29,6 +29,7 @@ dependencies = [
   "pillow>=12.3.0",
   "mlflow>=3.15,<4",
   "torch==2.7.1",
+  "label-studio-sdk>=2.1.1",
 ]
 [dependency-groups]
 dev = ["pytest>=8.2", "httpx>=0.27"]

@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     mlflow_experiment: str = "AI Welding"
     mlflow_artifact_root: str = "s3://aiwelding/mlflow-artifacts"
     mlflow_s3_endpoint_url: str = ""
+    # Label Studio（可选；集成层 best-effort，off 时全链路跳过，同 mlflow 三模式）。
+    # 敏感值（api_key/webhook_secret）只进服务器 .env，不进仓库。
+    label_studio_mode: str = "off"
+    label_studio_internal_url: str = ""  # SDK 用：同宿主走 http://label-studio:8080（内网）
+    label_studio_public_url: str = ""    # 浏览器/embed 用：http://182.61.59.135:8224（公网）
+    label_studio_webhook_base: str = ""  # LS→app webhook 回调：http://ai-welding:8000
+    label_studio_api_key: str = ""       # PAT（refresh JWT）——SDK 传它即可，内部自动 refresh
+    label_studio_webhook_secret: str = ""  # webhook 共享 secret，校验来源，不依赖 IP
+    label_studio_presign_expires: int = 259200  # 长 TTL（秒），默认 3 天；上限 7 天=604800
+    # 项目映射（按标注语义，非 source 字符串；与 LS 实际模板核对，见 integrations/labelstudio.py）
+    ls_project_detection: int = 3      # 图像/关键帧 目标检测 RectangleLabels 4 缺陷类
+    ls_project_segmentation: int = 4   # 熔池/视频帧分割 PolygonLabels 单类熔池（已改；原 BrushLabels）
+    ls_project_timeseries: int = 5     # 时序分段 TimeSeries 区间分段 4 缺陷类
     torch_cpu_threads: int = 1
     # 候选容器只做迁移与 readiness 预检，不应抢占生产异步任务。
     job_executor_enabled: bool = True
