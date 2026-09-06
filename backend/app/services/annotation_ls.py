@@ -56,9 +56,11 @@ def mark_synced(session: Session, task: AnnotationTask) -> None:
 
 
 def push_samples_to_ls(session: Session, task: AnnotationTask, samples: list[Sample]) -> int:
-    """为任务的每个样本建 LS task，并写 `annotation_ls_sync` 映射行；返回成功数。
+    """为任务的每个样本建 LS task，并写 `annotation_ls_sync` 映射行；返回新建数。
 
-    best-effort：单个样本 LS 失败仅记录，不中断整任务（batch 继续，遗漏交由对账兜底）。
+    **幂等**：已有 `ls_task_id` 的样本跳过（不重复建 LS task）——manual 样本常经 `POST /import`
+    晚于 handler 推流，幂等保证重复调用不产生重复 LS task。best-effort：单个样本 LS 失败仅记录，
+    不中断整任务（batch 继续，遗漏交由对账兜底）。
     """
     client = ls._client()
     if client is None:
@@ -67,11 +69,6 @@ def push_samples_to_ls(session: Session, task: AnnotationTask, samples: list[Sam
     created = 0
     for sample in samples:
         project_id = ls.project_for(task.source, _kind_of(sample))
-        data = _media_data_for(sample)
-        if data is None:
-            logger.warning("sample {} no annotatable media; skip push", sample.id)
-            continue
-        ls_task_id = ls.create_task(client, project_id, data, sample.id)
         row = session.exec(
             select(AnnotationLsSync).where(
                 AnnotationLsSync.annotation_task_id == task.id,
@@ -86,6 +83,13 @@ def push_samples_to_ls(session: Session, task: AnnotationTask, samples: list[Sam
                 sync_status="pending_ls",
             )
             session.add(row)
+        if row.ls_task_id is not None:
+            continue  # 已在 LS 建过 task → 幂等跳过
+        data = _media_data_for(sample)
+        if data is None:
+            logger.warning("sample {} no annotatable media; skip push", sample.id)
+            continue
+        ls_task_id = ls.create_task(client, project_id, data, sample.id)
         if ls_task_id:
             row.ls_task_id = int(ls_task_id)
             row.sync_status = "annotating"

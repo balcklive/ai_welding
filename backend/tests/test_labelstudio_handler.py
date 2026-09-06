@@ -134,3 +134,24 @@ def test_handler_mode_on_but_ls_unavailable_falls_back(engine, monkeypatch):
             select(AnnotationLsSync).where(AnnotationLsSync.annotation_task_id == task_id)
         ).all()
         assert syncs == []
+
+
+def test_push_samples_to_ls_is_idempotent(engine, monkeypatch):
+    """重复推流不重复建 LS task：只在首次创建，第二次跳过（manual-import 晚于 handler 时安全）。"""
+    from app.services import annotation_ls as al
+
+    client = _FakeCreateClient()
+    monkeypatch.setattr(ls, "_client", lambda: client)
+    monkeypatch.setattr(app_storage, "get_storage", lambda: _FakeStorage())
+    with Session(engine) as session:
+        _job_id, task_id = _seed_manual_annotatable(engine, n=2)
+        task = session.get(AnnotationTask, task_id)
+        samples = session.exec(
+            select(Sample).where(Sample.annotation_task_id == task_id)
+        ).all()
+        first = al.push_samples_to_ls(session, task, samples)
+        second = al.push_samples_to_ls(session, task, samples)
+        session.commit()
+        assert first == 2
+        assert second == 0  # 已在 LS 建过 task → 幂等跳过
+        assert len(client.tasks.created) == 2  # 只建了 2 个 LS task，不重复

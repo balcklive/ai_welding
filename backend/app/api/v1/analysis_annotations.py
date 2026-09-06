@@ -12,12 +12,14 @@ from sqlmodel import Session, select
 
 from app.api.deps import get_current_user
 from app.core.audit import write_audit
+from app.core.config import settings
 from app.core.db import get_session
 from app.models.analysis import AnnotationTask, LabelCategory, Sample, SplitTask
 from app.models.data import DataVersion, User
 from app.models.jobs import Job
 from app.schemas.common import err, ok, paginate
 from app.services import annotation
+from app.services import annotation_ls as ls_svc
 from app.services.jobs import create_job, get_job_by_uid, to_job_payload
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -245,6 +247,11 @@ def import_annotation_samples(
         )
     except ValueError as exc:  # noqa: BLE001 - 未知来源等由服务抛出的业务错误
         return err(40000, str(exc), status=400)
+    # LS 集成（一期·轨道 A）：manual 样本经 import 后才有真实媒体，可能晚于 handler 推流
+    # （handler 先跑时 `_gather_task_samples` 仍为空）。这里在导入后懒推 LS（`push_samples_to_ls`
+    # 已幂等：有 ls_task_id 跳过），并确保任务进入 LS 等待态；mode=off / LS 不可达自动跳过。
+    if settings.label_studio_mode == "on":
+        ls_svc.prepare_ls_task(session, task)
     write_audit(
         session,
         current_user.id,

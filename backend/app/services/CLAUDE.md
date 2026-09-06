@@ -293,7 +293,10 @@
 - `annotation_ls.py`：**LS 标注集成服务层（2026-09-05，best-effort，已对真实 LS + 真实库走通 e2e）**。
   `task_to_waiting`/`mark_synced`（等待态联动：`annotation_tasks.ls_status`）、
   `push_samples_to_ls`（逐样本建 LS task + 写 `annotation_ls_sync`，单个样本失败不中断；`_media_data_for`
-  按 `_kind_of` 分派媒体字段 image/csv、`_pick_media_key` 挑 jpg/图像或 csv；LS off → 返回 0 不炸）、
+  按 `_kind_of` 分派媒体字段 image/csv、`_pick_media_key` 挑 jpg/图像或 csv；LS off → 返回 0 不炸；
+  **2026-09-06 幂等**：已有 `ls_task_id` 的样本跳过，不重复建 LS task——manual 样本经 `POST /import`
+  常晚于 handler 推流，幂等保证重复调用不产生重复 task；`api/v1/analysis_annotations.py` import 路由
+  在 mode=on 时导入后懒调 `prepare_ls_task` 补推，规避 handler 先跑漏样本（`_gather_task_samples` 为空）的竞态）、
   `handle_annotation_event`（webhook→拉 LS 标注→`convert_region` 转换→幂等回写→任务 synced，返回
   `{task_id,samples}`；`_extract_ls_task_id` 兼容 `task_id`/`task.id`/`annotation.task`；无有效标注→None）、
   `writeback_annotation`（删旧插新覆盖写样本 `annotations`，**annotator=LS 用户名**（`extract_annotator`），
