@@ -56,26 +56,21 @@
 - Modify: server `<DEPLOY_PATH>/.env`（`MLFLOW_MODE=server`、`MLFLOW_TRACKING_URI=http://mlflow:5000`）
 - 无 app 代码改动（`integrations/mlflow.py` 已支持 server 模式，配置即切）。
 
-- [ ] **Step 1**: 备份并改 server `.env`：`sed -i` 设 `MLFLOW_MODE=server`、`MLFLOW_TRACKING_URI=http://mlflow:5000`（保留 `MLFLOW_ARTIFACT_ROOT` 一致）。
-- [ ] **Step 2**: 手动触发一次 app 部署（或等下次 main push），验证 app 容器 attach 同网后能访问 `mlflow:5000`。
-- [ ] **Step 3**: 回归：训练一次 → `mlflow` 服务内新增 run（`docker exec mlflow python -c "...list runs..."` 或 UI `http://127.0.0.1:8225`）；MLflow 写入失败不使业务 Job 失败（best-effort 铁律回归）。
-- [ ] **Step 4**: 若失败回退：`sed -i` 还原 `MLFLOW_MODE=embedded` 并重部署 app（app 不动 LS/MLflow）。
+- [x] **Step 1**: server `.env` 已备份（`.env.bak-2026-09-05`）并追加 `MLFLOW_MODE=server`、`MLFLOW_TRACKING_URI=http://mlflow:5000`。
+- [x] **Step 2**: 已推 main（d92a6f2）触发 deploy run `33955735214`（3m52s）全绿；`ai-welding` 以 d92a6f2 镜像 healthy、挂 `aiwelding-net`；app 内 `urllib` 访问 `http://mlflow:5000/health`=OK。
+- [ ] **Step 3（剩余人工回归）**: 训练一次 → MLflow UI `http://182.61.59.135:8225` 内新增 run；MLflow 写入失败不使业务 Job 失败（best-effort）。建议下次真实训练时顺手确认。
+- [x] **Step 4**: 未失败，无需回退。
 
 ### Task A4（Phase B）: deploy-docker.yml 自动同步 compose 与起辅助服务
 
 **Files:**
 - Modify: `.github/workflows/deploy-docker.yml`（deploy job：scp 上传 compose + 网络/compose up；app 各 `docker run` 增 `--network aiwelding-net`）
 
-- [ ] **Step 1**: deploy job 增加一步（`appleboy/scp-action`）把 `docker-compose.yml` 上传到 `<DEPLOY_PATH>`。
-- [ ] **Step 2**: SSH 脚本在拉取 app 前先：
-  ```bash
-  cd "$DEPLOY_PATH"
-  docker network create aiwelding-net 2>/dev/null || true
-  docker compose up -d    # 幂等：只拉取/启动/更新 label-studio、mlflow
-  ```
-- [ ] **Step 3**: 现有 app `docker run` 三处（候选、正式、rollback_previous 里 rollback 启动）追加 `--network aiwelding-net`。
-- [ ] **Step 4**: 提交 + 手动触发一次发布，验证：LS/MLflow 恒在、app 蓝绿正常、训练 run 写入 server。
-- [ ] **Step 5**: 契约/文档同步（根 CLAUDE.md 部署段、`.github/workflows/CLAUDE.md`）。
+- [x] **Step 1**: deploy job 增加 scp 上传 `docker-compose.yml`（appleboy/scp-action@v0.1.7，deploy job 先 Checkout）。
+- [x] **Step 2**: SSH 脚本在拉取 app 后、候选容器前：`docker network create aiwelding-net` + `docker compose up -d`（幂等；失败仅告警不阻断 app）。
+- [x] **Step 3**: app 三处 `docker run`（候选/正式）追加 `--network aiwelding-net`（rollback 用 `docker start`，容器创建时已带网络）。
+- [x] **Step 4**: 提交 d92a6f2 并推 main，deploy run `33955735214` 全绿（scp+compose+蓝绿 readiness 通过）；服务器验证 app↔mlflow 通。
+- [x] **Step 5**: 契约/文档同步（根 CLAUDE.md、`.github/workflows/CLAUDE.md`、plans/CLAUDE.md）。
 
 ### Task A5: 回滚与清理预案
 
