@@ -12,7 +12,7 @@
 
 ## 子目录
 
-- `premise_validation/`：集成 MLflow/Label Studio 的验证与实况 e2e 脚本（`run_premise_validation.py` 本机可自动化 4 项 + `probe_live.py` 真实 LS 2 项 + `probe_ls_sdk.py` SDK 方法名核对 + `probe_ls_region.py` region JSON 回读 + `e2e_ls_roundtrip.py` **真实全链路 e2e**：真样本→推 LS→SDK 标注→模拟 webhook 回写→幂等），命名不匹配 pytest 收集规则、不污染门禁，详见其目录 CLAUDE.md；结论文档 `docs/superpowers/plans/2026-09-05-integration-premise-verification.md`。
+- `premise_validation/`：集成 MLflow/Label Studio 的验证与实况 e2e 脚本（`run_premise_validation.py` 本机可自动化 4 项 + `probe_live.py` 真实 LS 2 项 + `probe_ls_sdk.py` SDK 方法名核对 + `probe_ls_region.py` region JSON 回读 + `e2e_ls_roundtrip.py` **真实全链路 e2e**：真样本→推 LS→SDK 标注→模拟 webhook 回写→幂等），命名不匹配 pytest 收集规则、不污染门禁，详见其目录 CLAUDE.md；结论文档 `docs/superpowers/specs/2026-09-05-integration-premise-verification.md`。
 
 ## 调用链
 

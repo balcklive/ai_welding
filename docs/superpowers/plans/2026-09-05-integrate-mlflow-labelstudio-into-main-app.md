@@ -10,7 +10,7 @@
 >
 > **Architecture:** 一切经公开 API/SDK + 薄适配层（`backend/app/integrations/`，best-effort 仿 `mlflow.py`）；LS 经官方 `label-studio-sdk`（PAT 设一次即可）+ MinIO 预签名**长 TTL**媒体；MLflow 已是 compose 内 `server` 模式，app 走 `http://mlflow:5000`。数据/元数据不双写、不复制 LS/MLflow 的 schema。
 >
-> **上游：** spec `docs/superpowers/specs/2026-09-05-mlflow-dataset-annotation-design.md` §3/§4；进展 `docs/机器学习平台集成进展与方向.md`；已完成 `superpowers/plans/2026-09-05-mirror-third-party-images.md`、`2026-09-05-compose-deploy.md`。原计划按 M1/M2/M3/M4 编号；2026-09-05 评审后改为 **一期 = 原 M1（LS 标注，含前端）+ 原 M2（MLflow 训练）**，**二期 = 原 M3**，**长期 = 原 M4**。
+> **上游：** spec `docs/superpowers/specs/2026-09-05-mlflow-dataset-annotation-design.md` §3/§4；进展 `docs/机器学习平台集成进展与方向.md`；已完成 `superpowers/specs/2026-09-05-mirror-third-party-images.md`、`2026-09-05-compose-deploy.md`。原计划按 M1/M2/M3/M4 编号；2026-09-05 评审后改为 **一期 = 原 M1（LS 标注，含前端）+ 原 M2（MLflow 训练）**，**二期 = 原 M3**，**长期 = 原 M4**。
 
 ## 已确认决策（2026-09-05 评审定案，本计划据此修订）
 
@@ -119,7 +119,7 @@
 - [x] **历史数据回填（已核实，2026-09-05）**：单条 `ALTER TABLE ... ADD COLUMN ls_status ... NOT NULL DEFAULT 'annotating'` 即同时完成存量回填、新行默认、蓝绿 expand 兼容；但**回填值语义按决策 7 取「legacy/待转移」**（存量从未进 LS，不是"annotating"）。
 - [x] **LS 等待态前端表达（已定，2026-09-05）**：随决策 1 落点（iframe 嵌入）切片——等待期前端不渲染进度 spinner，改为「去 LS 标注」入口（embed iframe）+ 刷新/轮询回写状态，非独立技术前提。
 - [x] **LS 项目4 工具（已核实并定案，2026-09-05）**：原实测 id=4 =「熔池语义分割 Segmentation」= **BrushLabels 单类熔池**。**已评审定案：改为 PolygonLabels（用户授权 2026-09-05，经 LS API 更新项目4 `label_config` 成功，`parsed_label_config.label.type=PolygonLabels`、单类熔池）**——与平台 `kind=polygon` 一致，回写直接 polygon 顶点、无损免掩膜转换。已验证项目 id 4 无已有标注任务（`num_tasks_with_annotations=0`），改模板无数据影响。
-- [x] **熔池/正常标签的训练消费（已评审定案，2026-09-05）**：熔池是分割目标**非缺陷**；训练折叠改用**缺陷类别白名单**排除熔池（见已确认决策 6）。验证详情见 `docs/superpowers/plans/2026-09-05-integration-premise-verification.md`。
+- [x] **熔池/正常标签的训练消费（已评审定案，2026-09-05）**：熔池是分割目标**非缺陷**；训练折叠改用**缺陷类别白名单**排除熔池（见已确认决策 6）。验证详情见 `docs/superpowers/specs/2026-09-05-integration-premise-verification.md`。
 
 ## Execution Handoff
 

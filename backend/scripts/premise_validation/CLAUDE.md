@@ -27,4 +27,4 @@
 
 - **文件以 `check_*`/`probe_*` 命名，不匹配 pytest 的 `test_*` 收集规则**，故 `uv run pytest` 不会跑它们（避免污染推送门禁）；要跑就显式 `uv run python ...`。
 - `run_premise_validation.py` 顶部 `sys.path.insert(0, <backend>)` 手动把 backend 加进 path（pytest 靠 `tests/__init__.py`，脚本需自理）。
-- 结论文档：`docs/superpowers/plans/2026-09-05-integration-premise-verification.md`；改验证逻辑后同步该文档与两个 CLAUDE.md。
+- 结论文档：`docs/superpowers/specs/2026-09-05-integration-premise-verification.md`；改验证逻辑后同步该文档与两个 CLAUDE.md。
