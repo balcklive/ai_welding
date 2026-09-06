@@ -19,6 +19,7 @@ import type {
   Job,
   LabelCategory,
   LabelItem,
+  LabelStudioTask,
   Page,
   Sample,
   SignalData,
@@ -162,6 +163,12 @@ export async function createAnnotationTask(body: {
     method: 'POST',
     body,
   });
+}
+
+/** 标注任务的 LS 同步状态（`GET /labelstudio/tasks/{job_uid}`，前端 iframe 嵌入用）。
+ * `ls_status` 决定：pending_ls/annotating → 嵌入 LS；synced → 只读回写结果；legacy → 旧画布。 */
+export async function getLabelStudioTask(taskId: string): Promise<LabelStudioTask> {
+  return request<LabelStudioTask>(`/labelstudio/tasks/${taskId}`);
 }
 
 /** 为视频标注任务创建帧样本锚点（meta.mode='frame' + timestamp + 帧尺寸），返回 `{ sample_id }`。 */

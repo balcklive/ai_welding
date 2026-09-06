@@ -174,6 +174,71 @@ def test_handle_annotation_event_skips_unknown_task(engine):
         assert svc.handle_annotation_event(session, "annotation_created", {"task": {"id": 999}}) is None
 
 
+def test_to_task_payload_includes_ls_url_and_projects(engine):
+    """`GET /labelstudio/tasks/{id}` 需返回 ls_public_url + ls_project_ids（前端 iframe 嵌入用）。"""
+    from app.core.config import settings
+
+    with Session(engine) as session:
+        _job_id, task_id, _sample_id = _seed(engine)
+        task = session.get(AnnotationTask, task_id)
+        payload = svc.to_task_payload(session, task)
+        assert payload["ls_status"] == "pending_ls"
+        assert payload["ls_project_ids"] == [3]  # _seed 的 sync 行 ls_project_id=3
+        assert payload["ls_public_url"] == settings.label_studio_public_url
+        assert "created_at" in payload
+
+
+def _seed_multi(engine, n=2):
+    with Session(engine) as session:
+        job = create_job(session, type="annotation")
+        task = AnnotationTask(job_id=job.id, source="manual", ls_status="pending_ls", created_at=_now())
+        session.add(task)
+        session.flush()
+        sample_ids = []
+        for i in range(n):
+            sample = Sample(annotation_task_id=task.id, object_keys=[f"a{i}.jpg"], meta={"mode": "image"})
+            session.add(sample)
+            session.flush()
+            sample_ids.append(sample.id)
+            session.add(
+                AnnotationLsSync(
+                    annotation_task_id=task.id, sample_id=sample.id,
+                    ls_project_id=3, ls_task_id=42 + i, sync_status="annotating",
+                )
+            )
+        session.commit()
+        return job.id, task.id
+
+
+def test_handle_annotation_event_completes_job_when_all_synced(engine, monkeypatch):
+    """单样本（唯一的 sync 行）回写后 → 任务全 synced → job 也 succeeded。"""
+    client = _FakeClient({"annotations": [_BOX_ANNOTATION]})
+    monkeypatch.setattr(ls, "_client", lambda: client)
+    with Session(engine) as session:
+        job_id, task_id, sample_id = _seed(engine)
+        svc.handle_annotation_event(session, "annotation_created", {"task": {"id": 42}})
+        session.commit()
+        task = session.get(AnnotationTask, task_id)
+        assert task.ls_status == "synced"
+        job = session.get(Job, job_id)
+        assert job.status == "succeeded"
+
+
+def test_handle_annotation_event_partial_sync_keeps_job_running(engine, monkeypatch):
+    """多样本任务，仅一个样本回写 → 任务仍在等待（pending_ls）、job 未终态。"""
+    client = _FakeClient({"annotations": [_BOX_ANNOTATION]})
+    monkeypatch.setattr(ls, "_client", lambda: client)
+    with Session(engine) as session:
+        job_id, task_id = _seed_multi(engine, n=2)
+        # 只处理 ls_task_id=42 的样本，43 仍未回写
+        svc.handle_annotation_event(session, "annotation_created", {"task": {"id": 42}})
+        session.commit()
+        task = session.get(AnnotationTask, task_id)
+        assert task.ls_status == "pending_ls"  # 还有一个样本未回写
+        job = session.get(Job, job_id)
+        assert job.status in ("pending", "running")
+
+
 # ── best-effort：LS off/不可达不炸 ────────────────────────────────────────
 
 

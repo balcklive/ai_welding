@@ -1,22 +1,24 @@
-"""annotation job handler（Task 14）：标注任务创建（模拟）。
+"""annotation job handler（Task 14）：标注任务创建。
 
-编排为真实异步：Job 状态/进度/结果回填为真，计算内核为演示（`docs/开发规范.md` §3.1）。
-领域逻辑在 `app.services.annotation.simulate_annotation`，本模块只做 handler 薄封装并注册
-到执行器注册表（`@register_handler("annotation")`）。成功时（来源为 split_task）把该切分
-任务的样本 `annotation_task_id` 指向本任务；AI 预标注 / 标注保存是同步端点，不经 handler。
+编排为真实异步：Job 状态/进度/结果回填为真。`label_studio_mode=on` 时进入 LS 集成——
+把样本推 LS、置「LS 等待」态、由回写/对账驱动完成（决策 2，不跑 simulate_annotation）；
+`off` / LS 不可达则回退旧模拟路径 `app.services.annotation.simulate_annotation`。AI 预标注 /
+标注保存是同步端点，不经 handler。
 """
 
 from sqlmodel import Session, select
 
+from app.core.config import settings
 from app.jobs.executor import register_handler
 from app.models.analysis import AnnotationTask
 from app.models.jobs import Job
 from app.services import annotation as svc
+from app.services import annotation_ls as ls_svc
 
 
 @register_handler("annotation")
 def handle(job_id: int, session: Session) -> None:
-    """标注任务创建（模拟）：把来源样本归属到本任务。
+    """标注任务创建：LS 模式走推流等待态；否则回退模拟路径。
 
     由执行器在独立 `Session`（`SessionLocal`）内调用；失败时执行器兜底 `mark_failed`。
     """
@@ -28,4 +30,7 @@ def handle(job_id: int, session: Session) -> None:
     job = session.get(Job, job_id)
     if job is None:
         raise ValueError(f"Job does not exist: id={job_id}")
+    if settings.label_studio_mode == "on" and ls_svc.prepare_ls_task(session, task):
+        session.commit()  # 持久「LS 等待」态与映射，立即对账/轮询可见
+        return
     svc.simulate_annotation(session, task, job)

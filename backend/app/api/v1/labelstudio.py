@@ -61,7 +61,7 @@ def ls_task_status(
     task = resolve_annotation_task(session, task_id)
     if task is None:
         return err(40401, "标注任务不存在", status=404)
-    return ok(svc.to_task_payload(task))
+    return ok(svc.to_task_payload(session, task))
 
 
 @router.post("/labelstudio/sync")

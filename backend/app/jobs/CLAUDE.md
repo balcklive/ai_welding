@@ -44,7 +44,11 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   `task.sample_count`/`job.result` → 回填 `task.sample_count` + `job.result`
   `{sample_count, rules, task_format, samples[]}`（**review 修复**：`samples` 只内嵌前 50 条
   预览，防 fixed_rate=1 → 5420 条 ~500KB 塞进 result 每轮询回传；全量样本以 `samples` 表为准）。
-- `annotation.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("annotation")`）→
+- `annotation.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("annotation")`）。
+  **2026-09-06 LS 接线（决策 2）**：`label_studio_mode=on` 时改走
+  `app.services.annotation_ls.prepare_ls_task`（归位样本 → 推 LS → 置 `ls_status=pending_ls`
+  等待态）并 commit 后返回——**job 保持 running，不立即 succeeded**，完成由全部样本回写
+  驱动（`handle_annotation_event` → `_maybe_complete_task`）；`off`/LS client 不可达则回退
   `app.services.annotation.simulate_annotation`（进度逐步 → 若 source=split_task 把该切分任务
   样本 `annotation_task_id` 指向本任务 → 回填 job.result `{source, name, samples_count}`）。
   AI 预标注/标注保存是**同步端点**，不经 handler。

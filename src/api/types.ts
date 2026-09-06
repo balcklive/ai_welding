@@ -153,6 +153,19 @@ export interface Sample {
   confidence: number | null;
 }
 
+/** Label Studio 标注任务同步状态（`GET /labelstudio/tasks/{job_uid}`，前端 iframe 嵌入用）。 */
+export interface LabelStudioTask {
+  id: number;
+  source: string;
+  /** `legacy`=未走 LS(off/回退) | `pending_ls`=等待 LS 标注 | `annotating`=进行中 | `synced`=已全部回写。 */
+  ls_status: string;
+  /** LS 公网宿主 URL（浏览器/iframe 可访问，非服务端内网）。 */
+  ls_public_url: string;
+  /** 该任务样本映射到的 LS 项目 id（去重），iframe 用它拼项目 URL。 */
+  ls_project_ids: number[];
+  created_at: string | null;
+}
+
 export interface UnifiedVectorGroup {
   name: string;
   dims: number;

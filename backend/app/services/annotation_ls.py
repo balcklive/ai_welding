@@ -19,8 +19,9 @@ from decimal import Decimal
 from pathlib import PurePosixPath
 
 from loguru import logger
-from sqlmodel import Session, select
+from sqlmodel import Session, func, select
 
+from app.core.config import settings
 from app.integrations import labelstudio as ls
 from app.models.analysis import (
     Annotation,
@@ -191,10 +192,62 @@ def handle_annotation_event(session: Session, event_type: str, payload: dict) ->
         sync_row.ls_annotation_id = int(annotation["id"])
     sync_row.updated_at = _now()
     session.add(sync_row)
-    task.ls_status = "synced"
-    session.add(task)
+    # 任务完成 = 全部样本实际回写（决策 2 / 计划 70 行），不是单个样本回写即终态。
+    _maybe_complete_task(session, task)
     session.flush()
     return {"task_id": task_id, "samples": 1}
+
+
+def _maybe_complete_task(session: Session, task: AnnotationTask) -> bool:
+    """该任务所有 `annotation_ls_sync` 行是否均已回写；是则任务 `ls_status=synced` + job succeeded。
+
+    幂等：重复 webhook/重复对账不重复落行（重复时 job 已 succeeded，跳过）。返回是否完成。
+    """
+    pending = int(
+        session.exec(
+            select(func.count(AnnotationLsSync.id)).where(
+                AnnotationLsSync.annotation_task_id == task.id,
+                AnnotationLsSync.sync_status != "synced",
+            )
+        ).one()
+    )
+    if pending:
+        return False
+    task.ls_status = "synced"
+    session.add(task)
+    job = session.get(Job, task.job_id)
+    if job is not None and job.status != "succeeded":
+        mark_succeeded(session, job, {"ls_status": "synced", "annotation_task_id": task.id})
+    return True
+
+
+def _gather_task_samples(session: Session, task: AnnotationTask) -> list[Sample]:
+    """取任务的样本并归位：`split_task` 来源先把该切分任务样本 `annotation_task_id` 指到本任务。"""
+    if task.source == "split_task" and task.split_task_id is not None:
+        samples = session.exec(
+            select(Sample).where(Sample.split_task_id == task.split_task_id)
+        ).all()
+        for s in samples:
+            s.annotation_task_id = task.id
+            session.add(s)
+        return samples
+    return list(session.exec(select(Sample).where(Sample.annotation_task_id == task.id)).all())
+
+
+def prepare_ls_task(session: Session, task: AnnotationTask) -> bool:
+    """LS 模式（mode=on）下标注 handler 的领域逻辑：归位样本 → 推 LS → 置「LS 等待」态。
+
+    返回 True 表示已进入 LS 等待（job 保持 running，等回写驱动完成）；False 表示 LS client
+    不可用，调用方（handler）回退旧模拟路径（best-effort，不炸 job）。**不 mark_succeeded**。
+    """
+    samples = _gather_task_samples(session, task)
+    client = ls._client()
+    if client is None:
+        logger.warning("[ls.prepare] LS client unavailable; task={} falls back to simulate", task.id)
+        return False
+    task_to_waiting(session, task)  # ls_status = pending_ls
+    push_samples_to_ls(session, task, [s for s in samples if s.object_keys])
+    return True
 
 
 def _convert_annotation(annotation: dict) -> list[dict]:
@@ -294,13 +347,28 @@ def reconcile_pending(session: Session) -> dict:
     return {"pending": len(pending), "synced": synced, "refreshed": refreshed}
 
 
-def to_task_payload(task: AnnotationTask) -> dict | None:
-    """把 annotation task 的 LS 状态并入 Job 信封（前端「去 LS 标注」入口用）。"""
+def to_task_payload(session: Session, task: AnnotationTask) -> dict | None:
+    """把 annotation task 的 LS 状态并入 Job 信封（前端「去 LS 标注」入口用）。
+
+    新增 `ls_public_url`（**公网**宿主 URL，浏览器/iframe 可访问，非内网）+ `ls_project_ids`
+    （该任务样本映射到的 LS 项目 id，去重，供 iframe 组装项目 URL）。`ls_status=legacy`
+    即未走 LS（off / 回退模拟路径），前端据此决定是否嵌入。
+    """
     if task is None:
         return None
+    projects = session.exec(
+        select(AnnotationLsSync.ls_project_id)
+        .where(
+            AnnotationLsSync.annotation_task_id == task.id,
+            AnnotationLsSync.ls_project_id.isnot(None),
+        )
+        .distinct()
+    ).all()
     return {
         "id": task.id,
         "source": task.source,
         "ls_status": task.ls_status,
+        "ls_public_url": settings.label_studio_public_url,
+        "ls_project_ids": [int(p) for p in projects if p is not None],
         "created_at": _iso_utc(task.created_at),
     }

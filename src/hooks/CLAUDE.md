@@ -1,9 +1,10 @@
 # CLAUDE.md — src/hooks/
 
-前端 React 钩子层（契约：`docs/API接口清单.md` §4.3 横切工具）。当前进度：**Task 20**（`useJob` 通用任务轮询）。消费 `src/api/` 的域模块，向页面提供轮询/状态封装。
+前端 React 钩子层（契约：`docs/API接口清单.md` §4.3 横切工具）。当前进度：**Task 20**（`useJob` 通用任务轮询）+ **2026-09-06 一期 LS 嵌入**（`useLabelStudioTask`）。消费 `src/api/` 的域模块，向页面提供轮询/状态封装。
 
 ## 脚本
 
+- `useLabelStudioTask.ts`：**2026-09-06 一期·轨道 A**。轮询标注任务的 LS 同步状态（`getLabelStudioTask(taskId)` → `GET /labelstudio/tasks/{job_uid}`）。`useLabelStudioTask(taskId, jobDone)`（`jobDone`=标注 job 是否已终态 succeeded/failed）返回 `{ lsTask, failed }`；`pending_ls`/`annotating` 期间每 3s 轮询；`synced` 停止；**`legacy` 且 `jobDone=false` 继续轮询**（防 executor 运行前的短暂 legacy 窗口错过 LS 态），`legacy` 且 `jobDone=true` 停止（确证 off 路径）。请求失败每 5s 重试并记 `error`。消费方：`features/annotation/AnnotationWorkspace`（决定嵌入 LS 还是手动画布）。
 - `useJob.ts`：通用异步任务轮询钩子。
   - `useJob<T = unknown>(jobId: string | null, intervalMs = 1500)` → `{ job, status, progress, result, error, start, stop }`。
     - `job: Job<T> | null`——最近一次轮询到的 Job；从未拉取/已停止后为 `null`。

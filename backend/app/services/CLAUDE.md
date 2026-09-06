@@ -299,8 +299,14 @@
   `writeback_annotation`（删旧插新覆盖写样本 `annotations`，**annotator=LS 用户名**（`extract_annotator`），
   confidence 沿用先前同类别值）、`reconcile_pending`（真实对账：对 `annotating` 行调
   `handle_annotation_event` 补回写，未回写的刷新过期媒体 URL）、`to_task_payload`。供
-  `api/v1/labelstudio.py` 调用。调用 `integrations/labelstudio`。策略：业务库权威 + LS 捕获层；
-  等待态与 Job 快速终态解耦（决策 2）。测试 `tests/test_labelstudio_integration.py`；真实 e2e
+  `api/v1/labelstudio.py` 调用。调用 `integrations/labelstudio`。**2026-09-06 接线补齐（决策 2）**：
+  `prepare_ls_task`（LS handler 领域逻辑：`_gather_task_samples` 归位 split 样本 →
+  `task_to_waiting` 置等待态 → `push_samples_to_ls`；LS client 不可用返回 False 供 handler
+  回退模拟，**不 mark_succeeded**）、`_maybe_complete_task`（**任务完成 = 全部 `annotation_ls_sync`
+  行回写**——`handle_annotation_event` 不再无条件把任务置 synced；全回写才任务 `synced` + job
+  `succeeded`，幂等：重复 webhook/对账不重复落行）。策略：业务库权威 + LS 捕获层；
+  等待态与 Job 快速终态解耦（决策 2）。测试 `tests/test_labelstudio_integration.py` +
+  `tests/test_labelstudio_handler.py`；真实 e2e
   `scripts/premise_validation/e2e_ls_roundtrip.py`。
 
 ## 坑/限制
