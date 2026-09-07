@@ -17,7 +17,7 @@
   - `project_for(source, kind)`：按**语义**映射 box→项目3 / polygon→项目4(PolygonLabels 单类熔池) / segment→项目5；未知 kind 抛 ValueError。
   - `media_url(storage, key)`：长 TTL ≤7 天预签名 GET（**不经 `/files/url` 的 1 天封顶**）；`media_field_for(kind)` = segment→`csv`（TimeSeries 引用 $csv），其余→`image`。
   - `create_task`（`data={...data, sample_id}`，**`project=` 为 SDK keyword**）/ `get_ls_task`（`.to_dict()` 兜底）/ `delete_task`（清理）/ `refresh_task_media`（读现有 data 仅替换媒体字段，**保留 sample_id 等其它键**）。
-  - `choose_effective_annotation`：挑最后一条**非 was_cancelled、无结果跳过**的 annotation（草稿 `draft_created_at` 且无 `last_action` 跳过）。
+  - `choose_effective_annotation`：挑最后一条**已提交**的 annotation——**非 was_cancelled、非"仅草稿未提交"**（`draft_created_at` 且无 `last_action`）；**允许 `result` 为空**（标注员认定无缺陷 → 空提交也是合法"已提交"态，回写 0 行但样本完成，避免"正常"样本卡死）。
   - `convert_region(region, default_w, default_h)`：LS region → 平台 `kind`。**真实验证的类型串**：`rectanglelabels`→box / `polygonlabels`→polygon / `timeserieslabels`|`timeseriesrange`→segment；坐标是 **0-100 百分比**，以 region `original_width`/`original_height` 为像素参考换算（平台 box 用 640×480 参考空间、polygon 用 frame_width/height，见 `annotation.export_video_masks`）。返回不含 category（`_region_category(region)` 单独取：`value.<plurallabel>[0]` 兼容`labels`/`choices`）。
   - `extract_annotator(annotation)`：从 `completed_by.email/username/id` 或 `created_username`（LS 格式 `"<email>, <id>"`）取 LS 用户名（同名账号约定），缺省 `"LabelStudio"`。
   - `_kind_of_sample(sample)`：sample→kind（mode frame/video→polygon、signal→segment、其余→box）。

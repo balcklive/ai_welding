@@ -119,10 +119,11 @@ def get_ls_task(client, task_id: int) -> dict | None:
 
 
 def choose_effective_annotation(task_payload: dict) -> dict | None:
-    """从 LS task 的 annotations 里挑"有效标注"。
+    """挑"有效的已提交标注"：取最后一条非 cancelled、非"仅草稿未提交"的 annotation。
 
-    取最后一条非 cancelled、无结果跳过；草稿（draft_created_at 且有 last_action）也跳过。
-    返回单条 annotation（可空）。多标注/审核策略后续再细化（计划 Track A line 68）。
+    允许 `result` 为空（标注员认定无缺陷 → 空提交）——这是"已提交"的有效态，回写 0 行但
+    样本完成；只有"未提交/已取消"才算未完成（调用方据此决定是否 synced，避免正常样本卡死）。
+    多标注/审核策略后续再细化（计划 Track A line 68）。
     """
     anns = (task_payload or {}).get("annotations") or []
     if not anns:
@@ -135,8 +136,7 @@ def choose_effective_annotation(task_payload: dict) -> dict | None:
         if ann.get("draft_created_at") and not ann.get("last_action"):
             # 仅草稿、未提交 → 跳过
             continue
-        if ann.get("result"):
-            return ann
+        return ann
     return None
 
 

@@ -169,6 +169,30 @@ def test_handle_annotation_event_skips_when_no_effective_annotation(engine, monk
         assert anns == []
 
 
+def test_handle_annotation_event_empty_submission_marks_synced(engine, monkeypatch):
+    """空提交（标注员认定无缺陷，result=[]）→ 视为有效空标注：回写 0 行但样本 synced、任务完成。
+
+    回归保护：此前空提交被当"无有效标注" → 样本永不 synced → 任务卡死（图片"正常"样本无法提交）。
+    """
+    client = _FakeClient({"annotations": [{
+        "id": 5, "was_cancelled": False, "result": [],
+        "completed_by": {"id": 1, "email": "annot@x.com"},
+    }]})
+    monkeypatch.setattr(ls, "_client", lambda: client)
+    with Session(engine) as session:
+        job_id, task_id, sample_id = _seed(engine)  # 单样本任务，sync_status=annotating
+        res = svc.handle_annotation_event(session, "annotation_created", {"task": {"id": 42}})
+        assert res == {"task_id": 42, "samples": 1}  # 不 skip（空提交是有效提交）
+        anns = session.exec(select(Annotation).where(Annotation.sample_id == sample_id)).all()
+        assert anns == []  # 无缺陷 → 不落缺陷行
+        sync = session.exec(select(AnnotationLsSync).where(AnnotationLsSync.ls_task_id == 42)).first()
+        assert sync.sync_status == "synced"  # 空提交也算完成
+        task = session.get(AnnotationTask, task_id)
+        assert task.ls_status == "synced"
+        job = session.get(Job, job_id)
+        assert job.status == "succeeded"
+
+
 def test_handle_annotation_event_skips_unknown_task(engine):
     with Session(engine) as session:
         assert svc.handle_annotation_event(session, "annotation_created", {"task": {"id": 999}}) is None

@@ -186,9 +186,10 @@ def handle_annotation_event(session: Session, event_type: str, payload: dict) ->
         logger.info("LS task {} has no effective annotation yet; skip", task_id)
         return None
     converted = _convert_annotation(annotation)
-    if not converted:
-        logger.info("LS task {} annotation converts to nothing; skip", task_id)
-        return None
+    if not converted and (annotation.get("result") or []):
+        # 有 region 但全部转换失败（未知 region 类型等）→ 告警但不阻塞（best-effort）；
+        # 空提交（result 本身为空）是标注员认定"无缺陷"的有效空标注，正常回写 0 行。
+        logger.warning("LS task {} regions convert to nothing; writeback empty", task_id)
     annotator = ls.extract_annotator(annotation)
     writeback_annotation(session, sample, converted, annotator)
     sync_row.sync_status = "synced"
@@ -248,6 +249,15 @@ def prepare_ls_task(session: Session, task: AnnotationTask) -> bool:
     client = ls._client()
     if client is None:
         logger.warning("[ls.prepare] LS client unavailable; task={} falls back to simulate", task.id)
+        return False
+    # 视频/时序（source=signal/video）媒体导出桥未落地（计划轨道 A「下一步」）：锚点/帧样本只带
+    # meta 媒体引用（video_key / version_id），object_keys=[] → 推流必为 0。若仍进入等待态，则是
+    # 0 条 LS task + 永无回写 → job 永久 running（卡死）。故暂回退旧模拟路径（决策：signal/video
+    # 留旧画布）；媒体导出桥落地后应移除本 guard（届时 POST /frames 也需接 re-push）。
+    if task.source in ("signal", "video"):
+        logger.info(
+            "[ls.prepare] source={} 媒体未导出，暂不推 LS，回退旧路径 (task={})", task.source, task.id
+        )
         return False
     task_to_waiting(session, task)  # ls_status = pending_ls
     push_samples_to_ls(session, task, [s for s in samples if s.object_keys])

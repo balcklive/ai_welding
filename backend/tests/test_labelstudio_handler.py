@@ -71,6 +71,54 @@ def _seed_manual_annotatable(engine, n=2):
         return job.id, task.id
 
 
+def _seed_anchor_task(engine, source, mode):
+    """建 signal/video 来源任务：仅 1 个锚点样本（meta 携带媒体引用，object_keys=[]）。
+
+    模拟创建路由（`analysis_annotations.py`）：signal 锚点带 version_id，video 锚点带 video_key，
+    均无 object_keys——这正是媒体导出桥落地前"推流必为 0"的来源。
+    """
+    with Session(engine) as session:
+        job = create_job(session, type="annotation")
+        metadata: dict = {"mode": mode, "weld_id": "WLD", "version_id": 1}
+        if source == "video":
+            metadata["video_key"] = "raw/REG-20260815-00248/0001.mp4"
+        task = AnnotationTask(job_id=job.id, source=source, ls_status="legacy", created_at=_now())
+        session.add(task)
+        session.flush()
+        session.add(Sample(annotation_task_id=task.id, object_keys=[], meta=metadata))
+        session.commit()
+        return job.id, task.id
+
+
+def test_handler_mode_on_signal_video_sources_fallback(engine, monkeypatch):
+    """mode=on 且 source=signal/video（媒体导出桥未落地）：回退旧模拟路径，不入 LS 等待态、不卡死。
+
+    回归保护：signal/video 任务的锚点样本 object_keys=[]，若进入 LS 等待态会推流 0 条 + 永无
+    回写 → job 永久 running（阻塞）。决策：媒体未导出，signal/video 暂留旧画布，故回退 simulate。
+    """
+    from app.core.config import settings
+    from app.jobs import annotation as ann_handler
+
+    monkeypatch.setattr(settings, "label_studio_mode", "on")
+    client = _FakeCreateClient()
+    monkeypatch.setattr(ls, "_client", lambda: client)
+    monkeypatch.setattr(app_storage, "get_storage", lambda: _FakeStorage())
+    for source, mode in (("signal", "signal"), ("video", "video")):
+        with Session(engine) as session:
+            job_id, task_id = _seed_anchor_task(engine, source, mode)
+            ann_handler.handle(job_id, session)
+            session.commit()
+            task = session.get(AnnotationTask, task_id)
+            assert task.ls_status == "legacy"  # 未进入 LS 等待态
+            job = session.get(Job, job_id)
+            assert job.status == "succeeded"  # 回退模拟 → job 终态，不永久 running
+            syncs = session.exec(
+                select(AnnotationLsSync).where(AnnotationLsSync.annotation_task_id == task_id)
+            ).all()
+            assert syncs == []  # 无 LS 映射行
+            assert client.tasks.created == []  # 未调用 LS tasks.create
+
+
 def test_handler_mode_on_pushes_samples_and_waits(engine, monkeypatch):
     """LS 模式：handler 推样本进 LS + 置「LS 等待」态 + job 不立即终态（等回写）。"""
     from app.core.config import settings

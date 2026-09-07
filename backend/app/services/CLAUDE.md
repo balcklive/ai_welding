@@ -298,14 +298,19 @@
   常晚于 handler 推流，幂等保证重复调用不产生重复 task；`api/v1/analysis_annotations.py` import 路由
   在 mode=on 时导入后懒调 `prepare_ls_task` 补推，规避 handler 先跑漏样本（`_gather_task_samples` 为空）的竞态）、
   `handle_annotation_event`（webhook→拉 LS 标注→`convert_region` 转换→幂等回写→任务 synced，返回
-  `{task_id,samples}`；`_extract_ls_task_id` 兼容 `task_id`/`task.id`/`annotation.task`；无有效标注→None）、
+  `{task_id,samples}`；`_extract_ls_task_id` 兼容 `task_id`/`task.id`/`annotation.task`；无有效标注→None），
+  **2026-09-07**：空提交（LS `result=[]`，标注员认定无缺陷）视为有效标注——回写 0 行但样本仍
+  synced，不卡死；只有"未提交/已取消"（`was_cancelled`/仅草稿）才算未完成（`choose_effective_annotation`）,
   `writeback_annotation`（删旧插新覆盖写样本 `annotations`，**annotator=LS 用户名**（`extract_annotator`），
   confidence 沿用先前同类别值）、`reconcile_pending`（真实对账：对 `annotating` 行调
   `handle_annotation_event` 补回写，未回写的刷新过期媒体 URL）、`to_task_payload`。供
   `api/v1/labelstudio.py` 调用。调用 `integrations/labelstudio`。**2026-09-06 接线补齐（决策 2）**：
   `prepare_ls_task`（LS handler 领域逻辑：`_gather_task_samples` 归位 split 样本 →
   `task_to_waiting` 置等待态 → `push_samples_to_ls`；LS client 不可用返回 False 供 handler
-  回退模拟，**不 mark_succeeded**）、`_maybe_complete_task`（**任务完成 = 全部 `annotation_ls_sync`
+  回退模拟，**不 mark_succeeded**；**2026-09-07** `source=signal/video`（媒体导出桥未落地）也
+  返回 False 回退模拟——其锚点样本 `object_keys=[]` 推流必为 0，若进等待态会有 0 条 LS task +
+  永无回写 → job 永久 running 卡死；媒体导出桥落地后移除该 guard（届时 POST /frames 也需接
+  re-push））、`_maybe_complete_task`（**任务完成 = 全部 `annotation_ls_sync`
   行回写**——`handle_annotation_event` 不再无条件把任务置 synced；全回写才任务 `synced` + job
   `succeeded`，幂等：重复 webhook/对账不重复落行）。策略：业务库权威 + LS 捕获层；
   等待态与 Job 快速终态解耦（决策 2）。测试 `tests/test_labelstudio_integration.py` +

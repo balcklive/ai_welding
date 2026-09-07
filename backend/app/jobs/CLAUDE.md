@@ -51,6 +51,8 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   驱动（`handle_annotation_event` → `_maybe_complete_task`）；`off`/LS client 不可达则回退
   `app.services.annotation.simulate_annotation`（进度逐步 → 若 source=split_task 把该切分任务
   样本 `annotation_task_id` 指向本任务 → 回填 job.result `{source, name, samples_count}`）。
+  **2026-09-07**：`source=signal/video`（媒体导出桥未落地）同样回退 simulate——其锚点样本
+  `object_keys=[]` 推流必为 0，进 LS 等待态会 0 条 task + 永无回写 → job 永久 running。
   AI 预标注/标注保存是**同步端点**，不经 handler。
 - `dataset_build.py`：**Task 15**。`handle(job_id, session)`（`@register_handler("dataset_build")`）→
   `app.services.datasets.run_build`（进度逐步 → 按来源 gather 候选样本 → 空则兜底合成 →
