@@ -6,11 +6,10 @@
 
 - `AnnotationWorkspace.tsx`：
   - `AnnotationWorkspace({dataId})`：入口，三模式切换栏（图像/时序/视频）。
-  - **2026-09-06 一期·轨道 A（LS 嵌入）**：图像模式下，若 `useLabelStudioTask(taskId)` 返回的 `ls_status ∈ {pending_ls, annotating}` → 改渲染 `<LabelStudioEmbed/>`（把 LS 工作台 iframe 嵌进标注页，用户在主应用内标注），不再显示 Annotorious 画布；`synced` → 走下方只读（job succeeded → 样本带 LS 回写 `annotations`）；`legacy`/`off` → 保留旧画布。**仅图像链路端到端可走 LS**（时序/视频媒体导出未落地，计划 Track A line 68）。
+  - **2026-09-09 LS 感知但不嵌入**：图像标注**不再把 Label Studio 工作台嵌入主应用**——后端 LS 只在容器间通信（内网 `aiwelding-net`），主应用始终用自己的 Annotorious 画布标注并 `saveAnnotation` 直写，端用户不接触 LS。`useLabelStudioTask(taskId)` 仅用于感知 `ls_status ∈ {pending_ls, annotating}`（此时 job 保持 running 不到 succeeded），借 `lsActive` 放宽「加载样本」闸门让画布直接标注；`legacy`/`off` 由 job succeeded 触发加载。**仅图像链路端到端可走 LS**（时序/视频媒体导出未落地，计划 Track A line 68）。
   - 图像模式：真实焊缝图 + `AnnotoriousImageEditor`（矩形/多边形）+ 标签类别（`listLabelCategories`，失败兜底 `mockLabelCategories`）+ AI 预标注（`aiPretag`）+ `saveAnnotation` 覆盖写保存。
   - `AnnotationSignal({dataId})`：时序标注（ECharts 波形点击设起点/终点选缺陷区间，kind='segment'）。
   - `AnnotationVideo({dataId})`：视频标注（播放/捕获帧 → Annotorious 画多边形 → `createAnnotationFrame` + saveAnnotation kind='polygon'）。
-- `LabelStudioEmbed.tsx`：**2026-09-06 一期·轨道 A 新增**。纯展示组件——LS 项目页 iframe（`{ls_public_url}/projects/{ls_project_ids[0]}/`）；**无外跳出口**（2026-09-09 去掉「在新标签页打开」按钮，标注全程在主应用内嵌完成）+ `onLoad` 加载态（切换前显示「正在连接 Label Studio 工作台…」提示，加载完淡入，防白屏）。轮询逻辑在 `src/hooks/useLabelStudioTask`。
 
 ## 调用链
 

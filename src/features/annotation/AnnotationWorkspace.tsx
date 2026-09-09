@@ -20,7 +20,6 @@ import type { ImageEditorAnnotation } from '../../components/annotation/Annotori
 import { InfoRow } from '../../shared/components/InfoRow';
 import { PageIntro } from '../../shared/components/PageIntro';
 import { fmt } from '../analysis/signals/chartData';
-import { LabelStudioEmbed } from './LabelStudioEmbed';
 import { useLabelStudioTask } from '../../hooks/useLabelStudioTask';
 
 const AnnotoriousImageEditor = lazy(() => import('../../components/annotation/AnnotoriousImageEditor').then((module) => ({ default: module.AnnotoriousImageEditor })));
@@ -52,9 +51,10 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
   const [totalSamples, setTotalSamples] = useState(0);
   const creatingRef = useRef<string | null>(null);
   const { status: jobStatus } = useJob<unknown>(taskId);
-  // LS 嵌入（一期·轨道 A）：任务在 LS 等待/进行中时，图像模式改渲染嵌入的 LS 工作台。
-  // jobDone = 标注 job 已终态（succeeded/failed）；用它让 hook 在「legacy + job 未终态」时继续轮询，
-  // 避免 handler 运行前的短暂 legacy 窗口错过 LS 态而误回退画布。
+  // LS 感知（一期·轨道 A）：ls_status ∈ {pending_ls, annotating} 表示任务已被后端推到 LS、
+  // job 保持 running 不到 succeeded；用 lsActive 放宽「加载样本」闸门，让主应用画布可直接标注。
+  // LS 工作台不再嵌入主应用（见 mode==='image' 分支）。jobDone = 标注 job 已终态（succeeded/failed）；
+  // 用它让 hook 在「legacy + job 未终态」时继续轮询，避免 handler 运行前的短暂 legacy 窗口错过 LS 态。
   const jobDone = jobStatus === 'succeeded' || jobStatus === 'failed';
   const { lsTask } = useLabelStudioTask(taskId, jobDone);
   const lsActive = taskId != null && !!lsTask && (lsTask.ls_status === 'pending_ls' || lsTask.ls_status === 'annotating');
@@ -82,7 +82,10 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
     return () => { cancelled = true; };
   }, [dataId]);
   useEffect(() => {
-    if (!taskId || jobStatus !== 'succeeded') return;
+    // LS 模式（mode=on）：标注任务被后端推到 LS 后 job 保持 running、不会到 succeeded；
+    // 但样本已由 handler/导入产生，故进入 LS 等待态（lsActive）也加载样本，主应用画布可直接标注。
+    // off/回退路径仍由 job succeeded 触发（样本在 handler 成功时生成）。LS 不再嵌入主应用。
+    if (!taskId || (jobStatus !== 'succeeded' && !lsActive)) return;
     let cancelled = false;
     listAnnotationSamples(taskId, 1).then((page) => {
       if (cancelled) return;
@@ -104,7 +107,7 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
       }).catch((err) => { if (!cancelled) console.warn('[annotation] getAnnotationSample failed', err); });
     }).catch((err) => { if (!cancelled) console.warn('[annotation] listAnnotationSamples failed', err); });
     return () => { cancelled = true; };
-  }, [taskId, jobStatus]);
+  }, [taskId, jobStatus, lsActive]);
   const handleAiPretag = () => {
     if (!taskId || !sample) return;
     aiPretag(taskId, String(sample.id)).then((anns) => {
@@ -139,15 +142,8 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
   const frameLabel = sample?.frame_no != null ? String(sample.frame_no).padStart(4, '0') : '—';
   const confidence = sample?.confidence != null ? `${(sample.confidence * 100).toFixed(1)}%` : '—';
   if (mode === 'image') {
-    if (lsActive && lsTask) {
-      // 一期·轨道 A：任务已推到 LS → 在标注页嵌入 LS 工作台（用户在主应用内标注）；
-      // 回写（synced）后 lsActive 置 false，走下方只读结果（job succeeded → 样本带 LS 回写标注）。
-      return <div className={embedded ? 'embedded-page' : 'page-wrap'}>
-        <PageIntro eyebrow="数据生产线" title="数据标注" description="图像标注在 Label Studio 工作台内完成，回写后主应用只读展示。" />
-        <div className="annotation-mode-bar"><button className="selected"><ImageIcon size={14} />图像标注</button><button onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button onClick={() => setMode('video')}><Play size={14} />视频标注</button></div>
-        <LabelStudioEmbed lsTask={lsTask} />
-      </div>;
-    }
+    // 一期·轨道 A：不把 Label Studio 工作台嵌入主应用——后端 LS 只在容器间通信（内网 aiwelding-net），
+    // 主应用用自己的 Annotorious 画布标注并 saveAnnotation 直写，端用户不接触 LS。
     return <div className={embedded ? 'embedded-page' : 'page-wrap'}>
       <PageIntro eyebrow="数据生产线" title="数据标注" description="支持目标检测框与熔池语义分割轮廓标注。" action={<button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button>} />
       <div className="annotation-mode-bar"><button className="selected"><ImageIcon size={14} />图像标注</button><button onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button onClick={() => setMode('video')}><Play size={14} />视频标注</button></div>

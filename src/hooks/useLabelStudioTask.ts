@@ -5,8 +5,9 @@ import type { LabelStudioTask } from '../api/types';
 /**
  * 轮询标注任务的 LS 同步状态（一期·轨道 A 前端切片）。
  *
- * `ls_status` 语义：pending_ls / annotating → 嵌入 LS 工作台；synced → 全部回写（切只读）；
- * legacy → 未走 LS（off/回退）。pending_ls/annotating 期间每 3s 轮询；synced 停止；
+ * `ls_status` 语义：pending_ls / annotating → 任务已被后端推到 LS（LS 工作台**不**嵌入主应用，
+ * 主应用画布借此放宽样本加载闸门）；synced → 全部回写；legacy → 未走 LS（off/回退）。
+ * pending_ls/annotating 期间每 3s 轮询；synced 停止；
  * legacy 且标注 job 未终态（`jobDone=false`，此时 executor 可能即将把任务置 pending_ls）继续轮询，
  * 直到 job 终态（off 路径 `simulate_annotation` 会 succeeded）才停——否则会在 handler 运行前的
  * 短暂 `legacy` 窗口停止轮询而错过 LS 态。
