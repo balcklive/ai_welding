@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>焊接工艺分析和建模机器学习平台 — 使用手册</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+<style>
+body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;max-width:900px;margin:24px auto;padding:0 16px;color:#1f2933;line-height:1.7}
+h1{border-bottom:2px solid #0d9488;padding-bottom:8px} h2{border-bottom:1px solid #e2e8f0;padding-bottom:6px;margin-top:2em}
+img{max-width:100%;border:1px solid #d9e2ec;border-radius:8px;margin:12px 0;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+table{border-collapse:collapse;width:100%} th,td{border:1px solid #cbd5e1;padding:8px 12px;text-align:left} th{background:#f1f5f9}
+code{background:#f1f5f9;padding:2px 5px;border-radius:4px} pre{background:#0f172a;color:#e2e8f0;padding:16px;border-radius:8px;overflow-x:auto} pre code{background:none;color:inherit}
+blockquote{border-left:4px solid #0d9488;background:#f0fdfa;margin:0;padding:8px 16px;color:#0f766e}
+</style></head>
+<body>
+<header id="title-block-header">
+<h1 class="title">焊接工艺分析和建模机器学习平台 — 使用手册</h1>
+</header>
+<h1
+id="焊接工艺分析和建模机器学习平台-使用手册">焊接工艺分析和建模机器学习平台
+— 使用手册</h1>
+<blockquote>
+<p>版本：v1.0（2026-08-29） · 适用对象：焊接工艺工程师、数据工程师、AI
+建模人员与系统管理员</p>
+</blockquote>
+<hr />
+<h2 id="项目简介">1. 项目简介</h2>
+<p>焊接工艺分析和建模机器学习平台（以下简称”本平台”）是一套面向<strong>焊接工艺研究和质量分析</strong>的工业智能平台，把焊接过程中产生的多模态数据（电流/电压时序信号、熔池视频、音频、图像等）统一管理起来，并提供从<strong>数据登记
+→ 质量核验 → 信号分析 → 样本切分 → 数据标注 → 特征提取 → 模型训练 →
+测试评估 →
+推理验证</strong>的完整工作链路，最终帮助用户建立焊接缺陷检测与工艺分析的
+AI 模型。</p>
+<p>平台解决的核心问题：</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>问题</th>
+<th>平台方案</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>焊接数据分散、格式不一、难以追溯</td>
+<td>以”单条焊缝”为单位登记数据，多模态文件统一存入对象存储，版本链完整记录每次处理历史</td>
+</tr>
+<tr>
+<td>数据质量参差，难以判断能否用于建模</td>
+<td>内置 15
+项自动核验规则（图像完整性、时序连续性、采样率一致性、多模态时间戳等），给出质量评分</td>
+</tr>
+<tr>
+<td>缺陷标注效率低</td>
+<td>支持图像框选、视频逐帧多边形、时序区间三类标注模式，并提供 AI
+预标注辅助</td>
+</tr>
+<tr>
+<td>模型研发流程不规范</td>
+<td>数据集以固定快照版本管理（含 8:1:1
+训练/验证/测试划分），模型统一登记版本，训练/测试/推理全流程任务化、可追踪</td>
+</tr>
+</tbody>
+</table>
+<p><strong>系统能力边界（重要）</strong>：信号导入、起收弧识别、特征提取和报告导出已支持真实数据链路；部分切分、标注、训练、测试、推理算法目前仍为演示/模拟计算，但任务编排、状态持久化、结果回填和产物关联均按真实系统实现。详见第
+8 节。</p>
+<h2 id="系统总体结构">2. 系统总体结构</h2>
+<p>平台由三大业务中心加一个总览页组成，通过左侧导航切换：</p>
+<ul>
+<li><strong>数据总览</strong>：数据资产规模、质量与分布的全局仪表盘。</li>
+<li><strong>数据管理</strong>：数据集、数据登记、数据核验、焊缝版本。</li>
+<li><strong>分析与标注</strong>：选择数据、多模态对齐、起收弧识别、样本分段、数据标注、特征提取。</li>
+<li><strong>模型中心</strong>：训练数据准备、模型资产、新建训练、测试评估、推理验证。</li>
+</ul>
+<p>底层为 FastAPI 后端 + MySQL 业务库 + MinIO 对象存储，所有
+<code>/api/v1</code>
+接口调用均有轮转访问日志；文件（原始数据、产物、报告）统一存
+MinIO，数据库只存元数据。</p>
+<h2 id="整体业务流程">3. 整体业务流程</h2>
+<pre><code>登记焊缝数据（CSV/WAV/图片/视频）
+        │
+        ▼
+数据核验（15 项规则，产出质量评分）──不通过──► 修复后重新登记
+        │ 通过/待复核
+        ▼
+多模态对齐（视频 + 时序 + 音频时间轴对齐）
+        │
+        ▼
+起收弧识别 → 样本分段（把长焊缝切成可用样本）
+        │
+        ▼
+数据标注（图像框选 / 视频多边形 / 时序区间）→ 特征提取
+        │
+        ▼
+训练数据准备（数据集快照 + 8:1:1 划分）
+        │
+        ▼
+新建训练 → 测试评估（指标 + 混淆矩阵）→ 推理验证</code></pre>
+<h2 id="快速开始">4. 快速开始</h2>
+<ol type="1">
+<li>打开平台地址（本地开发
+<code>http://localhost:5173</code>，部署环境为服务器地址）。</li>
+<li>输入用户名和密码登录（首次部署使用 seed
+管理员账号，生产环境务必修改默认密码）。</li>
+<li>登录后默认进入「数据总览」页。</li>
+</ol>
+<figure>
+<img src="images/manual/00-login.png" alt="登录页" />
+<figcaption aria-hidden="true">登录页</figcaption>
+</figure>
+<h2 id="数据总览">5. 数据总览</h2>
+<p>登录后首页。展示数据资产的四个核心指标（数据总量、厂商总量、单条焊缝最大容量、已标注样本），以及焊机种类、缺陷种类、多模态种类、采样频率分布、厂商/过渡类型/焊接类型占比、缺陷类型分布和数据集卡片。数据每
+5 分钟自动缓存刷新。</p>
+<figure>
+<img src="images/manual/01-overview.png" alt="数据总览" />
+<figcaption aria-hidden="true">数据总览</figcaption>
+</figure>
+<h2 id="数据管理">6. 数据管理</h2>
+<h3 id="数据集">6.1 数据集</h3>
+<p>数据集是”可交付给模型训练的样本集合”，以<strong>固定快照版本</strong>管理。</p>
+<ul>
+<li><strong>列表页</strong>：展示全部数据集（编号、任务类型、样本数、标注完成度、当前快照、可训练状态），可新建数据集。</li>
+</ul>
+<figure>
+<img src="images/manual/02-dataset-list.png" alt="数据集列表" />
+<figcaption aria-hidden="true">数据集列表</figcaption>
+</figure>
+<ul>
+<li><strong>数据集概览</strong>：点击某个数据集进入，展示样本总数、标注完成度、训练/验证/测试划分、质量指标、维度状态、模型适配检查和数据血缘。可从这里「查看全部焊缝」「查看当前快照」。</li>
+</ul>
+<figure>
+<img src="images/manual/03-dataset-detail.png" alt="数据集概览" />
+<figcaption aria-hidden="true">数据集概览</figcaption>
+</figure>
+<ul>
+<li><strong>快照成员</strong>：当前快照中的全部样本行，支持按关键词/质量/划分筛选（服务端分页）。点击成员可进入焊缝详情并继续核验/版本/分析流程。</li>
+</ul>
+<figure>
+<img src="images/manual/04-dataset-members.png" alt="快照成员" />
+<figcaption aria-hidden="true">快照成员</figcaption>
+</figure>
+<p>操作提示：创建新快照版本后系统会<strong>自动触发数据集构建任务</strong>，构建成功后快照才包含样本。</p>
+<h3 id="数据登记">6.2 数据登记</h3>
+<p>登记是<strong>新建数据</strong>的入口，不要求先选焊缝。步骤：</p>
+<ol type="1">
+<li>选择所属数据集（必填）。</li>
+<li>填写数据来源、焊缝名称、采集时间等元数据（带 * 为必填）。</li>
+<li>按模态分区上传文件：时序 CSV、图片、视频、WAV 音频（单文件 &lt;
+100MB 走代理，≥ 100MB 自动预签名直传并显示进度）。</li>
+<li>点击「登记数据」提交——先创建登记记录，再逐文件直传并挂载到该焊缝版本。</li>
+</ol>
+<p>提交成功后生成登记编号（REG-…），数据以 v1.0 版本进入版本链。</p>
+<figure>
+<img src="images/manual/05-registration.png" alt="数据登记" />
+<figcaption aria-hidden="true">数据登记</figcaption>
+</figure>
+<h3 id="数据核验">6.3 数据核验</h3>
+<p>先在页面顶部选择数据集和焊缝，系统对最新版本执行 15
+项核验规则（图像文件完整性、时序信号连续性、采样率一致性、起收弧事件完整、电流/电压量程、送丝速度、多模态时间戳、视频帧率、命名规范、工艺参数、音频质量、红外完整性、元数据关联等），给出
+0–100 质量评分与「通过 / 待复核 /
+异常」汇总结论。可点击「执行核验」重新检查。</p>
+<figure>
+<img src="images/manual/06-validation.png" alt="数据核验" />
+<figcaption aria-hidden="true">数据核验</figcaption>
+</figure>
+<h3 id="焊缝版本">6.4 焊缝版本</h3>
+<p>展示当前焊缝的<strong>不可覆盖版本链</strong>（v1.0 原始数据 →
+对齐/去噪/人工修正等加工版本）。点「查看」打开版本详情（含核验结果），点「新建数据版本」可基于当前版本派生新版本。</p>
+<figure>
+<img src="images/manual/07-versions.png" alt="焊缝版本" />
+<figcaption aria-hidden="true">焊缝版本</figcaption>
+</figure>
+<h2 id="分析与标注">7. 分析与标注</h2>
+<blockquote>
+<p>本模块所有功能都遵循「<strong>先选数据</strong>」约定：必须在页面顶部先选定一条焊缝，功能才可用。</p>
+</blockquote>
+<h3 id="选择数据">7.1 选择数据</h3>
+<p>两级选择：先选数据集，再选该数据集下的一条焊缝。核验状态为「异常」的焊缝卡片置灰不可进入，需先完成核验复核。</p>
+<figure>
+<img src="images/manual/08-analysis-select.png" alt="选择数据" />
+<figcaption aria-hidden="true">选择数据</figcaption>
+</figure>
+<h3 id="多模态对齐">7.2 多模态对齐</h3>
+<p>时间轴对齐工作室：以共享时间标尺组织各模态轨道（视频/时序/音频/红外），视频直接在轨道内播放，时序波形为真实数据。勾选要对齐的模态后点「开始多模态对齐」，任务成功后生成对齐版本。</p>
+<figure>
+<img src="images/manual/09-alignment.png" alt="多模态对齐" />
+<figcaption aria-hidden="true">多模态对齐</figcaption>
+</figure>
+<h3 id="起收弧识别">7.3 起收弧识别</h3>
+<p>基于时序信号自动识别起弧、有效焊接、收弧区段，展示信号波形与分析结果（稳定度、区段占比、异常区段），支持切换分析模式（PSD/STFT/DWT/小波分解/相位图/PDD）与滤波参数后重新计算。</p>
+<figure>
+<img src="images/manual/10-arc-analysis.png" alt="起收弧识别" />
+<figcaption aria-hidden="true">起收弧识别</figcaption>
+</figure>
+<h3 id="样本分段">7.4 样本分段</h3>
+<p>把对齐后的长焊缝按事件缓冲切分为训练样本：步骤条展示流水线进度，可设置缓冲秒数与切分规则，产出样本网格预览与统计。</p>
+<figure>
+<img src="images/manual/11-split.png" alt="样本分段" />
+<figcaption aria-hidden="true">样本分段</figcaption>
+</figure>
+<h3 id="数据标注">7.5 数据标注</h3>
+<p>支持三种标注模式（顶部切换）：</p>
+<ul>
+<li><strong>图像</strong>：对焊缝图片做框选标注（AI
+预标注可辅助），标签类别来自系统字典（焊瘤/气孔/未熔合/咬边/正常/熔池）。</li>
+<li><strong>时序</strong>：在 ECharts
+波形上点击设定起止时间，选取区间并指定缺陷类别生成 segment 标注。</li>
+<li><strong>视频</strong>：播放视频逐帧暂停，在帧上画多边形（熔池区域等），帧样本自动入库。</li>
+</ul>
+<figure>
+<img src="images/manual/12-annotation.png" alt="数据标注" />
+<figcaption aria-hidden="true">数据标注</figcaption>
+</figure>
+<h3 id="特征提取">7.6 特征提取</h3>
+<p>对当前焊缝执行特征提取（可设置归一化与输出格式），产出时域/频域/时频三类特征表与统一特征向量，作为后续建模的输入。</p>
+<figure>
+<img src="images/manual/13-features.png" alt="特征提取" />
+<figcaption aria-hidden="true">特征提取</figcaption>
+</figure>
+<h2 id="模型中心">8. 模型中心</h2>
+<h3 id="训练数据准备">8.1 训练数据准备</h3>
+<p>从数据管理的数据集中筛选可用于训练的样本并生成<strong>固定版本</strong>：选数据集
++ 来源（手动/切分任务/标注任务）后创建，系统自动构建并展示 8:1:1
+训练/验证/测试划分、样本总数与质量快照。</p>
+<figure>
+<img src="images/manual/14-dataset-build.png" alt="训练数据准备" />
+<figcaption aria-hidden="true">训练数据准备</figcaption>
+</figure>
+<h3 id="模型资产">8.2 模型资产</h3>
+<p>模型仓库统一管理所有模型：顶部为总量统计（模型总数、生产候选、最近训练时间），「标准模型目录」按类型（检测/分割/分类等）区分图标展示可创建的模型种类，下方为已登记模型卡片（含指标如
+mAP@0.5、核心任务、状态）。点「新建模型」登记新模型，「开始学习之路」进入训练页。</p>
+<figure>
+<img src="images/manual/15-model-repository.png" alt="模型资产" />
+<figcaption aria-hidden="true">模型资产</figcaption>
+</figure>
+<h3 id="新建训练">8.3 新建训练</h3>
+<p>左侧训练配置：选模型类型、基础模型（可选，支持从已训模型继续）、训练数据集快照，设置超参（轮数、批次、学习率、验证集比例）后开始训练。右侧实时展示训练表现（mAP、精确率、召回率）与损失曲线，底部为训练日志。</p>
+<figure>
+<img src="images/manual/16-training.png" alt="新建训练" />
+<figcaption aria-hidden="true">新建训练</figcaption>
+</figure>
+<h3 id="测试评估">8.4 测试评估</h3>
+<p>对训练完成的模型发起测试任务，产出评估指标与混淆矩阵，用于判断是否可交付。</p>
+<figure>
+<img src="images/manual/17-testing.png" alt="测试评估" />
+<figcaption aria-hidden="true">测试评估</figcaption>
+</figure>
+<h3 id="推理验证">8.5 推理验证</h3>
+<p>上传待预测文件（小文件直传、大文件预签名直传），对指定模型发起推理任务，返回预测类别、置信度与耗时，用于上线前的实际效果验证。</p>
+<figure>
+<img src="images/manual/18-inference.png" alt="推理验证" />
+<figcaption aria-hidden="true">推理验证</figcaption>
+</figure>
+<h2 id="全局使用约定与注意事项">9. 全局使用约定与注意事项</h2>
+<ol type="1">
+<li><strong>先选数据，再处理数据</strong>：核验、版本、分析、标注等基于单条焊缝的操作必须先在顶部上下文条选中一条焊缝；「数据登记」是新建操作，点进去直接填表即可。</li>
+<li><strong>数据列表只显示最新版本</strong>：数据以焊缝 ID
+去重，历史版本一律到「焊缝版本」页查看。</li>
+<li><strong>数据集是快照语义</strong>：快照一旦固定，成员与划分不再随源数据变化；要纳入新数据需创建新快照版本并重新构建。</li>
+<li><strong>上传限制</strong>：单文件 &lt; 100MB 走后端代理，≥ 100MB
+走预签名直传；<code>raw/</code> 前缀下的未挂载原始文件有 30
+天生命周期清理，请登记后及时完成挂载。</li>
+<li><strong>报告导出</strong>：各工作区工具栏支持导出报告（数据列表/核验/分析/标注/特征/测试六类），导出后自动打开下载链接。</li>
+<li><strong>操作留痕</strong>：所有 <code>/api/v1</code>
+调用记录请求体、返回体、调用人与时间（loguru
+轮转日志），便于审计与问题排查。</li>
+</ol>
+<h2 id="当前系统能力边界">10. 当前系统能力边界</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>环节</th>
+<th>状态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>登录鉴权、数据登记、文件上传（含大文件直传）、对象存储</td>
+<td>✅ 真实链路</td>
+</tr>
+<tr>
+<td>信号导入、多模态对齐、起收弧识别、特征提取</td>
+<td>✅ 真实数据链路</td>
+</tr>
+<tr>
+<td>数据核验（15 项规则）</td>
+<td>✅ 真实规则计算</td>
+</tr>
+<tr>
+<td>报告导出</td>
+<td>✅ 真实生成</td>
+</tr>
+<tr>
+<td>部分切分、标注辅助（AI 预标注）、训练、测试、推理算法</td>
+<td>⚠️ 演示/模拟计算</td>
+</tr>
+<tr>
+<td>任务编排、状态持久化、结果回填、产物关联</td>
+<td>✅ 按真实系统实现</td>
+</tr>
+</tbody>
+</table>
+<p>随着算法逐步真实化，本手册对应章节将持续更新。</p>
+</body>
+</html>
