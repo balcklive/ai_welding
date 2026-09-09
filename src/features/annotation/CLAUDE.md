@@ -10,7 +10,7 @@
   - 图像模式：真实焊缝图 + `AnnotoriousImageEditor`（矩形/多边形）+ 标签类别（`listLabelCategories`，失败兜底 `mockLabelCategories`）+ AI 预标注（`aiPretag`）+ `saveAnnotation` 覆盖写保存。
   - `AnnotationSignal({dataId})`：时序标注（ECharts 波形点击设起点/终点选缺陷区间，kind='segment'）。
   - `AnnotationVideo({dataId})`：视频标注（播放/捕获帧 → Annotorious 画多边形 → `createAnnotationFrame` + saveAnnotation kind='polygon'）。
-- `LabelStudioEmbed.tsx`：**2026-09-06 一期·轨道 A 新增**。纯展示组件——LS 项目页 iframe（`{ls_public_url}/projects/{ls_project_ids[0]}/`）+「在新标签页打开」兜底。轮询逻辑在 `src/hooks/useLabelStudioTask`。
+- `LabelStudioEmbed.tsx`：**2026-09-06 一期·轨道 A 新增**。纯展示组件——LS 项目页 iframe（`{ls_public_url}/projects/{ls_project_ids[0]}/`）；**无外跳出口**（2026-09-09 去掉「在新标签页打开」按钮，标注全程在主应用内嵌完成）+ `onLoad` 加载态（切换前显示「正在连接 Label Studio 工作台…」提示，加载完淡入，防白屏）。轮询逻辑在 `src/hooks/useLabelStudioTask`。
 
 ## 调用链
 

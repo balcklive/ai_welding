@@ -1,4 +1,4 @@
-import { ExternalLink } from 'lucide-react';
+import { useState } from 'react';
 import type { LabelStudioTask } from '../../api/types';
 
 /**
@@ -15,32 +15,45 @@ export function LabelStudioEmbed({ lsTask }: { lsTask: LabelStudioTask }) {
   const project = lsTask.ls_project_ids?.[0];
   const url = lsTask.ls_public_url;
   const frameSrc = url && project != null && Number.isInteger(project) ? `${url}/projects/${project}/` : null;
+  // 内嵌加载态：iframe 首次加载 LS 工作台前显示提示，避免白屏；onLoad 后淡入。
+  const [loaded, setLoaded] = useState(false);
   return (
     <section className="panel annotation-board">
       <div className="board-toolbar">
         <div>
-          <span className="file-badge">Label Studio</span>
-          <h2>图像标注 · 在 Label Studio 工作台内完成</h2>
+          <span className="file-badge">标注工作台</span>
+          <h2>图像标注 · 内嵌工作台</h2>
         </div>
-        {frameSrc && (
-          <a className="primary-button" href={frameSrc} target="_blank" rel="noreferrer">
-            <ExternalLink size={16} />
-            在新标签页打开
-          </a>
-        )}
       </div>
       <div
         className="ls-embed-stage"
         style={{ position: 'relative', width: '100%', height: '70vh', minHeight: 480, overflow: 'hidden', borderRadius: 8, border: '1px solid #e5e7eb' }}
       >
         {frameSrc ? (
-          <iframe className="ls-embed-frame" src={frameSrc} title="Label Studio 标注工作台" style={{ width: '100%', height: '100%', border: 'none' }} allowFullScreen />
+          <>
+            {!loaded && (
+              <div
+                className="selection-required ls-embed-loading"
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 8, border: 'none', background: 'rgba(255,255,255,0.92)', zIndex: 1 }}
+              >
+                <span style={{ fontSize: 13, color: '#84999a' }}>正在连接 Label Studio 工作台…</span>
+              </div>
+            )}
+            <iframe
+              className="ls-embed-frame"
+              src={frameSrc}
+              title="Label Studio 标注工作台"
+              onLoad={() => setLoaded(true)}
+              style={{ width: '100%', height: '100%', border: 'none', opacity: loaded ? 1 : 0, transition: 'opacity 0.25s ease' }}
+              allowFullScreen
+            />
+          </>
         ) : (
           <div className="selection-required">Label Studio 任务初始化中…</div>
         )}
       </div>
       <div className="stage-tip">
-        标注在嵌入的 Label Studio 工作台内完成；完成后自动回写，回写后切换为主应用只读展示。
+        标注可在这块内嵌工作台里直接完成，保存后自动回写，回写完成切到主应用只读结果。
       </div>
     </section>
   );
