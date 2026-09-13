@@ -466,6 +466,33 @@ button { border: 0; cursor: pointer; }
 .model-version-row > div { display:grid; gap:4px; }
 .model-version-row span, .model-version-row small { color:#789093; font-size:10px; }
 .toolbar-error { color:#e5484d; font-size:11px; }
+
+/* 系统设置页（settings 路由）：可选项字典管理。一行一选项，操作按钮右对齐。 */
+.settings-intro { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:14px; }
+.settings-intro h2 { margin:0; color:#24434b; font-size:14px; }
+.settings-intro p { margin:6px 0 0; max-width:760px; color:#98aaac; font-size:10px; line-height:1.7; }
+.settings-notice { display:block; margin:0 0 14px; }
+.settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:15px; }
+.settings-panel { display:flex; flex-direction:column; gap:13px; padding:19px; }
+.settings-panel .panel-heading p { max-width:520px; line-height:1.6; }
+.settings-add { display:flex; gap:8px; }
+.settings-add input { flex:1; min-width:0; padding:10px 11px; color:#45666b; background:#fff; border:1px solid #dce7e5; border-radius:6px; outline:0; font-size:11px; }
+.settings-add input:focus { border-color:#67cdb0; box-shadow:0 0 0 3px rgba(103,205,176,.15); }
+.settings-item-list { display:grid; gap:6px; }
+.settings-item { display:flex; align-items:center; gap:9px; padding:9px 11px; border:1px solid #edf2f1; border-radius:7px; background:#fff; }
+.settings-item--off { background:#f8fbfa; border-style:dashed; }
+.settings-color-dot { flex:0 0 8px; width:8px; height:8px; border-radius:50%; }
+.settings-item-value { flex:1; min-width:0; overflow:hidden; color:#456167; font-size:11px; font-weight:500; text-overflow:ellipsis; white-space:nowrap; }
+.settings-item--off .settings-item-value { color:#93a7a6; }
+.settings-item-input { flex:1; min-width:0; padding:7px 9px; color:#45666b; background:#fff; border:1px solid #67cdb0; border-radius:6px; outline:0; font-size:11px; }
+.settings-item-actions { display:flex; align-items:center; gap:2px; margin-left:auto; }
+.settings-item-actions .ghost-button { padding:6px 8px; font-size:10px; }
+.settings-item-actions .icon-button { padding:6px; border-radius:5px; color:#7b9899; }
+.settings-item-actions .icon-button:hover:not(:disabled) { color:#2f8577; background:#eef9f5; }
+.settings-item-actions button:disabled { opacity:.35; cursor:not-allowed; }
+.settings-delete { color:#b45f67 !important; }
+.settings-delete:hover { background:#fff7f7 !important; }
+@media (max-width:1020px) { .settings-grid { grid-template-columns:1fr; } }
 .full-button--disabled { color:#9db8b6; background:#e3efec; cursor:not-allowed; }
 .full-button--disabled:hover { background:#e3efec; }
 @keyframes field-flash { 0%,100% { background:transparent; box-shadow:none; } 20%,60% { background:rgba(229,72,77,.13); box-shadow:0 0 0 2px rgba(229,72,77,.55); } 40%,80% { background:transparent; box-shadow:none; } }
@@ -532,3 +559,8 @@ button { border: 0; cursor: pointer; }
 
 /* 分析页的核验语义未统一，暂不展示该项，避免误导。 */
 .analysis-meta .analysis-kpis > div:first-child{display:none}
+
+/* TextDialog 可选下拉字段（新建数据集 → 任务类型，取值来自系统设置字典）。 */
+.app-dialog .dialog-choice { margin-top:14px; }
+.app-dialog select { width:100%; padding:11px; color:#45666b; background:#fff; border:1px solid #dce7e5; border-radius:6px; outline:0; font-size:11px; }
+.app-dialog select:focus { border-color:#67cdb0; box-shadow:0 0 0 3px rgba(103,205,176,.15); }

@@ -5,7 +5,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 ## 脚本
 
 - `__init__.py`：空包。
-- `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 9 个域 router。新增域时在此追加 import + include_router。
+- `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 11 个域 router（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports/labelstudio/settings）。新增域时在此追加 import + include_router。
 - `auth.py`：**Task 5 已实现**。router `prefix="/auth"`（完整路径 `/api/v1/auth/login`、`/api/v1/auth/me`）。`POST /login` body `{username,password}` → 查 `users` 表校验 → `ok({access_token, token_type:"bearer", user:{id,username,display_name,role,avatar}})`；用户名/密码错 → `err(40100, "用户名或密码错误", status=401)`。**防时序用户枚举（Task 5 修复）**：用户不存在时仍对模块级 `_DUMMY_HASH`（argon2，导入时算一次）跑一次 `verify_password`，使未知/已知用户名两条路径耗时相当；返回体一致。**Task 4 修复**：按用户名做失败登录限速（60s 窗口内失败 ≥5 次进入 300s cooldown，返回 `42900`），成功登录会清空失败桶/冷却状态。`GET /me`（依赖 `api.deps.get_current_user`）→ `ok(user)`。`user_payload(user)` 暴露对外字段。
 - `dashboard.py`：**Task 8 已实现**。router `prefix="/dashboard"`（完整路径 `/api/v1/dashboard/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点
@@ -185,6 +185,21 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `POST /labelstudio/webhook`：LS 事件回调，**不挂全局 JWT**（LS 无平台 token），用共享 secret（`LABEL_STUDIO_WEBHOOK_SECRET`，Header `X-LS-Secret`，`secrets.compare_digest`）校验，不依赖来源 IP；调 `annotation_ls.handle_annotation_event`（幂等）→ 路由 commit。
   - `GET /labelstudio/tasks/{task_id}`：LS 同步状态（`task_id` 兼容 job_uid），**挂 JWT**；`POST /labelstudio/sync`：手动对账（挂 JWT）。
   - 业务逻辑在 `app.services.annotation_ls`；错误码 40100（secret 无效）/40401(任务不存在)/50000。**坑：本 router 刻意不沿用其它域的 router 级 `Depends(get_current_user)`（webhook 例外），手动端点单独挂。**
+
+- `settings.py`：**2026-09 系统设置·可选项字典（新增，实现原预留 `GET/PUT /settings` 的字典部分）**。
+  契约 `docs/API接口清单.md` §3.8，业务逻辑在 `app.services.settings`：
+  - `GET /settings/options`（登录即可）：全部选项组 + 选项（**含停用项**，各带 `active`），
+    形状 `{groups:[{key,label,description,color,free_text,items:[{id,value,color,active,sort_order}]}]}`。
+  - `POST /settings/options/{group_key}`（新增）/ `PATCH …/{item_id}`（改名/改色/停用-启用）/
+    `POST …/{item_id}/move`（`{direction: up|down}`）/ `DELETE …/{item_id}`（软删优先）。
+  - **写操作仅管理员**（`_require_admin` + `deps.is_admin`）→ 非管理员 403（`err(40300)`）；
+    字典是全局配置，放开写会让任何登录用户改掉所有人的录入口径。
+  - 错误码：40410=选项分组不存在、40411=选项不存在、40900=同组重名、40000=参数错误；
+    删除语义与前端兜底见契约 §3.8（`mode=deactivated|deleted`，前端不得自行猜测）。
+  - 每次写操作 `write_audit(..., "option_item", ...)` 后 `session.commit()`（与其它域一致）。
+  - **坑**：`{group_key}` 是字符串分组键不是路径参数白名单外的自由值，
+    非法分组由服务层抛 `OptionGroupNotFound` 统一转 40410；`label_category` 组落在
+    `label_categories` 表（见 `services/settings.py`），改这里时别假设只有一张表。
 
 ## 坑/限制
 

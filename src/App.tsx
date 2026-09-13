@@ -28,6 +28,7 @@ const TrainingDataPreparation = lazy(() => import('./features/models/ModelCenter
 const Training = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.Training })));
 const ModelTestLive = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.ModelTestLive })));
 const InferencePanel = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.InferencePanel })));
+const SettingsPage = lazy(() => import('./features/settings/SettingsPage').then((module) => ({ default: module.SettingsPage })));
 
 /** 初始路由 = URL hash 解析结果；空/非法 hash 回落总览。 */
 function resolveInitialRoute(): Route {
@@ -114,7 +115,7 @@ function AppShell() {
           {isExpanded && <div className="nav-submenu">{group.children!.map((child) => <button key={child.route} className={`nav-subitem ${route === child.route ? 'active' : ''}`} onClick={() => navigate(child.route)}><span className="nav-sub-dot" />{child.label}</button>)}</div>}
         </div>;
       })}</nav>
-      <div className="sidebar-bottom"><button className="nav-item"><Settings2 size={18} /><span>系统设置</span></button><div className="user-card"><div className="avatar">林</div><div><strong>林工</strong><span>管理员</span></div><MoreHorizontal size={16} /></div></div>
+      <div className="sidebar-bottom"><button className={`nav-item ${route === 'settings' ? 'active' : ''}`} onClick={() => navigate('settings')}><Settings2 size={18} /><span>系统设置</span></button><div className="user-card"><div className="avatar">林</div><div><strong>林工</strong><span>管理员</span></div><MoreHorizontal size={16} /></div></div>
     </aside>
     <main className="main-content">
       <Suspense fallback={<div className="dataset-empty-state" role="status">页面加载中…</div>}>
@@ -185,6 +186,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'model-center/training') content = <Training />;
   else if (route === 'model-center/testing') content = <><DatasetTestingContext /><ModelTestLive /></>;
   else if (route === 'model-center/inference') content = <InferencePanel />;
+  else if (route === 'settings') content = <SettingsPage />;
 
   const frameAction = ws === 'data-center' && route === 'data-center/datasets' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined;
   return <div className={`workspace-page ${route === 'model-center/repository' ? 'model-repository-page' : ''}`}><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div>{(toolbarConfig.action || toolbarConfig.secondary) && <Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={frameAction} />}</div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;

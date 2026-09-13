@@ -16,12 +16,14 @@ export type Route =
   | 'model-center/repository'
   | 'model-center/training'
   | 'model-center/testing'
-  | 'model-center/inference';
+  | 'model-center/inference'
+  | 'settings';
 
 export const workspaceHeaders: Record<string, { eyebrow: string; title: string; description: string }> = {
   'data-center': { eyebrow: '数据资产中心', title: '数据管理', description: '以单条焊缝数据为单位，管理数据登记、质量核验和版本链路。' },
   analysis: { eyebrow: '多模态数据生产线', title: '分析与标注', description: '选择一条焊缝后，完成对齐、起收弧识别、切分与标注。' },
   'model-center': { eyebrow: '模型研发中心', title: '模型中心', description: '从数据到模型：准备训练数据，统一管理模型版本、训练任务、测试评估与推理验证。' },
+  settings: { eyebrow: '系统管理', title: '系统设置', description: '维护数据登记与数据集录入时的可选项，无需改代码即可增删厂家、焊接方法、项目信息等字典。' },
 };
 
 export const navStructure: {

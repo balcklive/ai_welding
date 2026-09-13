@@ -1,6 +1,6 @@
 """模型包：导出全部 SQLModel 表类。
 
-`from app.models import *` 会导入 23 张表，供 Alembic env.py 绑定 `SQLModel.metadata`。
+`from app.models import *` 会导入 26 张表，供 Alembic env.py 绑定 `SQLModel.metadata`。
 """
 
 from .analysis import (
@@ -25,6 +25,7 @@ from .data import (
 from .datasets import Dataset, DatasetBuildTask, DatasetItem, DatasetVersion
 from .jobs import Job
 from .models import InferenceTask, Model, ModelVersion, TestTask, TrainingTask
+from .settings import OptionItem
 
 __all__ = [
     # data.py
@@ -57,4 +58,6 @@ __all__ = [
     "TrainingTask",
     "TestTask",
     "InferenceTask",
+    # settings.py
+    "OptionItem",
 ]

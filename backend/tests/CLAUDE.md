@@ -32,6 +32,16 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 - `test_audit_routes.py`（Task 4）：upload/presign/alignment/features/report export 审计覆盖回归；确保 `audit_logs` 中存在 `upload/file`、`presign_upload/file`、`create/alignment_task`、`extract/feature_extraction`、`export/report`。
 - `test_authz.py`（Task 4）：ownership/ACL 回归；普通用户不能读取/修改管理员登记及其焊缝/版本/analysis/features/report 关联资源，创建者仍可访问自己的登记，**同名 display_name 不会串权、owner 改名后仍能访问**，管理员路径不回归。
 
+- `test_settings.py`（**2026-09 系统设置·可选项字典**）：服务层（内存 SQLite 直接调 `services.settings`）+
+  端点层（StaticPool + 真实 TestClient + override `get_session`/`get_current_user`）。覆盖：
+  6 组齐全且出厂默认值与字典化前硬编码一致（machine/weld_method/dataset_task；`product` 出厂为空）；
+  重名 409 / 未知分组 40410 / 空值 40000；改名、停用-启用往返（停用项仍在设置页可见）；
+  上移下移**整组重排 sort_order**（含边界静默不动作、非法 direction 400）；
+  **删除语义**（未被引用 → 物理删 `mode=deleted`；被 `data_records.machine`/`datasets.task`/
+  `annotations.category` 引用 → 软删 `mode=deactivated` 且历史值保留）；
+  `label_category` 落在 `label_categories` 表（不搬家）+ `GET /label-categories` 带 `active` +
+  **AI 预标注只抽启用类别**；写操作非管理员 403（40300）、未登录读 401（40100）。
+
 ## 坑/限制
 
 - **内存 SQLite + TestClient 必须 StaticPool**（见上）。`test_models.py` 未用 TestClient、同线程跑，才可用默认池。

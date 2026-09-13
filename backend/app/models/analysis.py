@@ -107,13 +107,20 @@ class Annotation(SQLModel, table=True):
 
 
 class LabelCategory(SQLModel, table=True):
-    """§3.12 label_categories 标签类别"""
+    """§3.12 label_categories 标签类别
+
+    2026-09 起纳入「系统设置 → 标注缺陷类别」管理：`active=False` 为停用（不进入
+    标注调色板与 AI 预标注抽样），`sort_order` 控制展示顺序（原按 id 升序）。
+    `annotations.category` 存的是类别名字符串——历史标注不受停用/改名影响。
+    """
 
     __tablename__ = "label_categories"
 
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(max_length=32, unique=True)
     color: str | None = Field(default=None, max_length=16)
+    sort_order: int = Field(default=0)
+    active: bool = Field(default=True)
 
 
 class FeatureExtraction(SQLModel, table=True):

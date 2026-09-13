@@ -1,15 +1,21 @@
 # CLAUDE.md — backend/app/models/
 
-SQLModel 表类（全部 24 张，`table=True`）。当前进度：Task 2（全部模型 + `__init__.py` 导出）+ **Task 18（新增 `SignalIngest`，§3.24）**。
+SQLModel 表类（全部 26 张，`table=True`）。当前进度：Task 2（全部模型 + `__init__.py` 导出）+ **Task 18（新增 `SignalIngest`，§3.24）** + **2026-09 系统设置（新增 `OptionItem`，§3.26）**。
 
 ## 文件与内容
 
-- `__init__.py`：re-export 全部 23 个表类。**Alembic env.py `from app.models import *` 依赖它**收集全部表到 `SQLModel.metadata`；新增表必须同步加进 `__all__`。
+- `__init__.py`：re-export 全部 26 个表类。**Alembic env.py `from app.models import *` 依赖它**收集全部表到 `SQLModel.metadata`；新增表必须同步加进 `__all__`。
 - `data.py`：`User`(§3.1)、`DataRecord`(§3.2)、`DataVersion`(§3.3，`request_key`：加工版本并发幂等)、`ValidationReport`(§3.4)、`ValidationRuleResult`(§3.5)、`AuditLog`(§3.23，**Task 5 P2**：`resource_id` 现按迁移 `0005` 扩到 255，兼容长 object key）。`DataRecord.dataset_id` 由迁移 `0006` 增加，登记必须归属数据集；历史兼容字段暂允许空值，业务/API 不允许新登记为空。**2026-09 多模态字段**：`wire_feed_speed`/`welding_speed`（单值工艺参数，登记可填/CSV 导入稳态回填）+ `data_fields`（JSON 字段概览 `[{id,name,unit,value}]`，导入自动写，前端展示），见迁移 `0012`。
 - `jobs.py`：`Job`(§3.6) 统一异步任务生命周期。
 - `analysis.py`：`AlignmentTask`(§3.7，`request_key` 保留逻辑幂等历史，`active_request_key` 仅给 pending/running/succeeded 做唯一占位，failed 可释放后重试)、`SplitTask`(§3.8，同上)、`Sample`(§3.9)、`AnnotationTask`(§3.10)、`Annotation`(§3.11，**标注 kind 升级**：`kind`(box/segment/polygon) + `points`/`start_time`/`end_time` 四列，见迁移 `0007`)、`LabelCategory`(§3.12)、`FeatureExtraction`(§3.13)、`SignalIngest`(§3.24，**Task 18**：CSV 真实信号导入元数据，`(version_id, source_object_key)` 复合唯一幂等)、`AnnotationLsSync`(§3.25，**2026-09-05 LS 集成第 25 张表**：标注任务样本↔LS task 映射/回写状态，`(annotation_task_id, sample_id)` 复合唯一幂等，`sync_status` pending_ls/annotating/synced)。**`AnnotationTask` 新增 `ls_status`**（VARCHAR(16) 默认 `legacy`，迁移 `0013`；`mode=on` 新任务置 `pending_ls`，随回写/对账推进，存量=`legacy`）。
 - `datasets.py`：`Dataset`(§3.14)、`DatasetVersion`(§3.15)、`DatasetItem`(§3.16)、`DatasetBuildTask`(§3.22)。
 - `models.py`：`Model`(§3.17)、`ModelVersion`(§3.18)、`TrainingTask`(§3.19)、`TestTask`(§3.20)、`InferenceTask`(§3.21)。
+- `settings.py`：`OptionItem`(§3.26，**2026-09 系统设置·可选项字典**——`group_key` 分组承载录入类可选项 machine/weld_method/source/product/dataset_task，UK `(group_key,value)`，`active` 软删 + `sort_order` 排序；标注缺陷类别不并入本表，仍走 `analysis.py` 的 `LabelCategory`）。
+
+## 2026-09 系统设置相关字段变更
+
+- `analysis.py::LabelCategory` 补 `sort_order`(INT，默认 0) + `active`(BOOL，默认 True)：纳入「系统设置 → 标注缺陷类别」管理（停用不进调色板/AI 预标注，历史 `annotations.category` 不受影响）。迁移 `0015` 按 `id*10` 回填 `sort_order`，等价原 id 升序展示。
+- 新增表/列**必须**同步：`alembic/versions/0015_option_items.py`、`docs/数据库设计.md`（§3.12/§3.26）、本题录、`backend/app/services/settings.py`（存储差异的唯一收口处）。
 
 ## 类型映射规则（与 `docs/数据库设计.md` §3 逐列一致）
 

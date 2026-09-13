@@ -319,6 +319,27 @@
   `tests/test_labelstudio_handler.py`；真实 e2e
   `scripts/premise_validation/e2e_ls_roundtrip.py`。
 
+- `settings.py`：**2026-09 系统设置·可选项字典（新增）**。把「录入时可选项」统一成
+  **选项组（group）+ 选项项（item）**，对路由/前端屏蔽两类存储的差异：
+  `option_items`（machine/weld_method/source/product/dataset_task）与
+  `label_categories`（label_category，LS 集成/标注校验依赖，不搬家）。
+  - `OPTION_GROUPS`：6 组的 key/label/description/`color`/`free_text`（顺序即设置页顺序）；
+    `get_group` / `list_groups` / `list_active_values`。
+  - `create_item` / `update_item`（value/color/active 均为 PATCH 语义，空值不改）/
+    `move_item`（与相邻项交换后**整组按 10 递增重排**，避免 sort_order 并列导致"上移没反应"）。
+  - `delete_item`：**软删优先**——`reference_count` 查业务列引用
+    （`data_records.machine/weld_method/source/product`、`datasets.task`、`annotations.category`），
+    有引用 → `active=False` 返回 `mode="deactivated"`（历史台账按原字符串展示），
+    无引用 → 物理删返回 `mode="deleted"`。
+  - 改名/停用**只影响后续录入**，不回填历史数据（业务列存的是字符串快照）。
+  - 异常：`OptionGroupNotFound` / `OptionItemNotFound` / `OptionConflict`（重名），
+    由 `api/v1/settings.py` 映射成 40410/40411/40900；模块**不 commit**（路由统一提交）。
+  - **唯一键竞态**：`_flush_or_conflict` 在 flush 撞唯一约束（两管理员同时新增同名项）时
+    `rollback()` + 抛 `OptionConflict`（→409），避免预检查通过后落成 500；该 rollback 是
+    本模块唯一的例外（写操作本身即事务的全部内容，路由在其后才写审计）。
+  - 消费方：`api/v1/settings.py`（CRUD）、`annotation.list_label_categories`（带 active）、
+    `annotation.pretag_sample`（只抽启用类别）。
+
 ## 坑/限制
 
 - **MySQL advisory lock 生命周期**：`GET_LOCK` 是**连接级**不是事务级；不能用 `session.rollback()/commit()` 之后再靠 `session.connection()` 去 `RELEASE_LOCK`，因为 Session 可能已换到别的 pooled connection。当前实现用**独立 lock connection** 持有，先显式 `RELEASE_LOCK` 再 `close()`；改这里时勿退化回“锁跟着 Session 走”。

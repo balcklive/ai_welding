@@ -5,8 +5,8 @@
 ## 文件
 
 - `navigation.ts`：
-  - `Route`：全部 16 个路由联合类型（`overview` + `data-center/*` + `analysis/*` + `model-center/*`）。
-  - `workspaceHeaders`：三个一级工作区（数据管理/分析与标注/模型中心）的页头 `{eyebrow, title, description}`。
+  - `Route`：全部 17 个路由联合类型（`overview` + `data-center/*` + `analysis/*` + `model-center/*` + `settings`）。
+  - `workspaceHeaders`：三个一级工作区（数据管理/分析与标注/模型中心）+ 系统设置的页头 `{eyebrow, title, description}`。
   - `navStructure`：侧边栏导航树（一级模块 + 二级子菜单），图标用 lucide-react。
 - `route-url.ts`（阶段一 2026-09-14）：
   - `ROUTE_SEGMENTS`：路由 → hash 段的字典，用 `satisfies Record<Route, string>` 做**编译期穷尽校验**——`navigation.ts` 新增路由后忘记登记，`npm run typecheck` 直接报错。

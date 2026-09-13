@@ -100,7 +100,8 @@
 | `AnnotationTask` | 标注任务（Job：从切分样本/手动选样生成） | id, job_id, split_task_id, name, status, progress |
 | `Sample` | 切分样本 | id, task_id, annotation_task_id, object_keys[], frame_no, annotations[] |
 | `Annotation` | 标注结果 | sample_id, labels[{category, box, confidence}], annotator, updated_at |
-| `LabelCategory` | 缺陷标签类别 | name（焊瘤/气孔/未熔合/咬边/正常） |
+| `LabelCategory` | 缺陷标签类别（系统设置可维护） | name（焊瘤/气孔/未熔合/咬边/正常/熔池）, color, **sort_order**, **active**(停用软删) |
+| `OptionItem` | 可配置选项（系统设置字典项） | id, **group_key**(machine/weld_method/source/product/dataset_task), value, sort_order, **active**(停用软删) |
 | `FeatureExtraction` | 特征提取结果 | id, version_id, ts_features, vision_features, audio_features, unified_vector{dims, groups}, normalization, format |
 | `SignalIngest` | 真实信号导入（Job：CSV 挂载后自动触发，校验+启发式+写 Parquet） | id, job_id, version_id, source_object_key, status(pending/succeeded/failed), sample_rate, duration, row_count, parquet_key, events, anomalies, validation, error |
 | `Dataset` | 数据集 | id, name, task, sample_count, progress, current_version, status(标注中/可训练) |
@@ -229,6 +230,49 @@
 | GET | `/api/v1/files/{object_key}/url` | 预签名下载/播放 URL（支持 Range 拖动播放） | query: `expires` |
 | GET | `/api/v1/jobs/{job_id}` | **通用任务状态轮询**（对齐/切分/训练/测试/数据集构建共用；训练/测试/推理可附 `mlflow_run_id`） | — 需登录 |
 | POST | `/api/v1/reports/export` | 通用导出：核验报告/分析报告/标注集/特征集/测试报告/数据列表 | body: `type`, `ref_ids[]`, `format` |
+
+### 3.8 ⚙️ settings 系统设置（可选项字典）
+
+> **背景（2026-09）**：数据登记/数据集录入的可选项原先硬编码在前端（焊机型号 3 项、焊接方法 3 项、
+> 数据集任务写死「目标检测」），产品/项目信息为纯自由文本。本节端点把它们变成可维护字典：
+> 管理员在「系统设置」页增删改，录入页即时生效，无需改代码发版。
+
+| 方法 | 路径 | 功能 | 关键参数 / 请求体 |
+|---|---|---|---|
+| GET | `/api/v1/settings/options` | 全部选项组 + 选项（含已停用项） | 需登录；response: `{groups: [{key, label, description, color, free_text, items[]}]}` |
+| POST | `/api/v1/settings/options/{group_key}` | 新增选项 | **仅管理员**；body: `value`, `color?`（仅标注类别） |
+| PATCH | `/api/v1/settings/options/{group_key}/{item_id}` | 改名 / 改颜色 / 停用 / 启用 | **仅管理员**；body: `value?`, `color?`, `active?`（缺省字段不改） |
+| POST | `/api/v1/settings/options/{group_key}/{item_id}/move` | 上移 / 下移一位 | **仅管理员**；body: `direction`(up/down) |
+| DELETE | `/api/v1/settings/options/{group_key}/{item_id}` | 删除选项 | **仅管理员**；见下方删除语义 |
+
+`group_key` 取值（固定 6 组，顺序即设置页顺序）：
+
+| group_key | 展示名 | 消费方 | 录入页交互 |
+|---|---|---|---|
+| `machine` | 数据厂家 / 焊机型号 | 数据登记「焊机型号」；总览厂商比重/词云按该值首个词统计 | 下拉（严格候选） |
+| `weld_method` | 焊接方法 | 数据登记「焊接方法」；总览熔滴过渡类型映射 | 下拉（严格候选） |
+| `source` | 数据来源 | 数据登记「数据来源」 | 输入框 + `<datalist>` 候选（保留自由填写） |
+| `product` | 产品 / 项目信息 | 数据登记「关联产品信息」 | 输入框 + `<datalist>` 候选（保留自由填写） |
+| `dataset_task` | 数据集任务类型 | 新建数据集「任务类型」下拉；决定必需输入维度与适配检查项 | 下拉（严格候选） |
+| `label_category` | 标注缺陷类别 | 数据标注页标签调色板、AI 预标注抽样 | 标签调色板（仅启用项） |
+
+> **§3.8 删除语义（软删优先）**：`DELETE` 先查该值是否被业务列引用
+> （`data_records.machine/weld_method/source/product`、`datasets.task`、`annotations.category`）。
+> 有引用 → 只置 `active=false`（**停用**），response `{mode: "deactivated", value, references}`——
+> 录入候选里消失、历史台账仍按原字符串展示；无引用 → 物理删除，`{mode: "deleted"}`。
+> 前端按 `mode` 给不同提示，不自行猜测。
+>
+> **§3.8 改名语义**：改名/停用只影响后续录入，**不回填历史数据**（业务列存字符串快照）。
+>
+> **§3.8 存储**：`machine/weld_method/source/product/dataset_task` 落新表 `option_items`（§3.24）；
+> `label_category` 仍落既有 `label_categories`（§3.12，LS 集成与标注校验依赖，不搬家），
+> 仅补 `active`/`sort_order` 两列。
+>
+> **§3.8 错误码**：`40410` = 选项分组不存在；`40411` = 选项不存在；`40900` = 同组重名；
+> `40300` = 非管理员写操作；`40000` = 参数错误（空值/direction 非法）。
+>
+> **§3.8 前端兜底**：登记页/数据集页在 `GET /settings/options` 失败时回落到字典化之前的
+> 出厂值（Fronius CMT 等），保证接口异常不影响登记与数据集创建。
 
 ---
 
@@ -385,6 +429,7 @@ exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string
 | 播放/下载（视频/图片/报告） | `files.getFileUrl()` | `GET /files/{object_key}/url` |
 | 任务轮询（通用） | `jobs.getJob()`（经 `useJob`） | `GET /jobs/{id}` |
 | 导出报告/结果（各工具栏） | `reports.exportReport()` | `POST /reports/export` |
+| 系统设置 · 可选项字典增删改 | `settings.listOptionGroups()` `createOptionItem()` `updateOptionItem()` `deleteOptionItem()` `moveOptionItem()` | `GET/POST/PATCH/DELETE /settings/options…`（写操作仅管理员） |
 
 > **覆盖说明**：页面上的"刷新"按钮 = 重新调用对应列表/详情接口，无独立端点；"更换数据集"= 重新调用 `GET /datasets`。
 
@@ -406,12 +451,12 @@ pending ──► running ──► succeeded
 
 | 方式 | 接口 |
 |---|---|
-| 同步 | 登录、总览统计、列表/详情查询、登记增改、版本新建、核验、起收弧识别、特征提取、AI 预标注、标注保存、模型新建/状态流转、上传、导出、通用轮询 |
+| 同步 | 登录、总览统计、列表/详情查询、登记增改、版本新建、核验、起收弧识别、特征提取、AI 预标注、标注保存、模型新建/状态流转、上传、导出、通用轮询、系统设置字典增删改（§3.8） |
 | 异步（Job） | 多模态对齐、数据切分、标注任务创建、数据集构建、模型训练、模型测试、推理 |
 
 ### 6.3 预留项（本期不实现，文档中占位）
 
-- **系统设置**：侧边栏入口暂无对应页面 → 预留 `GET/PUT /settings`。
+- **系统设置**：可选项字典部分**已实现**（§3.8 `GET/POST/PATCH/DELETE /settings/options`，页面为侧边栏「系统设置」）；通用键值配置 `GET/PUT /settings` 仍预留。
 - **角色权限**：本期仅登录，预留 `GET /users`、`POST /users`、角色字段。
 - **版本回滚**：README 提到"版本回滚接口"，本期只读版本链，预留 `POST …/versions/{version_id}/rollback`。
 - **审计日志**：登记页提到"所有操作写入审计日志"，写入侧已实现（`audit_logs` 表），只读端预留 `GET /audit-logs`。

@@ -10,6 +10,7 @@ import {
   listDatasets,
 } from '../../api/datasets';
 import { deleteWeld, getWeld, listWelds } from '../../api/welds';
+import { listOptionGroups } from '../../api/settings';
 import { getSignals } from '../../api/analysis';
 import { getFileUrl } from '../../api/files';
 import type {
@@ -28,6 +29,12 @@ import { formatDateTime } from '../../shared/lib/formatting';
 import { VersionDetailDrawer } from '../versions/VersionDetailDrawer';
 
 const PAGE_SIZE = 10;
+
+/**
+ * 数据集任务类型兜底值：仅当 `GET /settings/options` 失败时使用，
+ * 与字典化之前的写死取值（原 `createDataset({ task: '目标检测' })`）一致。
+ */
+const FALLBACK_DATASET_TASKS = ['目标检测', '语义分割', '多模态回归'];
 
 /** 数据集列表/详情行展示形状（table/detail 期望的字段）。 */
 interface DatasetRow {
@@ -103,6 +110,10 @@ export function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, 
   const [recordBackView, setRecordBackView] = useState<'dataset-records' | 'records'>('records');
   const [view, setView] = useState<DatasetView>('list');
   const [createDialog, setCreateDialog] = useState(false);
+  // 新建数据集可选的任务类型来自系统设置字典。初始为空且标记未加载：加载期不闪现兜底值，
+  // 接口失败才回落 FALLBACK_DATASET_TASKS；加载成功但字典为空（管理员全删）则禁用新建并提示去配置。
+  const [taskOptions, setTaskOptions] = useState<string[]>([]);
+  const [taskOptionsLoaded, setTaskOptionsLoaded] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
   const dataset = rows.find((item) => item.id === selectedId);
   useEffect(() => {
@@ -144,9 +155,26 @@ export function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, 
     return () => { cancelled = true; };
   }, []);
   const reload = () => listDatasets().then((list) => applyRows(list.map(toDatasetRow)));
-  const handleCreate = (name: string) => {
+  // 任务类型字典：与数据集列表分开发请求，字典失败不影响列表渲染。
+  useEffect(() => {
+    let cancelled = false;
+    listOptionGroups()
+      .then((groups) => {
+        if (cancelled) return;
+        setTaskOptions(groups.find((group) => group.key === 'dataset_task')?.items.filter((item) => item.active).map((item) => item.value) ?? []);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('[datasets] option dictionary failed, fallback to built-in tasks', err);
+        setTaskOptions(FALLBACK_DATASET_TASKS);
+      })
+      .finally(() => { if (!cancelled) setTaskOptionsLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const handleCreate = (name: string, task?: string) => {
     setCreateDialog(false);
-    createDataset({ name, task: '目标检测' }).then(reload).catch((err) => console.warn('[datasets] createDataset failed', err));
+    // 任务类型取自系统设置字典（原为写死的「目标检测」）；缺省用当前列表首项。
+    createDataset({ name, task: task ?? taskOptions[0] ?? '' }).then(reload).catch((err) => console.warn('[datasets] createDataset failed', err));
   };
   const selectDataset = (item: DatasetRow) => {
     selectedIdRef.current = item.id;
@@ -158,7 +186,7 @@ export function DatasetWorkspace({ navigate, selectedDatasetId, datasetHomeKey, 
     setView('overview');
   };
   const selectVersion = (versionId: number) => { setSelectedVersionId(versionId); setSelectedRecordId(null); setSelectedDataId(null); };
-  return <div className="dataset-workspace">{view === 'list' && <><div className="dataset-list-heading"><div><div className="dataset-breadcrumb">数据管理 / 数据集列表</div><h2>数据集列表</h2><p>管理和浏览平台中的全部数据集，查看快照、成员数据与训练状态。</p></div><button className="primary-button" onClick={() => setCreateDialog(true)}><Plus size={15} />新建数据集</button></div><div className="dataset-rule"><GitBranch size={14} /><span>数据集以固定快照保存；焊缝版本记录单条数据的处理历史。</span><span className="dataset-rule-count">可训练 {rows.filter((item) => item.status === '可训练').length} 个</span></div>{listLoading ? <p className="dataset-empty-state" role="status">数据集列表加载中…</p> : <div className="dataset-table">{rows.map((item) => <button className="dataset-list-row" onClick={() => selectDataset(item)} key={item.id}><span className="dataset-row-icon"><Box size={17} /></span><span className="dataset-row-main"><strong>{item.name}</strong><small>{item.id} · {item.task}</small></span><span><small>样本数</small><strong className="mono">{item.samples}</strong></span><span><small>标注完成度</small><strong className="mono">{item.progress}</strong></span><span><small>当前快照</small><strong className="mono">{item.version ? `快照 ${item.version}` : '未生成'}</strong></span><StatusPill tone={item.tone}>{item.status}</StatusPill><ArrowUpRight size={15} className="muted-icon" /></button>)}</div>}{createDialog && <TextDialog title="新建数据集" label="数据集名称" initialValue="新建数据集" onCancel={() => setCreateDialog(false)} onConfirm={handleCreate} />}</>}{view === 'overview' && dataset && <DatasetDetail dataset={dataset} versionId={selectedVersionId} onShowRecords={() => setView('records')} onShowAllRecords={() => setView('dataset-records')} onVersionChange={selectVersion} />}{view === 'dataset-records' && dataset && <DatasetSourceRecords dataset={dataset} onBack={() => setView('overview')} onSelectRecord={(record) => { setRecordBackView('dataset-records'); setSelectedRecordId(record.weld_id); setSelectedDataId(record.weld_id); setSelectedVersionId(record.latest_version_id ?? selectedVersionId); setSelectedRecordSplit(null); setView('record-detail'); }} />}{view === 'records' && dataset && selectedVersionId != null && <DatasetRecords dataset={dataset} versionId={selectedVersionId} onBack={() => setView('overview')} onVersionChange={(versionId) => { selectVersion(versionId); setView('records'); }} onSelectRecord={(row) => { if (!row.weld_id) return; setRecordBackView('records'); setSelectedRecordId(row.weld_id); setSelectedRecordSplit(row.split); setSelectedDataId(row.weld_id); setView('record-detail'); }} />}{view === 'record-detail' && dataset && selectedVersionId != null && selectedRecordId && <DatasetRecordDetail weldId={selectedRecordId} dataset={dataset} versionId={selectedVersionId} split={selectedRecordSplit} onBack={() => setView(recordBackView)} setSelectedDataId={setSelectedDataId} navigate={navigate} />}</div>;
+  return <div className="dataset-workspace">{view === 'list' && <><div className="dataset-list-heading"><div><div className="dataset-breadcrumb">数据管理 / 数据集列表</div><h2>数据集列表</h2><p>管理和浏览平台中的全部数据集，查看快照、成员数据与训练状态。</p></div><button className="primary-button" disabled={taskOptionsLoaded && !taskOptions.length} title={taskOptionsLoaded && !taskOptions.length ? '请先在「系统设置 → 数据集任务类型」中配置至少一个任务类型' : undefined} onClick={() => setCreateDialog(true)}><Plus size={15} />新建数据集</button></div><div className="dataset-rule"><GitBranch size={14} /><span>数据集以固定快照保存；焊缝版本记录单条数据的处理历史。</span><span className="dataset-rule-count">可训练 {rows.filter((item) => item.status === '可训练').length} 个</span></div>{listLoading ? <p className="dataset-empty-state" role="status">数据集列表加载中…</p> : <div className="dataset-table">{rows.map((item) => <button className="dataset-list-row" onClick={() => selectDataset(item)} key={item.id}><span className="dataset-row-icon"><Box size={17} /></span><span className="dataset-row-main"><strong>{item.name}</strong><small>{item.id} · {item.task}</small></span><span><small>样本数</small><strong className="mono">{item.samples}</strong></span><span><small>标注完成度</small><strong className="mono">{item.progress}</strong></span><span><small>当前快照</small><strong className="mono">{item.version ? `快照 ${item.version}` : '未生成'}</strong></span><StatusPill tone={item.tone}>{item.status}</StatusPill><ArrowUpRight size={15} className="muted-icon" /></button>)}</div>}{createDialog && <TextDialog title="新建数据集" label="数据集名称" initialValue="新建数据集" onCancel={() => setCreateDialog(false)} onConfirm={handleCreate} choice={taskOptions.length ? { label: '任务类型（可在系统设置中维护）', options: taskOptions.map((task) => ({ value: task, label: task })) } : undefined} />}</>}{view === 'overview' && dataset && <DatasetDetail dataset={dataset} versionId={selectedVersionId} onShowRecords={() => setView('records')} onShowAllRecords={() => setView('dataset-records')} onVersionChange={selectVersion} />}{view === 'dataset-records' && dataset && <DatasetSourceRecords dataset={dataset} onBack={() => setView('overview')} onSelectRecord={(record) => { setRecordBackView('dataset-records'); setSelectedRecordId(record.weld_id); setSelectedDataId(record.weld_id); setSelectedVersionId(record.latest_version_id ?? selectedVersionId); setSelectedRecordSplit(null); setView('record-detail'); }} />}{view === 'records' && dataset && selectedVersionId != null && <DatasetRecords dataset={dataset} versionId={selectedVersionId} onBack={() => setView('overview')} onVersionChange={(versionId) => { selectVersion(versionId); setView('records'); }} onSelectRecord={(row) => { if (!row.weld_id) return; setRecordBackView('records'); setSelectedRecordId(row.weld_id); setSelectedRecordSplit(row.split); setSelectedDataId(row.weld_id); setView('record-detail'); }} />}{view === 'record-detail' && dataset && selectedVersionId != null && selectedRecordId && <DatasetRecordDetail weldId={selectedRecordId} dataset={dataset} versionId={selectedVersionId} split={selectedRecordSplit} onBack={() => setView(recordBackView)} setSelectedDataId={setSelectedDataId} navigate={navigate} />}</div>;
 }
 
 function DatasetDetail(props: { dataset: DatasetRow; versionId: number | null; onShowRecords: () => void; onShowAllRecords: () => void; onVersionChange: (versionId: number) => void }) {

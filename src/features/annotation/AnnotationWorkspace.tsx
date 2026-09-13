@@ -33,6 +33,17 @@ const mockLabelCategories: LabelCategory[] = [
   { id: 4, name: '咬边', color: null },
   { id: 5, name: '正常', color: null },
 ];
+
+/**
+ * 标签调色板只渲染**启用中**的类别（系统设置可停用）。
+ * 接口仍返回停用类别（供历史标注解析名称），故在此统一过滤；
+ * 全被停用时保留原列表，避免调色板空白导致无法标注。
+ */
+const activeLabels = (list: LabelCategory[]): LabelCategory[] => {
+  const enabled = list.filter((label) => label.active !== false);
+  return enabled.length ? enabled : list;
+};
+
 export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
   const [mode, setMode] = useState<string>('image');
   const [saved, setSaved] = useState(false);
@@ -61,7 +72,7 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
   const toggleLabel = (label: string) => setSelectedLabels((current) => current.includes(label) ? current.filter((item) => item !== label) : [...current, label]);
   useEffect(() => {
     let cancelled = false;
-    listLabelCategories().then((list) => { if (!cancelled && list.length) setLabels(list); }).catch((err) => { if (!cancelled) { setLabels(mockLabelCategories); console.warn('[annotation] listLabelCategories failed', err); } });
+    listLabelCategories().then((list) => { if (!cancelled && list.length) setLabels(activeLabels(list)); }).catch((err) => { if (!cancelled) { setLabels(mockLabelCategories); console.warn('[annotation] listLabelCategories failed', err); } });
     return () => { cancelled = true; };
   }, []);
   // 只从当前焊缝版本导入真实图片对象，禁止创建无样本的演示任务。
@@ -180,7 +191,7 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
 
   useEffect(() => {
     let cancelled = false;
-    listLabelCategories().then((list) => { if (!cancelled && list.length) setLabels(list); }).catch((err) => { setLabels(mockLabelCategories); console.warn('[annotation.signal] listLabelCategories failed', err); });
+    listLabelCategories().then((list) => { if (!cancelled && list.length) setLabels(activeLabels(list)); }).catch((err) => { setLabels(mockLabelCategories); console.warn('[annotation.signal] listLabelCategories failed', err); });
     return () => { cancelled = true; };
   }, []);
 

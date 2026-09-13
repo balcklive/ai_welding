@@ -135,9 +135,25 @@ def resolve_split_task(session: Session, identifier: str) -> SplitTask | None:
 
 
 def list_label_categories(session: Session) -> list[dict]:
-    """`GET /label-categories`：模型口径 6 类（seed，含熔池——LS 集成决策 4），按 id 升序。"""
-    cats = session.exec(select(LabelCategory).order_by(LabelCategory.id)).all()
-    return [{"id": c.id, "name": c.name, "color": c.color} for c in cats]
+    """`GET /label-categories`：模型口径 6 类（seed，含熔池——LS 集成决策 4）。
+
+    2026-09 起纳入系统设置管理：按 `(sort_order, id)` 升序返回**全部**类别（含停用），
+    每条带 `active` 标记——前端标签调色板只渲染 `active=true`，但历史标注引用的停用
+    类别仍能被解析出名称/颜色，不出现"标注变空白"。
+    """
+    cats = session.exec(
+        select(LabelCategory).order_by(LabelCategory.sort_order, LabelCategory.id)
+    ).all()
+    return [
+        {
+            "id": c.id,
+            "name": c.name,
+            "color": c.color,
+            "active": bool(c.active),
+            "sort_order": int(c.sort_order or 0),
+        }
+        for c in cats
+    ]
 
 
 def list_samples(
@@ -251,7 +267,14 @@ def pretag_sample(
     label_categories 确定性抽 2 个（不足 2 个取全部）；框坐标落在 640×480 内；
     confidence ∈ [0.72, 0.98]。annotator=`AI预标注`。**不 commit**（路由提交）。
     """
-    cats = list(session.exec(select(LabelCategory).order_by(LabelCategory.id)).all())
+    # 只从**启用中**的类别抽样：停用类别不应再被 AI 预标注带进新标注。
+    cats = [
+        c
+        for c in session.exec(
+            select(LabelCategory).order_by(LabelCategory.sort_order, LabelCategory.id)
+        ).all()
+        if bool(c.active)
+    ]
     names = [c.name for c in cats] or ["正常"]
     rng = random.Random(sample.id)
     picked = rng.sample(names, min(2, len(names)))

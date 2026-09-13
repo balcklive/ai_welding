@@ -10,7 +10,7 @@
 - `hooks/`：前端 React 钩子层（Task 20 起）。`useJob.ts` 通用异步任务轮询（消费 `api/jobs.getJob`）。详见 `hooks/CLAUDE.md`。
 - `pages/`：前端页面层（Task 20 起）。`Login.tsx` 最小登录页（登录成功写 token+user 到 localStorage 并通知外层）。详见 `pages/CLAUDE.md`。
 - `app/`：应用级路由与导航配置（Task 21 重构）。`navigation.ts` 定义 `Route` 联合类型 + `navStructure` 侧边栏树 + `workspaceHeaders` 页头文案，是 App.tsx 导航的单一来源。详见 `app/CLAUDE.md`。
-- `features/`：按业务域拆分的工作区页面（2026-08-29 重构自 App.tsx）。overview/datasets/registration/validation/versions/analysis/annotation/alignment/models/features/data-context 各一目录，由 App.tsx `WorkspaceFrame` 懒加载。详见 `features/CLAUDE.md` 及各子目录。
+- `features/`：按业务域拆分的工作区页面（2026-08-29 重构自 App.tsx）。overview/datasets/registration/validation/versions/analysis/annotation/alignment/models/features/data-context/**settings** 各一目录，由 App.tsx `WorkspaceFrame` 懒加载。详见 `features/CLAUDE.md` 及各子目录。
 - `shared/`：跨 feature 复用件。`components/`（Toolbar/PageIntro/StatusPill/InfoRow/TextDialog）+ `lib/`（formatting）。详见 `shared/CLAUDE.md`。
 - `components/`：业务组件。`annotation/AnnotoriousImageEditor.tsx` 统一图像/视频帧标注编辑器（Annotorious 适配层，坐标按原始像素）。详见 `components/CLAUDE.md`。
 - `App.buffer-regression.test.mjs`：Node 内置测试；静态断言 `Alignment` 切分页暴露 `bufferSeconds` 可编辑输入，且 `createSplitTask` 不再把 `keep_event_buffer` 硬编码为 `0.2`。

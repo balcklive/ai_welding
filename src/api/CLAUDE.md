@@ -1,6 +1,6 @@
 # CLAUDE.md — src/api/
 
-前端接口层（契约：`docs/API接口清单.md`）。当前进度：Task 18（`client.ts` + `types.ts`）+ **Task 19（9 个域模块全部完成：`auth`/`dashboard`/`welds`/`analysis`/`datasets`/`models`/`files`/`jobs`/`reports`）**。签名一律逐字对齐契约 §4.2（个别按后端实际返回体微调，见各模块注释）。
+前端接口层（契约：`docs/API接口清单.md`）。当前进度：Task 18（`client.ts` + `types.ts`）+ **Task 19（9 个域模块全部完成：`auth`/`dashboard`/`welds`/`analysis`/`datasets`/`models`/`files`/`jobs`/`reports`）** + **2026-09 `settings.ts`（系统设置·可选项字典，契约 §3.8）**。签名一律逐字对齐契约 §4.2（个别按后端实际返回体微调，见各模块注释）。
 
 ## 脚本
 
@@ -25,6 +25,7 @@
   - `files.ts`：`uploadFile(file, onProgress?)`（multipart `file` 字段，FormData 作 body 走 client 透传；fetch 无原生上传进度，完成后回调 100）/ `presignUpload({size, content_type, prefix, filename?})`（→ `{object_key, upload_url}`；**`filename` 必传**——缺省后端用 `"file"`，多文件全映射到同键 `raw/file` 互相覆盖，务必带真实文件名）/ `putFileDirect(uploadUrl, file, onProgress?)`（**XHR 直传预签名 PUT URL**，fetch 无上传进度故用 XHR `upload.onprogress` 回调百分比；MinIO 已放行 CORS——OPTIONS 预检反射 Origin，浏览器跨域 PUT 可用）/ `getFileUrl(objectKey, expires?)`（GET `/files/{key}/url`，key 含 `/` 走 `:path` 捕获，**不** encodeURIComponent 整串）。
   - `jobs.ts`：`getJob(jobId)`（GET `/jobs/{job_id}`，通用轮询）。
   - `reports.ts`：`exportReport(body)`（POST `/reports/export`，返回 `{urls:[{ref_id, url}]}`——契约 §4.2 写的 `{url}` 与后端实际 `{urls:[...]}` 不符，以后端/本实现为准）。
+  - `settings.ts`（**2026-09 系统设置·可选项字典**）：`listOptionGroups()`（GET `/settings/options` → `data.groups`，类型 `OptionGroup[]`，**刻意不传 `cacheTtlMs`**——设置页改完必须立刻生效，且写请求会清空 client 的 GET 缓存）/ `createOptionItem(groupKey, {value, color?})` / `updateOptionItem(groupKey, itemId, {value?, color?, active?})` / `moveOptionItem(groupKey, itemId, 'up'|'down')` / `deleteOptionItem(groupKey, itemId)`（返回 `{mode:'deleted'|'deactivated', value, references}`，前端按 mode 给提示，不自行判断可否删）。
 
 ## 坑/限制
 

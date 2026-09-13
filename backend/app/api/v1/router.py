@@ -16,6 +16,7 @@ from app.api.v1 import (
     labelstudio,
     models,
     reports,
+    settings,
     welds,
 )
 
@@ -30,3 +31,4 @@ api_router.include_router(files.router)
 api_router.include_router(jobs.router)
 api_router.include_router(reports.router)
 api_router.include_router(labelstudio.router)
+api_router.include_router(settings.router)

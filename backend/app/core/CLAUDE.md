@@ -13,6 +13,11 @@
 - `security.py`：**Task 5**。`hash_password(plain) -> str` / `verify_password(plain, hash) -> bool`（pwdlib `PasswordHash.recommended()`，Argon2）；`create_access_token(user: User) -> str`（PyJWT HS256，`sub=str(user.id)`，`exp = now + access_token_expire_minutes`，`iat` 已设）；`decode_token(token) -> int`（返回 user id，失败抛 `jwt.PyJWTError`/`ValueError`）。**坑：** pwdlib `verify` 对无法识别的哈希格式（如测试里随手填的 `"hash"`）会抛 `UnknownHashError`，`verify_password` 统一捕获按不匹配处理，避免坏哈希让登录 500。
 - `seed.py`：**Task 6**。`seed_admin(session)` 无 `users.username == admin_username` 时插管理员（林工/admin，argon2 哈希）；`seed_demo(session)` 写演示数据（数值对齐 `src/App.tsx`：4 条焊缝 + 版本链 v1.0→v1.3（0245 停在 v1.0）、0248 核验 93.3 + 15 条规则（第 9 项警告）、3 数据集 + 3 模型、标注页演示样本、审计日志）；`seed_all(session, *, demo=True)` = `seed_admin` +（`demo=True` 时）`seed_demo` + 末尾统一 `session.commit()`，**幂等**（按业务唯一键跳过）。**坑：** 全部走 ORM，无 MySQL 特有 SQL（SQLite 测试可用）；`Session(engine)` 的 `with` 退出只 close 不 commit，故 `seed_all` 必须自行 commit 数据才会落库。**`demo` 默认 True 仅供测试；`main.py` 传 `settings.seed_demo`（`SEED_DEMO`，默认 false）**——演示数据集带假账（`dataset_versions.item_count=5680` 但 `dataset_items` 空，前端"样本数 5680 点进去为空"即此），线上曾因此污染真实库并每次重启回灌，勿随意打开。
 
+- **2026-09 系统设置默认字典**：`seed_reference_data(session)` 除 6 个标签类别外（补齐 `sort_order`/`active`），
+  还幂等写入可选项字典出厂默认值 `DEFAULT_OPTION_ITEMS`（machine 3 项 / weld_method 3 项 /
+  source 3 项 / dataset_task 3 项，与字典化前前端硬编码一致；`product` 组留空由管理员在设置页维护）。
+  同组同名项已存在则**不覆盖**，管理员改名/停用不会被重启回灌；同样的默认值也写在迁移 `0015`（双写入，均幂等）。
+
 ## 坑/限制
 
 - **config.env_file 指向仓库根 `.env`**：`Path(__file__).resolve().parents[3] / ".env"`（本文件位于 backend/app/core/，往上 3 层 = 仓库根）。新增配置字段务必同步根 `.env` 与 `.env.example`。

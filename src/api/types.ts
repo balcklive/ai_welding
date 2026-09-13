@@ -123,6 +123,32 @@ export interface LabelCategory {
   id: number;
   name: string;
   color: string | null;
+  /** 是否启用（系统设置可停用；停用类别仍随接口返回，供历史标注解析名称/颜色）。 */
+  active?: boolean;
+  sort_order?: number;
+}
+
+/** 系统设置·可选项字典项（`GET /settings/options`）。 */
+export interface OptionItem {
+  id: number;
+  /** 选项值：即写入业务列的字符串（data_records.machine、datasets.task …）。 */
+  value: string;
+  color: string | null;
+  /** false = 已停用（历史数据仍展示，录入候选不再出现）。 */
+  active: boolean;
+  sort_order: number;
+}
+
+/** 系统设置·选项组（一组可维护的录入候选项）。 */
+export interface OptionGroup {
+  key: string;
+  label: string;
+  description: string;
+  /** 是否支持颜色（仅标注缺陷类别）。 */
+  color: boolean;
+  /** 录入页是否保留手工填写（数据来源/产品信息为候选提示而非强约束）。 */
+  free_text: boolean;
+  items: OptionItem[];
 }
 
 export interface Annotation {

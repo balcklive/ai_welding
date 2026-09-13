@@ -7,7 +7,7 @@
 - `InfoRow.tsx`：`InfoRow({label, value, accent})`——单行「标签/值」信息行（标注信息、详情页常用）。
 - `PageIntro.tsx`：`PageIntro({eyebrow, title, description, action})`——页头区（眉题 + 标题 + 描述 + 右侧动作区），多数 feature 页复用。
 - `StatusPill.tsx`：`StatusPill` + `StatusTone`（green/orange/red/blue/muted）——状态胶囊标签，`tone` 由调用方映射。
-- `TextDialog.tsx`：`TextDialog({title, label, initialValue, onCancel, onConfirm})`——带输入框的轻量确认对话框（新建数据集等）。
+- `TextDialog.tsx`：`TextDialog({title, label, initialValue, choice?, onCancel, onConfirm})`——带输入框的轻量确认对话框（新建数据集等）。**2026-09**：新增可选 `choice`（`{label, initialValue?, options[]}`）→ 追加一个下拉字段，`onConfirm(value, choiceValue?)` 第二参回传选择值（新建数据集的「任务类型」用它消费系统设置字典 `dataset_task`；`options` 为空时调用方不传 `choice`）。
 - `Toolbar.tsx`：`Toolbar({action, secondary, onAction, onRefresh, actionDisabled, exportType, exportRefIds})`——页面顶部工具栏；**承担报告导出**：`exportType`/`exportRefIds` 传给 `api/reports.exportReport`，成功后 `window.open(url)`。
 
 ## 调用链

@@ -43,6 +43,7 @@ const ROUTE_SEGMENTS = {
   'model-center/training': 'model-center/training',
   'model-center/testing': 'model-center/testing',
   'model-center/inference': 'model-center/inference',
+  settings: 'settings',
 } satisfies Record<Route, string>;
 
 /** 全部可寻址路由（顺序与 `ROUTE_SEGMENTS` 声明顺序一致）。 */
