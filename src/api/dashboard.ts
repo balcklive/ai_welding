@@ -6,14 +6,12 @@ import type {
   DashboardAttributes,
   DashboardDistributions,
   DashboardStats,
-  Project,
 } from './types';
 
 export interface DashboardData {
   stats: DashboardStats;
   attributes: DashboardAttributes;
   distributions: DashboardDistributions;
-  projects: Project[];
 }
 
 interface DashboardCacheEntry {
@@ -21,9 +19,9 @@ interface DashboardCacheEntry {
   data: DashboardData;
 }
 
-const DASHBOARD_CACHE_KEY = 'ai-welding:dashboard:v1';
+const DASHBOARD_CACHE_KEY = 'ai-welding:dashboard:v2';
 // Keep the browser cache short-lived so the overview remains current without
-// requesting all four aggregates on every hard refresh. When Redis is added,
+// requesting all three aggregates on every hard refresh. When Redis is added,
 // move this cache contract to a server-side Redis key and keep this module as
 // the API boundary; do not expose Redis credentials or connection details here.
 const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -76,11 +74,6 @@ export async function getDistributions(): Promise<DashboardDistributions> {
   return request<DashboardDistributions>('/dashboard/distributions');
 }
 
-/** 数据项目卡片（名称/状态/样本数/标注进度/最近更新）。 */
-export async function getProjects(): Promise<Project[]> {
-  return request<Project[]>('/dashboard/projects');
-}
-
 /**
  * Read all overview aggregates from one cache entry or fetch them together.
  * Future Redis migration: replace the localStorage read/write implementation
@@ -90,13 +83,12 @@ export async function getDashboardData(): Promise<DashboardData> {
   const cached = readDashboardCache();
   if (cached) return cached;
 
-  const [stats, attributes, distributions, projects] = await Promise.all([
+  const [stats, attributes, distributions] = await Promise.all([
     getStats(),
     getAttributes(),
     getDistributions(),
-    getProjects(),
   ]);
-  const data = { stats, attributes, distributions, projects };
+  const data = { stats, attributes, distributions };
   writeDashboardCache(data);
   return data;
 }

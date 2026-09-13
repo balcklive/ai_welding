@@ -19,13 +19,15 @@
     时间为 ISO-8601 UTC 字符串（`...Z`，内部 `_iso_utc`）；result/error 原样透传（None/dict，JSON 安全）。
   - `_iso_utc(dt) -> str | None`：时间序列化。**naive datetime 一律按 UTC 补 tzinfo 再转换**
     （SQLite/MySQL 读回时 tzinfo 被剥离，naive 即 UTC），避免 `astimezone` 按系统本地时区偏移。
-- `dashboard.py`：**Task 8**。总览四端点聚合查询（`get_stats` / `get_attributes` /
-  `get_distributions` / `get_projects`），供 `app/api/v1/dashboard.py` 路由调用。
-  形状对齐 `src/App.tsx` Overview 消费常量（manufacturers/transitionTypes/weldingTypes/
-  defectTypes/wordCloud/projects），**tone/颜色由前端映射，后端不输出**。模块级常量
+- `dashboard.py`：**Task 8**。总览三端点聚合查询（`get_stats` / `get_attributes` /
+  `get_distributions`），供 `app/api/v1/dashboard.py` 路由调用。**2026-09-14 删除
+  `get_projects`**（总览底部数据集卡片移除，`GET /dashboard/projects` 路由同步删除，
+  故本模块不再 import `Dataset` / `jobs._iso_utc`）。
+  形状对齐总览页消费常量（manufacturers/transitionTypes/weldingTypes/
+  defectTypes/wordCloud），**tone/颜色由前端映射，后端不输出**。模块级常量
   `DEFECT_VOCAB`（统计口径缺陷词表：气孔/焊瘤/未焊透/焊穿/咬边/夹渣，§3.2 与标注
   "标签类别"是两套词表勿混用）、`TRANSITION_BY_WELD_METHOD`（weld_method→过渡类型映射）。
-  时间序列化复用 `jobs._iso_utc`（不重复造轮子）。**计数一律用单条 group_by 查询**
+  **计数一律用单条 group_by 查询**
   （`_defect_counts` 按 category、`_weld_method_counts` 按 weld_method）汇总后查 dict，
   词表缺失默认 0，**避免 per-词条 N+1 查询**（评审发现并已修复）。
 - `welds.py`：**Task 10**。焊缝核心 CRUD，供 `app/api/v1/welds.py` 路由调用（契约 §3.3）。

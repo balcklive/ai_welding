@@ -288,15 +288,6 @@ export interface DatasetItemRow {
   weld_version?: string | null;
 }
 
-/** 数据项目卡片（总览，由数据集派生）：`{name, status, sample_count, progress, updated_at}`。 */
-export interface Project {
-  name: string;
-  status: string;
-  sample_count: number;
-  progress: number;
-  updated_at: string | null;
-}
-
 export interface Model {
   id: number;
   name: string;

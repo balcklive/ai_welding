@@ -1,6 +1,6 @@
-"""dashboard 域路由（Task 8）：四个总览端点。
+"""dashboard 域路由（Task 8）：三个总览端点。
 
-四个端点均需登录（router 级 `Depends(get_current_user)`），返回统一 `ok(...)` 信封。
+三个端点均需登录（router 级 `Depends(get_current_user)`），返回统一 `ok(...)` 信封。
 业务聚合查询在 `app.services.dashboard`。`/api/v1` 前缀由 main.py 挂载时统一添加。
 """
 
@@ -32,8 +32,3 @@ def get_distributions(session: Session = Depends(get_session)) -> dict:
     """分布图：厂商比重 / 过渡类型 / 焊接类型 / 缺陷分布 / 厂商词云。"""
     return ok(svc.get_distributions(session))
 
-
-@router.get("/projects")
-def get_projects(session: Session = Depends(get_session)) -> dict:
-    """数据项目卡片（从 datasets 派生）。"""
-    return ok(svc.get_projects(session))

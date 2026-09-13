@@ -1,12 +1,11 @@
-"""Dashboard 总览服务（Task 8）：四个总览端点的聚合查询。
+"""Dashboard 总览服务（Task 8）：三个总览端点的聚合查询。
 
 - `get_stats`：统计卡——数据总量 / 厂商总量 / 单条焊缝最大容量 / 已标注样本 + 完成度。
 - `get_attributes`：属性面板——焊机种类 / 缺陷种类 / 多模态种类 / 采集频率档位。
 - `get_distributions`：分布图——厂商比重 / 过渡类型 / 焊接类型 / 缺陷分布 / 厂商词云。
-- `get_projects`：数据项目卡片（从 `datasets` 派生）。
 
 形状对齐 `src/App.tsx` Overview 消费的常量（manufacturers / transitionTypes /
-weldingTypes / defectTypes / wordCloud / projects），字段名与前端一致；tone/颜色由
+weldingTypes / defectTypes / wordCloud），字段名与前端一致；tone/颜色由
 前端自己映射，后端不输出。缺陷分布用**统计口径**词表（§3.2 说明，含未焊透/焊穿/
 夹渣等更细类型），与标注用"标签类别"（焊瘤/气孔/未熔合/咬边/正常）是两套词表，勿混用。
 
@@ -20,8 +19,6 @@ from sqlmodel import Session, func, select
 
 from app.models.analysis import Annotation, Sample
 from app.models.data import DataRecord
-from app.models.datasets import Dataset
-from app.services.jobs import _iso_utc
 
 # 统计口径缺陷词表（§3.2 说明；含未焊透/焊穿/夹渣等，顺序对齐 App.tsx defectTypes）。
 DEFECT_VOCAB = ["气孔", "焊瘤", "未焊透", "焊穿", "咬边", "夹渣"]
@@ -155,25 +152,6 @@ def get_distributions(session: Session) -> dict:
         "defects": defects,
         "wordcloud": wordcloud,
     }
-
-
-def get_projects(session: Session) -> list[dict]:
-    """数据项目卡片：从 `datasets` 派生 `{name, status, sample_count, progress, updated_at}`。
-
-    status/sample_count/progress 原样来自数据集（标注中/可训练、数字样本数、百分比进度）；
-    updated_at 为 ISO-8601 UTC 字符串。tone 由前端按 status 映射。
-    """
-    datasets = session.exec(select(Dataset).order_by(Dataset.id)).all()
-    return [
-        {
-            "name": ds.name,
-            "status": ds.status,
-            "sample_count": ds.sample_count,
-            "progress": float(ds.progress) if ds.progress is not None else 0.0,
-            "updated_at": _iso_utc(ds.updated_at),
-        }
-        for ds in datasets
-    ]
 
 
 # ── 内部聚合助手 ──────────────────────────────────────────────────────

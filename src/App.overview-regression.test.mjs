@@ -5,11 +5,22 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('./features/overview/OverviewPage.tsx', import.meta.url), 'utf8');
 const overview = source.slice(source.indexOf('export function OverviewPage('), source.indexOf('function StatCard('));
 
-test('overview uses dataset terminology and links to all datasets', () => {
-  assert.match(overview, /<h2>数据集<\/h2>/);
-  assert.match(overview, /共 \{filteredProjects\.length\} 个数据集/);
-  assert.match(overview, /navigate\('data-center\/datasets'\)/);
-  assert.match(overview, /const displayedDatasets = filteredProjects\.slice\(0, 6\)/);
-  assert.match(overview, /displayedDatasets\.map/);
-  assert.doesNotMatch(overview, /<h2>数据项目<\/h2>/);
+test('overview no longer renders the bottom dataset card section', () => {
+  // 2026-09-14：总览底部「数据集」卡片区整体删除（含其跳转与取数代码）。
+  assert.doesNotMatch(overview, /<h2>数据集<\/h2>/);
+  assert.doesNotMatch(overview, /dataset-grid/);
+  assert.doesNotMatch(overview, /dataset-card/);
+  assert.doesNotMatch(overview, /displayedDatasets/);
+});
+
+test('overview drops the dataset-card navigation handlers and props', () => {
+  assert.doesNotMatch(overview, /navigate\('data-center\/datasets'\)/);
+  assert.doesNotMatch(overview, /navigate\('analysis\/select'\)/);
+  assert.doesNotMatch(overview, /export function OverviewPage\(\{/);
+});
+
+test('overview keeps the stats, attribute and distribution panels', () => {
+  assert.match(overview, /className="stat-grid"/);
+  assert.match(overview, /className="attr-grid"/);
+  assert.match(overview, /DonutChart/);
 });

@@ -105,7 +105,6 @@
 | `SignalIngest` | 真实信号导入（Job：CSV 挂载后自动触发，校验+启发式+写 Parquet） | id, job_id, version_id, source_object_key, status(pending/succeeded/failed), sample_rate, duration, row_count, parquet_key, events, anomalies, validation, error |
 | `Dataset` | 数据集 | id, name, task, sample_count, progress, current_version, status(标注中/可训练) |
 | `DatasetVersion` | 数据集版本（固定快照） | id, dataset_id, version_no, split{train/val/test}, item_count, snapshot_id, quality{repeat_rate, empty_label_rate, ...} |
-| `Project` | 数据项目卡片（总览，由数据集派生） | name, status(标注中/可训练), sample_count, progress, updated_at（**无 `id` 字段**，后端 `get_projects` 不输出） |
 | `DatasetItem` | 数据集版本成员（固定样本清单） | dataset_version_id, sample_id, split |
 | `Model` | 模型仓库条目 | id, name, type, description（版本/指标/状态见 `ModelVersion`） |
 | `ModelVersion` | 模型版本（训练产出，状态可流转） | id, model_id, version_no, metric, status(生产候选/训练中/实验版本), file_key |
@@ -132,7 +131,6 @@
 | GET | `/api/v1/dashboard/stats` | 统计卡：数据总量 / 厂商总量 / 最大容量 / 已标注样本+完成度 | 需登录 |
 | GET | `/api/v1/dashboard/attributes` | 属性面板：焊机种类 / 缺陷种类 / 多模态种类 / 采集频率档位 | 需登录 |
 | GET | `/api/v1/dashboard/distributions` | 分布图：厂商比重 / 过渡类型 / 焊接类型 / 缺陷分布 / 厂商词云 | 需登录 |
-| GET | `/api/v1/dashboard/projects` | 数据项目卡片（名称/状态/样本数/标注进度/最近更新） | 需登录 |
 
 > 说明：总览"缺陷分布"为**统计口径**（可含未焊透/焊穿/夹渣等更细缺陷类型，由缺陷分类统计聚合）；与标注用"标签类别"（模型口径，§3.4 `label-categories`，焊瘤/气孔/未熔合/咬边/正常）是两套词表，勿混用。
 
@@ -264,7 +262,6 @@ getMe(): Promise<User>
 getStats(): Promise<DashboardStats>
 getAttributes(): Promise<DashboardAttributes>
 getDistributions(): Promise<DashboardDistributions>
-getProjects(): Promise<Project[]>
 
 // welds.ts
 listWelds(params: WeldListQuery): Promise<Page<DataRecord>>          // GET /welds（WeldListQuery 含 dataset_id 可选，归属数据集精确筛选）
@@ -352,7 +349,6 @@ exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string
 | 总览 · 四个统计卡 | `dashboard.getStats()` | `GET /dashboard/stats` |
 | 总览 · 属性面板（焊机/缺陷/多模态/频率） | `dashboard.getAttributes()` | `GET /dashboard/attributes` |
 | 总览 · 占比分布/词云 | `dashboard.getDistributions()` | `GET /dashboard/distributions` |
-| 总览 · 数据项目卡片 | `dashboard.getProjects()` | `GET /dashboard/projects` |
 | 数据列表 · 筛选/分页/去重 | `welds.listWelds(params)` | `GET /welds` |
 | 数据列表 · 选中数据上下文 | `welds.getWeld(id)` | `GET /welds/{weld_id}` |
 | 数据登记 · 新建/编辑 | `welds.createRegistration()` `updateRegistration()` | `POST` / `PATCH /registrations` |

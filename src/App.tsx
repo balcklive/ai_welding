@@ -63,7 +63,7 @@ function AppShell() {
     </aside>
     <main className="main-content">
       <Suspense fallback={<div className="dataset-empty-state" role="status">页面加载中…</div>}>
-        {route === 'overview' && <OverviewPage navigate={navigate} />}
+        {route === 'overview' && <OverviewPage />}
         {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} datasetHomeKey={datasetHomeKey} navigate={navigate} />}
       </Suspense>
     </main>

@@ -1,16 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
-  Activity, ArrowUpRight, BarChart3, Box, Database, Factory, FileCheck2,
-  Filter, Gauge, Layers3, MoreHorizontal, WandSparkles, Waves, Boxes,
+  Activity, BarChart3, Box, Database, Factory, FileCheck2,
+  Gauge, Layers3, WandSparkles, Waves, Boxes,
 } from 'lucide-react';
 import { getDashboardData } from '../../api/dashboard';
 import type { DashboardData } from '../../api/dashboard';
-import type { Project } from '../../api/types';
-import type { Route } from '../../app/navigation';
 import { PageIntro } from '../../shared/components/PageIntro';
-
-const fmtDT = (iso: string | null | undefined): string =>
-  iso ? iso.replace('T', ' ').slice(0, 16) : '—';
 
 // ── 总览/数据列表 API 接线辅助（Task 21） ─────────────────────────────
 /** 分布/缺陷统一色调板（API 不输出颜色，按数据顺序取色）。 */
@@ -52,33 +47,7 @@ function parseFreq(tier: string): number {
   return m ? parseFloat(m[0]) : 0;
 }
 
-/** 数据项目卡片展示形状（progress 已字符串化为 "68%"）。 */
-interface ProjectCard {
-  name: string;
-  count: string;
-  status: string;
-  tone: string;
-  progress: string;
-  updatedAt: string | null;
-}
-const projectTone = (status: string): string => {
-  if (status === '标注中') return 'blue';
-  if (status === '可训练' || status === '已完成') return 'green';
-  return 'orange';
-};
-function mapProject(p: Project): ProjectCard {
-  return {
-    name: p.name,
-    count: p.sample_count.toLocaleString(),
-    status: p.status,
-    tone: projectTone(p.status),
-    progress: `${p.progress}%`,
-    updatedAt: p.updated_at,
-  };
-}
-
-export function OverviewPage({ navigate }: { navigate: (route: Route) => void }) {
-  const [activeProject] = useState(0);
+export function OverviewPage() {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -96,10 +65,7 @@ export function OverviewPage({ navigate }: { navigate: (route: Route) => void })
     return <div className="page-wrap"><PageIntro eyebrow="数据资产中心" title="数据总览" description="全面掌握焊接数据资产的规模、来源与质量分布。" /><section className="panel"><p>{error ? `数据加载失败：${error}` : '正在加载数据总览…'}</p></section></div>;
   }
 
-  const { stats, attributes: attrs, distributions: dist, projects: apiProjects } = dashboard;
-  const projects = apiProjects.map(mapProject);
-  const filteredProjects = projects;
-  const displayedDatasets = filteredProjects.slice(0, 6);
+  const { stats, attributes: attrs, distributions: dist } = dashboard;
   const freqValues = attrs.sample_rate_tiers.map(parseFreq).filter((n) => n > 0);
   const freqMin = freqValues.length ? Math.min(...freqValues) : null;
   const freqMax = freqValues.length ? Math.max(...freqValues) : null;
@@ -125,8 +91,6 @@ export function OverviewPage({ navigate }: { navigate: (route: Route) => void })
       <section className="panel defect-panel"><div className="panel-heading"><div><h2>缺陷类型分布</h2><p>各类缺陷样本数量统计</p></div></div><div className="defect-chart">{dist.defects.map((defect, index) => <div className="defect-bar-row" key={defect.name}><span className="defect-label">{defect.name}</span><div className="defect-bar-track"><span style={{ width: `${(defect.count / maxDefectCount) * 100}%`, background: donutPalette[index % donutPalette.length] }} /></div><span className="defect-count">{defect.count.toLocaleString()}</span></div>)}</div></section>
       <section className="panel wordcloud-panel"><div className="panel-heading"><div><h2>焊接厂商词云</h2><p>按数据量大小排列厂商名称</p></div></div><div className="wordcloud">{dist.wordcloud.map((word, index) => <span className="wordcloud-item" style={{ fontSize: `${word.size}px`, opacity: 0.45 + word.size / 50, color: index < 3 ? '#2c9caf' : index < 6 ? '#5fb8a6' : '#7a9b9d' }} key={word.name}>{word.name}</span>)}</div></section>
     </div>
-
-    <div className="section-title"><div><h2>数据集</h2><p>共 {filteredProjects.length} 个数据集</p></div><div><button className="ghost-button" onClick={() => navigate('data-center/datasets')}>查看全部数据集 <ArrowUpRight size={14} /></button><button className="ghost-button"><Filter size={15} />筛选</button></div></div><div className="dataset-grid">{displayedDatasets.map((project, index) => <div className={`dataset-card ${index === activeProject ? 'current' : ''}`} key={project.name}><div className="dataset-top"><div className={`dataset-icon ${project.tone}`}><Box size={18} /></div><span className={`status ${project.tone}`}>{project.status}</span><MoreHorizontal size={17} className="muted-icon" /></div><h3>{project.name}</h3><p>{project.updatedAt ? `最近更新于 ${fmtDT(project.updatedAt)}` : '暂无更新时间'}</p><div className="progress-meta"><span>标注进度</span><strong>{project.progress}</strong></div><div className="progress"><span style={{ width: project.progress }} /></div><div className="dataset-footer"><span><Layers3 size={14} />{project.count} 条样本</span><button onClick={() => navigate('analysis/select')}>查看详情 <ArrowUpRight size={14} /></button></div></div>)}</div>
   </div>;
 }
 function StatCard({ icon: Icon, label, value, sub }: { icon: typeof Database; label: string; value: string; sub: string }) { return <div className="stat-card"><div className="stat-icon"><Icon size={18} /></div><span className="stat-label">{label}</span><strong>{value}</strong><span className="stat-sub">{sub}</span></div>; }

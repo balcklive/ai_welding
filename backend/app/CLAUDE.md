@@ -16,7 +16,7 @@
 - `schemas/`：统一响应信封 `ok/err` + 分页 `paginate`（Task 3，详见 `schemas/CLAUDE.md`）。
 - `services/`：跨域复用业务服务。`jobs.py` = 通用 Job 生命周期
   （create_job/mark_* /to_job_payload，状态机 pending→running→succeeded/failed，**不 commit** 由调用方落库），
-  `dashboard.py` = **Task 8** 总览四端点聚合查询（get_stats/get_attributes/get_distributions/get_projects），
+  `dashboard.py` = **Task 8** 总览三端点聚合查询（get_stats/get_attributes/get_distributions；`get_projects` 已随总览数据集卡片删除，2026-09-14），
   `welds.py` = **Task 10** 焊缝核心 CRUD（业务号生成 / 列表筛选 / 登记 / 版本 / 15 项确定性核验引擎 +
   `list_through_welds` 供 analysis candidates），
   `dsp.py` + `signals.py` = **Task 11**（真实 DSP 纯函数 + 确定性信号生成），
