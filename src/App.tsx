@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ChevronDown, MoreHorizontal, Settings2,
 } from 'lucide-react';
@@ -13,6 +13,7 @@ import {
 } from './features/data-context/DataContext';
 import { navStructure, workspaceHeaders } from './app/navigation';
 import type { Route } from './app/navigation';
+import { DEFAULT_ROUTE, parseHashRoute, routeToHash } from './app/route-url';
 
 const OverviewPage = lazy(() => import('./features/overview/OverviewPage').then((module) => ({ default: module.OverviewPage })));
 const DatasetWorkspace = lazy(() => import('./features/datasets/DatasetWorkspace').then((module) => ({ default: module.DatasetWorkspace })));
@@ -28,18 +29,72 @@ const Training = lazy(() => import('./features/models/ModelCenter').then((module
 const ModelTestLive = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.ModelTestLive })));
 const InferencePanel = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.InferencePanel })));
 
+/** 初始路由 = URL hash 解析结果；空/非法 hash 回落总览。 */
+function resolveInitialRoute(): Route {
+  return parseHashRoute(window.location.hash) ?? DEFAULT_ROUTE;
+}
+
 function AppShell() {
-  const [route, setRoute] = useState<Route>('overview');
+  // 阶段一（2026-09-14）：路由的唯一来源是 URL hash，浏览器前进/后退、刷新、
+  // 收藏与分享链接均以 `#/<route>` 为准（映射见 app/route-url.ts）。
+  const [route, setRoute] = useState<Route>(resolveInitialRoute);
   const [datasetHomeKey, setDatasetHomeKey] = useState(0);
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // 深链首屏也要展开所属一级分组，否则侧栏看不到当前子菜单高亮（看起来像没生效）。
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
+    () => new Set([resolveInitialRoute().split('/')[0]]),
+  );
   const workspace = route.split('/')[0];
-  const navigate = (r: Route) => {
-    setRoute(r);
-    if (r === 'data-center/datasets') setDatasetHomeKey((value) => value + 1);
-    setExpandedGroups((prev) => new Set(prev).add(r.split('/')[0]));
-  };
+  // route 的同步镜像：navigate/popstate 内即时读写，避免同一 tick 连点产生重复历史条目。
+  const routeRef = useRef(route);
+  useEffect(() => { routeRef.current = route; }, [route]);
+  /** 路由落地后的公共副作用：展开一级分组 + 数据集回到列表首页。 */
+  const applyRoute = useCallback((next: Route) => {
+    const group = next.split('/')[0];
+    setExpandedGroups((prev) => (prev.has(group) ? prev : new Set(prev).add(group)));
+    if (next === 'data-center/datasets') setDatasetHomeKey((value) => value + 1);
+  }, []);
+  const navigate = useCallback((target: Route, options?: { replace?: boolean }) => {
+    const sameRoute = target === routeRef.current;
+    const url = routeToHash(target);
+    // 同一路由不写新历史条目（防重复点击撑爆历史栈），但仍执行副作用——
+    // 「已选中数据集子菜单时再点一次」= 回到数据集列表，这个手势必须保留。
+    if (options?.replace || sameRoute) window.history.replaceState({ route: target }, '', url);
+    else window.history.pushState({ route: target }, '', url);
+    if (!sameRoute) {
+      routeRef.current = target;
+      setRoute(target);
+    }
+    applyRoute(target);
+  }, [applyRoute]);
+  // 浏览器前进/后退（popstate）、手改地址栏（hashchange）→ 回写路由状态。
+  useEffect(() => {
+    const syncFromUrl = () => {
+      const next = parseHashRoute(window.location.hash);
+      if (next === null) {
+        // 空/非法 hash：归一到当前路由，避免脏历史条目被前进/后退反复命中。
+        window.history.replaceState({ route: routeRef.current }, '', routeToHash(routeRef.current));
+        return;
+      }
+      if (next === routeRef.current) return;
+      routeRef.current = next;
+      setRoute(next);
+      applyRoute(next);
+    };
+    window.addEventListener('popstate', syncFromUrl);
+    window.addEventListener('hashchange', syncFromUrl);
+    return () => {
+      window.removeEventListener('popstate', syncFromUrl);
+      window.removeEventListener('hashchange', syncFromUrl);
+    };
+  }, [applyRoute]);
+  // 首次挂载：保证「URL 始终反映当前路由」，空/非法 hash 一律归一化。
+  useEffect(() => {
+    if (parseHashRoute(window.location.hash) !== routeRef.current) {
+      window.history.replaceState({ route: routeRef.current }, '', routeToHash(routeRef.current));
+    }
+  }, []);
   const toggleGroup = (id: string) => setExpandedGroups((prev) => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
