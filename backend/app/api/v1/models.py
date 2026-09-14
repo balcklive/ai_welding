@@ -312,7 +312,7 @@ def create_test_task(
     if int(split.get("test", 0) or 0) <= 0:
         return err(40000, "当前数据集版本无可用测试集", status=400)
     dims = dataset_svc._dimension_availability_from_samples(
-        dataset_svc.samples_for_version(session, dataset_version.id)
+        session, dataset_svc.samples_for_version(session, dataset_version.id)
     )
     if not svc.model_compatible_with_dataset(model.type, dims, dataset.task):
         return err(40000, "模型版本与数据集版本不匹配", status=400)

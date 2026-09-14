@@ -206,3 +206,104 @@ def test_repeat_rate_counts_by_object_keys_and_ignores_empty_ones(engine):
         assert quality["empty_label_rate"] == 0.0
         # 3 条无产物各自唯一 → 3/5 有效
         assert quality["effective_ratio"] == 0.6
+
+# ── R3：时序维度必须由**真实导入的通道**驱动 ─────────────────────────
+
+
+def _ingest(
+    session: Session, version_id: int, column_map: dict, status: str = "succeeded"
+) -> None:
+    from app.models.analysis import SignalIngest
+
+    job = _job(session, "signal_ingest", status)
+    session.add(
+        SignalIngest(
+            job_id=job.id,
+            version_id=version_id,
+            source_object_key=f"raw/{uuid4().hex[:8]}.csv",
+            status=status,
+            column_map=column_map,
+        )
+    )
+    session.flush()
+
+
+def test_time_series_dimensions_come_from_imported_channels(engine):
+    """同一份 `.csv`，通道不同 → 维度结论不同。
+
+    改造前 `_dimension_availability_from_samples` 看见 `.csv` 扩展名（甚至文件名里有 `current`）
+    就把 电流/电压/气流/送丝/焊接速度 全部点亮——缺列的 CSV 也能"字段完备"，属于假通过。
+    """
+    from app.services.datasets import _dimension_availability_from_samples
+
+    with Session(engine) as session:
+        _, record, version = _dataset_with_record(session, "只有电流列的数据集")
+        # 只有电流与时间列：没有电压 / 气流 / 送丝 / 焊接速度
+        _ingest(session, version.id, {"time": "time", "cur": "Current"})
+        sample = Sample(
+            object_keys=["processed/x/1/000001.csv"],
+            meta={"source": "dataset_record", "record_id": record.id},
+        )
+        session.add(sample)
+        session.flush()
+
+        dims = _dimension_availability_from_samples(session, [sample])
+
+        assert dims["Current"] is True
+        assert dims["Voltage"] is False, "缺电压列的 CSV 不得被判成电压已具备"
+        assert dims["GasSpeed"] is False
+        assert dims["送丝速度"] is False
+        assert dims["焊接速度"] is False
+
+        # 补上标准多模态通道后逐项点亮
+        _ingest(
+            session,
+            version.id,
+            {"time": "time", "cur": "Current", "vol": "Voltage", "gas": "GasSpeed", "wir": "WireFeedSpeed", "weld_speed": "WeldingSpeed"},
+        )
+        dims = _dimension_availability_from_samples(session, [sample])
+        assert all(dims[name] for name in ("Current", "Voltage", "GasSpeed", "送丝速度", "焊接速度"))
+
+
+def test_failed_or_missing_import_does_not_light_up_time_series_dimensions(engine):
+    """导入失败 / 还在排队 / 根本没有 CSV：都不算"已具备"（只认 succeeded 的 column_map）。"""
+    from app.services.datasets import _dimension_availability_from_samples
+
+    with Session(engine) as session:
+        _, record, version = _dataset_with_record(session, "导入失败的数据集")
+        _ingest(session, version.id, {"time": "time", "cur": "Current"}, status="failed")
+        _ingest(session, version.id, {"time": "time", "cur": "Current"}, status="running")
+        sample = Sample(object_keys=["raw/x.csv"], meta={"source": "dataset_record", "record_id": record.id})
+        session.add(sample)
+        session.flush()
+
+        dims = _dimension_availability_from_samples(session, [sample])
+        assert dims["Current"] is False
+        assert dims["Voltage"] is False
+
+
+def test_time_series_dimensions_survive_analysis_versions(engine):
+    """分析产物版本会把 `latest_version_id` 指走且自身没有导入行——按"当前版本"查通道会看丢。
+
+    所以通道按**登记数据的全部版本**取：CSV 挂在 v1.0，v1.1 是「时间对齐」产物，仍要认得电流电压。
+    """
+    from app.services.datasets import _dimension_availability_from_samples
+
+    with Session(engine) as session:
+        _, record, version = _dataset_with_record(session, "有分析版本的数据集")
+        _ingest(session, version.id, {"time": "time", "cur": "Current", "vol": "Voltage"})
+        aligned = DataVersion(
+            record_id=record.id, version_no="v1.1", action="时间对齐", object_keys=[]
+        )
+        session.add(aligned)
+        session.flush()
+        record.latest_version_id = aligned.id
+        sample = Sample(
+            object_keys=["processed/x/1/000001.csv"],
+            meta={"source": "dataset_record", "record_id": record.id},
+        )
+        session.add(sample)
+        session.flush()
+
+        dims = _dimension_availability_from_samples(session, [sample])
+        assert dims["Current"] and dims["Voltage"]

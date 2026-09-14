@@ -13,7 +13,10 @@
   序号 = 该类别前缀记录数 + 1（零填充 3 位）。
 - `INPUT_DIMENSIONS`（9 项）与 `REQUIRED_BY_TASK` 见下方常量：`required` 同时驱动字段面板的
   "当前任务必需"与 T2.3 的「必需字段缺失」扣分，改之前先读常量的注释。
-  维度可用性由**样本 object_keys 按扩展名/内容启发式**判定（真实数据判定见 T2.3 的遗留项）。
+  维度可用性（R3，2026-09-14）：**时序维度**按真实导入成功的通道（`SignalIngest.column_map`
+  → `CHANNEL_TO_DIMENSION`）判定，**视觉维度**按样本 `object_keys` 的扩展名判定——
+  改造前两者都靠文件名启发式，"看见 `.csv` 就等于电流电压齐全"是假通过（见
+  `_dimension_availability_from_samples`）。
 - readiness 照 `ModelReadiness`：每任务 4 项检查，全部 passed → 可训练（后端闸门，D2）。
 - 构建分片：候选样本按 record_id 分组 → 稳定 seed 打乱组序 → 8:1:1 划分，**同样本切片
   绝不跨 split**（防泄漏）。组数 <3 时退化为 train / train+test（宁可少分片也不泄漏）。
@@ -504,10 +507,12 @@ def dataset_payload(
 
 
 def get_dimensions(session: Session, dataset: Dataset) -> list[dict]:
-    """7 项输入维度：`{name, status(已具备|必需|缺失), required}`。
+    """9 项输入维度：`{name, status(已具备|必需|缺失), required}`。
 
-    可用性由当前版本样本的 object_keys 启发式判定（视频→熔池视频、图像→焊缝照片/熔池
-    特征、时序→Current/Voltage/GasSpeed、音频→Sound_feature）。
+    可用性判定分两套（R3）：**时序维度**（电流/电压/气流/送丝/焊接速度）看真实导入成功的通道，
+    缺列的 CSV 不会被判成"已具备"；**视觉/音频维度**看对象键扩展名（视频→熔池视频、
+    图片→焊缝照片与熔池特征、音频→声学特征）。两者共用 `_dimension_availability_from_samples`，
+    与 quality 的「必需字段缺失」扣分是同一份依据。
     """
     available = _dimension_availability(session, dataset)
     required = set(REQUIRED_BY_TASK.get(dataset.task, []))
@@ -569,15 +574,64 @@ def _current_version_samples(session: Session, dataset: Dataset) -> list[Sample]
 
 def _dimension_availability(session: Session, dataset: Dataset) -> dict[str, bool]:
     """当前版本成员样本的维度可用性（`get_dimensions`/`get_readiness` 用）。"""
-    return _dimension_availability_from_samples(_current_version_samples(session, dataset))
+    return _dimension_availability_from_samples(session, _current_version_samples(session, dataset))
 
 
-def _dimension_availability_from_samples(samples: list[Sample]) -> dict[str, bool]:
-    """按样本 `object_keys` 启发式判定各维度可用性（构建 quality 用**当前批样本**）。
+#: 真实信号导入的通道 id（`signal_ingest` 的 `column_map`）→ 字段面板维度名（R3）。
+#: 时序维度**只认这里**：看到 `.csv` 就说"电流电压齐全"是 T2.3 要修的假通过。
+CHANNEL_TO_DIMENSION: dict[str, str] = {
+    "cur": "Current",
+    "vol": "Voltage",
+    "gas": "GasSpeed",
+    "wir": "送丝速度",
+    "weld_speed": "焊接速度",
+}
+
+
+def _channels_by_record(
+    session: Session, record_ids: set[int]
+) -> dict[int, set[str]]:
+    """每条登记数据**可用的真实通道**：来自它**全部数据版本**里导入成功的 CSV。
+
+    为什么按 record 而不是按"当前版本"：CSV 挂在 v1.0 上，而分析产物版本（对齐/分段/特征）会
+    把 `latest_version_id` 指走、自身没有导入行——按当前版本查会把已有信号的数据看成没有通道。
+    只认 `succeeded`：导入失败 / 还在排队 / 根本没有 CSV 都不算"已具备"。
+    """
+    channels: dict[int, set[str]] = defaultdict(set)
+    if not record_ids:
+        return channels
+    rows = session.exec(
+        select(DataVersion.record_id, SignalIngest.column_map)
+        .join(SignalIngest, SignalIngest.version_id == DataVersion.id)
+        .where(
+            DataVersion.record_id.in_(record_ids), SignalIngest.status == "succeeded"
+        )
+    ).all()
+    for record_id, column_map in rows:
+        channels[record_id] |= set((column_map or {}).keys())
+    return channels
+
+
+def _dimension_availability_from_samples(
+    session: Session,
+    samples: list[Sample],
+    record_ids: dict[int, int | None] | None = None,
+) -> dict[str, bool]:
+    """各维度可用性（构建 quality / 字段面板 / readiness 共用一份依据）。
+
+    - **视觉维度**（熔池视频 / 焊缝照片 / 熔池特征 / 声学特征）：按样本对象键的扩展名——
+      图片、视频没有可解析的列结构，扩展名是能做到的最好依据；
+    - **时序维度**（电流 / 电压 / 气流速度 / 送丝速度 / 焊接速度）：按**真实导入成功的通道**
+      判定（`_channels_by_record`）。R3 之前这里是"看见 `.csv` 或文件名里有 current 就点亮
+      全部时序字段"——一张 `raw/202.jpg`、一个缺列的 CSV 都能让字段面板判"已具备"。
 
     坑：quality 计算在 `datasets.current_version_id` 回填**之前**，若按数据集当前版本查样本
     会拿到 None/旧版本 → 必需维度恒判缺失。故 quality 必须传本次构建的 in-flight 样本。
+
+    `record_ids`（样本 → 登记数据 id）由调用方传可省一次全表预载；不传时用 `_RecordResolver`
+    现算。ponytail: 面板/训练闸门这条路径会预载 4 张表，几万行规模由 R5 一起下推 SQL。
     """
+
     available: dict[str, bool] = {d: False for d in INPUT_DIMENSIONS}
     for sample in samples:
         for key in sample.object_keys or []:
@@ -590,20 +644,20 @@ def _dimension_availability_from_samples(samples: list[Sample]) -> dict[str, boo
                 available["Molten_feature"] = True
             if low.endswith(_AUDIO_EXTS) or "audio" in low:
                 available["Sound_feature"] = True
-            if (
-                low.endswith(_TS_EXTS)
-                or "timeseries" in low
-                or "current" in low
-                or "voltage" in low
-                or "gas" in low
-                or "wire" in low
-            ):
-                available["Current"] = True
-                available["Voltage"] = True
-                available["GasSpeed"] = True
-                # 标准多模态 CSV 同时带 wir / weld_speed 通道（见 signal_ingest 的列映射）
-                available["送丝速度"] = True
-                available["焊接速度"] = True
+
+    if not samples:
+        return available
+    if record_ids is None:
+        resolver = _RecordResolver(session)
+        record_ids = {s.id: resolver.resolve(s) for s in samples}
+    channels = _channels_by_record(
+        session, {rid for rid in record_ids.values() if rid is not None}
+    )
+    for sample in samples:
+        for channel_id in channels.get(record_ids.get(sample.id), ()):
+            dimension = CHANNEL_TO_DIMENSION.get(channel_id)
+            if dimension:
+                available[dimension] = True
     return available
 
 
@@ -625,7 +679,7 @@ def readiness_for_version(
     empty_label_rate = quality.get("empty_label_rate")
     annotation_ok = empty_label_rate is not None and empty_label_rate == 0
     dims = (
-        _dimension_availability_from_samples(sample_rows)
+        _dimension_availability_from_samples(session, sample_rows)
         if version is not None
         else _dimension_availability(session, dataset)
     )
@@ -1610,7 +1664,7 @@ def _compute_quality(
     required = REQUIRED_BY_TASK.get(dataset.task, [])
     if required:
         for s in samples:
-            available = _dimension_availability_from_samples([s])
+            available = _dimension_availability_from_samples(session, [s], record_ids)
             if any(not available.get(name) for name in required):
                 failures[s.id].add("missing_field")
 
