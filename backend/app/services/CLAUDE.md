@@ -171,7 +171,7 @@
     `record_id` 仍要求 `,`/`}` 值边界、weld_id 要求完整闭引号，故不使用 JSON path/dialect 函数且避免
     `12` 误配 `123`。页内仍批量补查未关联的 meta，避免列表循环 `session.get(...)`。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
-    空则兜底合成样本（覆盖全部登记焊缝各 `_SYNTH_PER_RECORD` 个）→ 按 record_id 分组 →
+    空则报"没有可用于构建数据集的真实样本"（**不再兜底合成样本**）→ 按 record_id 分组 →
     稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落
     `dataset_items` → 计算 quality（repeat_rate/empty_label_rate/dimension_missing_rate）→
     快照 JSON 写 MinIO `datasets/{version.id}/snapshot.json`（**尽力而为**，失败仅告警）→
@@ -179,6 +179,20 @@
     **坑（review 修复）**：quality 的 `dimension_missing_rate` 必须用**本次构建的 in-flight
     samples**（`_dimension_availability_from_samples`）判维度——`datasets.current_version_id`
     在 quality 计算之后才回填，按当前版本查样本会让首次构建的维度缺失率恒为 1.0。
+    **T11（2026-09-14，成员口径与判重）**：来源白名单与判重规则都改过，改这两处前先读
+    `tests/test_dataset_members.py`——
+    ① `_samples_for_dataset_records` 不再是"数据集下全部 Sample 都收"：每条登记数据
+    **二选一**（`_latest_succeeded_split_task` 取最近一次**成功**分段任务的切片；否则一条
+    `meta.source="dataset_record"` 的基础样本，引用 `record.latest_version_id`），且用
+    `_is_annotation_anchor` **排除标注锚点样本**（`meta.source` 以 `-anchor` 结尾 / 只有
+    `annotation_task_id` 无切分归属）——它们是标注工作台锚点，不是切片；
+    ② `_compute_quality` 的 repeat_rate 判重键从 `(record_id, frame_no)` 改为
+    `(record_id, object_keys)`，且**无产物的样本视为唯一**。
+    为什么不能退回：实测线上数据集 1 的 8 个成员里 7 个是锚点样本，`frame_no` 为 NULL 全塌成
+    一个键 → repeat_rate 假报 0.75；数据集 7 会把陈旧基础样本与 66 个切片混成一个版本。
+    ③ `run_build` 另加两条告警（不拦截）：无主样本（`record_id is None`，防泄漏分组对它退化
+    成每条一组）与成员数超 `MEMBER_WARN_THRESHOLD`。"构建前要求用户确认"尚未实现（需新契约）。
+    **注意**：`filter` 与 `annotation_task` 两种来源**未加**锚点排除（用户显式指定，属预期）。
   - `get_lineage` = 4 层节点：原始焊缝 / 标注任务 / 数据集版本 / 模型训练。
   - 解析辅助 `_sample_record_id`：样本 → 所属焊缝（meta.record_id > meta.weld_id > split_task/
     annotation_task→version→record），按焊缝分组划分的依据。

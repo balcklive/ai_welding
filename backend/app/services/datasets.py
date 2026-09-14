@@ -110,6 +110,10 @@ BUILD_SOURCES: tuple[str, ...] = ("annotation_task", "split_task", "manual", "fi
 class DatasetDeleteConflict(ValueError):
     """数据集仍被业务数据引用，不能安全删除。"""
 
+# T11：单版本成员数软上限——超过只告警不拦截（误配切分规则会一次产出天量切片）。
+# 真正的"构建前要求用户确认"需要新的接口契约与前端弹窗，尚未实现（见 T11 文档）。
+MEMBER_WARN_THRESHOLD: int = 5000
+
 _VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 _AUDIO_EXTS = (".wav", ".mp3", ".flac", ".m4a")
@@ -860,6 +864,24 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     record_ids: dict[int, int | None] = {}
     for s in samples:
         record_ids[s.id] = _sample_record_id(session, s)
+    # T11：无主样本在分组里会**每条自成一个"焊缝"组**，防泄漏划分对它无能为力
+    # （同一焊缝的样本可能同时进 train 与 test）。来源白名单已挡住锚点样本，这条告警用来
+    # 发现新的无主样本，而不是静默按孤儿处理。
+    orphans = [sample_id for sample_id, rid in record_ids.items() if rid is None]
+    if orphans:
+        logger.warning(
+            "Dataset build gathered {} member(s) without a source record_id (split/leak grouping "
+            "degrades to per-sample groups): {}",
+            len(orphans),
+            orphans[:10],
+        )
+    if len(samples) > MEMBER_WARN_THRESHOLD:
+        logger.warning(
+            "Dataset build gathered {} members (> {}); check the split rules "
+            "(window/stride) or the source selection before publishing this version",
+            len(samples),
+            MEMBER_WARN_THRESHOLD,
+        )
     groups: dict[object, list[Sample]] = defaultdict(list)
     for s in samples:
         groups[record_ids.get(s.id) if record_ids.get(s.id) is not None else ("orphan", s.id)].append(s)
@@ -961,8 +983,47 @@ def _gather_samples(
     return []
 
 
+def _is_annotation_anchor(sample: Sample) -> bool:
+    """标注工作台的锚点样本（T11）——不是切片，不得成为数据集版本成员。
+
+    两类：`meta.source` 以 `-anchor` 结尾的（signal/video 锚点）、以及只有 `annotation_task_id`
+    而无切分归属的（标注任务导入的锚点/帧样本）。
+    """
+    if str((sample.meta or {}).get("source") or "").endswith("-anchor"):
+        return True
+    return sample.split_task_id is None and sample.annotation_task_id is not None
+
+
+def _latest_succeeded_split_task(session: Session, record_id: int) -> SplitTask | None:
+    """该焊缝版本链上**最近一次成功**的分段任务（T11：成员来源只认它）。
+
+    旧分段任务的产物算"历史切片"（D16-A），留在库里但不进新版本。
+    """
+    version_ids = list(
+        session.exec(select(DataVersion.id).where(DataVersion.record_id == record_id)).all()
+    )
+    if not version_ids:
+        return None
+    row = session.exec(
+        select(SplitTask, Job)
+        .join(Job, Job.id == SplitTask.job_id)
+        .where(SplitTask.version_id.in_(version_ids), Job.status == "succeeded")
+        .order_by(SplitTask.id.desc())
+    ).first()
+    return row[0] if row is not None else None
+
+
 def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sample]:
-    """返回数据集下全部真实样本；没有切分样本时为登记数据建立一条基础样本。"""
+    """`dataset_records` 来源的成员收集（T11）。
+
+    每条登记数据**二选一**，不得混合：
+
+    - 该焊缝存在成功分段任务 → 取其**最近一次**成功任务的切片；
+    - 否则 → 一条基础样本（引用 `record.latest_version_id` 的原始文件）。
+
+    **明确排除标注锚点样本**（见 `_is_annotation_anchor`）——它们是标注工作台的锚点，不是切片。
+    修复前的行为是"该数据集下全部 Sample 都收"，导致线上数据集版本里 8 个成员有 7 个是锚点样本。
+    """
     records = list(
         session.exec(select(DataRecord).where(DataRecord.dataset_id == dataset.id)).all()
     )
@@ -970,28 +1031,46 @@ def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sam
         return []
 
     record_ids = {record.id for record in records if record.id is not None}
-    existing = [sample for sample in session.exec(select(Sample)).all()
-                if _sample_record_id(session, sample) in record_ids]
     by_record: dict[int, list[Sample]] = defaultdict(list)
-    for sample in existing:
-        record_id = _sample_record_id(session, sample)
-        if record_id is not None:
-            by_record.setdefault(record_id, []).append(sample)
-
-    for record in records:
-        if record.id is None or by_record.get(record.id):
+    for sample in session.exec(select(Sample)).all():
+        if _is_annotation_anchor(sample):
             continue
-        latest = session.get(DataVersion, record.latest_version_id) if record.latest_version_id else None
-        sample = Sample(
-            frame_no=0,
-            object_keys=list(latest.object_keys or []) if latest else [],
-            meta={"record_id": record.id, "weld_id": record.weld_id, "source": "dataset_record"},
-        )
-        session.add(sample)
-        session.flush()
-        by_record[record.id] = [sample]
+        record_id = _sample_record_id(session, sample)
+        if record_id is not None and record_id in record_ids:
+            by_record[record_id].append(sample)
 
-    return [sample for samples in by_record.values() for sample in samples]
+    members: list[Sample] = []
+    for record in records:
+        if record.id is None:
+            continue
+        split_task = _latest_succeeded_split_task(session, record.id)
+        if split_task is not None:
+            members.extend(
+                sample for sample in by_record.get(record.id, [])
+                if sample.split_task_id == split_task.id
+            )
+            continue
+        # 无成功分段 → 基础样本：优先复用已存在的（避免每次构建都新建一条）。
+        base = next(
+            (sample for sample in by_record.get(record.id, []) if sample.split_task_id is None),
+            None,
+        )
+        if base is None:
+            latest = (
+                session.get(DataVersion, record.latest_version_id)
+                if record.latest_version_id
+                else None
+            )
+            base = Sample(
+                frame_no=0,
+                object_keys=list(latest.object_keys or []) if latest else [],
+                meta={"record_id": record.id, "weld_id": record.weld_id, "source": "dataset_record"},
+            )
+            session.add(base)
+            session.flush()
+            by_record[record.id].append(base)
+        members.append(base)
+    return members
 
 
 def _filter_samples(session: Session, filters: dict) -> list[Sample]:
@@ -1022,7 +1101,7 @@ def _record_matches(record: DataRecord, filters: dict) -> bool:
             return False  # 未知筛选键：严格不匹配
     return True
 
-
+
 def _assign_splits(group_keys: list) -> dict[object, str]:
     """按焊缝分组稳定划分 8:1:1。组数 <3 时退化为 train / train+test（不泄漏）。
 
@@ -1058,14 +1137,18 @@ def _compute_quality(
 ) -> dict:
     """数据集质量：`{repeat_rate, empty_label_rate, dimension_missing_rate}`。
 
-    - repeat_rate：同 (record_id, frame_no) 重复出现占比（合成/切分样本均唯一 → 0）；
+    - repeat_rate：同 `(record_id, object_keys)` 重复出现占比（无产物的样本一律视为唯一，T11）；
     - empty_label_rate：无标注样本占比；
-    - dimension_missing_rate：任务必需维度缺失占比。
+    - dimension_missing_rate：任务必需维度缺失占比（**维度级**，不是切片级，见 T2.3）。
     """
     total = len(samples)
+    # T11：按**产物**判重——`(record_id, object_keys)`，且**无产物的样本视为唯一**（不参与判重）。
+    # 修复前用 `(record_id, frame_no)`：锚点样本 frame_no 为 NULL、分段样本 frame_no 是任务内序号，
+    # 两者都会塌成一个键（实测线上 8 个成员判出 6 个"重复"，repeat_rate 假报 0.75）。
     seen: dict[tuple, int] = defaultdict(int)
     for s in samples:
-        seen[(record_ids.get(s.id), s.frame_no)] += 1
+        keys = tuple(sorted(str(key) for key in (s.object_keys or [])))
+        seen[(record_ids.get(s.id), keys) if keys else ("unique", s.id)] += 1
     repeated = total - len(seen)
     repeat_rate = round(repeated / total, 4) if total else 0.0
 

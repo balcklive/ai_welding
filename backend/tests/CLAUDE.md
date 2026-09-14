@@ -5,7 +5,22 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 
 ## 脚本
 
+> **⚠️ 现状（2026-09-14 核对，读下面每条前先看这里）**：本文件描述的覆盖面**与磁盘不符**。
+> `9c68a83 "fix dataset browsing and remove obsolete demo tests"` 删除了 **15 个测试文件共 8023 行**：
+> `test_welds.py` / `test_models.py` / `test_datasets.py` / `test_split_annotation.py` / `test_alignment.py` /
+> `test_reports.py` / `test_dashboard.py` / `test_features.py` / `test_analysis.py` / `test_authz.py` /
+> `test_audit_routes.py` / `test_media_prep.py` / `test_signal_ingest.py` / `test_signals_downsample.py`。
+> 现盘上有 **21 个文件 / 160 用例**（`ls tests/test_*.py` 为准），下面提到这些文件名的条目属**历史记录**。
+> 被删掉的恰是"Welds CRUD / 数据集构建 / 训练 / 切分标注 / 权鉴"等核心链路的离线回归——**改动这些链路时必须补测试**
+> （`test_dataset_members.py` 即为此补的）。恢复旧用例：`git checkout 9c68a83^ -- backend/tests/<file>`，
+> 但其中不少断言的是已被删除的演示/兜底行为，取回后要逐条核对。
+>
+> 新增用例请沿用本目录既有约定：内存 SQLite + `SQLModel.metadata.create_all` + `Session(engine)`；
+> 走 HTTP 的用 `StaticPool` + `dependency_overrides`；不连远程 MySQL/MinIO（存储一律 monkeypatch `app.storage.get_storage`）。
+
 - `test_app.py`（Task 1）：`GET /api/v1/health` 统一信封 + `X-Correlation-ID` 回写。用真实 `app.main` 的 TestClient。
+- `test_dataset_build_e2e.py`（**T11 端到端，2026-09-14 新增，首选**）：**全程走真实 HTTP 接口 + 真实 Job 执行器**（`executor.run_job`），不碰任何私有函数——登记 `POST /registrations` → 挂载 `POST …/raw-files`（自动建数据集版本 + 自动构建任务）→ 信号导入 job → 分段 `POST …/split-tasks` job → 构建 job → 读回 `GET /datasets/{id}/versions/{vid}[/items]` 断言。3 条场景：① **锚点不进版本**（挂视频 + 建 video 标注任务生成锚点 → 成员只有 1 条基础样本、`repeat_rate == 0.0`；再挂一次文件验证基础样本**复用同一条**）；② **只收最近一次成功分段的切片**（6 切片 → 重新分段 12 切片 → 新版本只含新的 12 条、与旧的 `isdisjoint`、历史版本不受影响）；③ **failed 分段不产生成员**（窗口大于有效区间 → job failed → 构建仍只收基础样本）。隔离：内存 SQLite（StaticPool，请求 session 与 Job session 共用一个连接）+ 假 Storage（内存 dict）。**坑**：`monkeypatch` 必须返回 **SQLModel 的 `Session`**（原生 SQLAlchemy Session 没有 `.exec`）；`get_storage` 要同时打在 `app.storage` / `app.api.v1.welds` / `app.jobs.split` 三个名字上（前两处是模块级 import）；构建任务只能从库里查 `DatasetBuildTask`——`raw-files` 响应不含 job_id（T8 待补 `build_job_id`）。**这条 E2E 首次运行就抓出 `POST /annotation-tasks`（signal/video）500——`analysis_annotations.py` 抽文件时漏 import `DataRecord`。**
+- `test_dataset_members.py`（**T11 单元级，同批新增**）：直接测 `_samples_for_dataset_records` / `_compute_quality` / `_is_annotation_anchor` 的 5 条细粒度规则（含"无产物视为唯一"、同产物按 0.2 计重复等**在真实接口里难以构造**的判重边界）。**用户偏好：新覆盖优先写端到端**（见 `test_dataset_build_e2e.py`），本文件保留是因为它钉的判重边界在 E2E 里构造不出来。
 - `test_config.py`（Task 1）：`Settings` 默认值 / `mysql_url` 拼接（不读远程）。
 - `test_logging.py`（Task 1）：`_mask`/`_mask_query` 脱敏（password/token/secret → `***`）与 `_caller_from_authorization` 调用人解析。
 - `test_models.py`（Task 2 + **Task 16**）：内存 SQLite 建全部 23 张表 + 索引一致性（含与迁移 `0001_initial.py` 的索引对齐防漂移）+ 关键表插入/复合唯一/环形指针；**在线 Alembic 回归**：`test_alembic_upgrade_online_real_path_executes_0003` 会在真实 MySQL 临时库按 `0002 -> 0003 -> head` 执行，现额外验证 **`data_versions.request_key`、`split_tasks.request_key/active_request_key`、`alignment_tasks.request_key/active_request_key`** 与唯一约束；**Task 16 模型中心 API**（内存 SQLite + StaticPool + 真实 app TestClient + `seed_all` + override 依赖 + executor SessionLocal 指测试引擎 + 假存储）——覆盖：列表汇总（total==3 / prod_candidates==1 / gpu_usage==42 / recent_training None）+ 详情 + 新建（同名 409 / 空名 400）；PATCH 状态流转（生产候选→实验版本→生产候选、非法状态 400、note 接受不落库）；训练端到端（POST→run_job→succeeded、result 含 metrics{mAP50,precision,recall}+loss_curve{train,val} 长度=epochs+model_version、**事务内自动生成 model_versions 实验版本 + version_no 递增 + file_key `models/{id}/weights.pt`**、假存储收到权重写、模型仓库最新版本更新）+ **readiness=暂不可训练拒绝** + **必需输入齐全/可选模态缺失仍允许** + **同 dataset_version 活动训练任务去重** + **后台 executor 自动消费 training/test/inference**；测试端到端（confusion_matrix 2×2 [[612,18],[22,596]] + metrics 数值）+ **不匹配模型/数据集版本拒绝** + **无 test split 拒绝**；推理端到端（boxes 4 元组列表 / categories / confidence / latency_ms + inference_tasks 落库）+ **损坏/伪装图片与 gif 拒绝** + **同 input_key 幂等**；404（模型/版本/跨模型版本 40402/未知任务/坏 dataset_version/base_model/空输入 400）；训练 handler 抛异常 → job failed；11 端点未登录全 401（40100）。

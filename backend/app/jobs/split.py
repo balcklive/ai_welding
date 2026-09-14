@@ -64,6 +64,9 @@ def handle(job_id: int, session: Session) -> None:
                 "frame_end": window.frame_end,
                 "source_version_id": version.id,
                 "task_format": task.task_format,
+                # T11/D16-A：切片标出产出它的规则版本，供"新旧切片共存"时区分口径。
+                # 0 = 旧口径（帧 = 采样点，T10 前的实现）；T10 落地后由 rules 携带真实版本号。
+                "rules_version": rules.get("rules_version", 0),
             }
             if task.task_format == "目标检测":
                 if not video_bytes:
