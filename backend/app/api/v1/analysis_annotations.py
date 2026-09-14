@@ -15,7 +15,7 @@ from app.core.audit import write_audit
 from app.core.config import settings
 from app.core.db import get_session
 from app.models.analysis import AnnotationTask, LabelCategory, Sample, SplitTask
-from app.models.data import DataVersion, User
+from app.models.data import DataRecord, DataVersion, User
 from app.models.jobs import Job
 from app.schemas.common import err, ok, paginate
 from app.services import annotation
