@@ -17,6 +17,9 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - `versions/0007_annotation_kind.py`：**标注 kind 升级**——`annotations` 表加 `kind`(VARCHAR(16) NOT NULL server_default 'box')、`points`(JSON)、`start_time`(Double)、`end_time`(Double)，时序区间/视频多边形标注复用单表，兼容老 box 数据。
 - `versions/0008_registration_dataset_not_null.py`：将登记的数据集归属约束收紧为非空，数据库层禁止孤立登记。
 
+- `versions/0016_dataset_item_annotations.py`（**T16.1 冻结标注快照**）：`dataset_items` 加 `annotations`
+  JSON（构建时写入 `[{category, confidence, kind}]`，训练读它而不现查 `annotations` 表）。纯 expand；
+  老代码不读新列，新代码对 NULL 回退现查。
 - `versions/0015_option_items.py`（**2026-09 系统设置·可选项字典**）：新建 `option_items`
   （`group_key` 分组 + UK `(group_key,value)` + `active` 软删 + `sort_order`），并给
   `label_categories` 补 `sort_order`/`active`（`UPDATE … SET sort_order = id*10` 回填，

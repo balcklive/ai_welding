@@ -1,6 +1,10 @@
-"""特征提取 Job handler：执行真实输入读取、特征计算和结果落库。"""
+"""特征提取 Job handler：执行真实输入读取、特征计算、结果落库与产物文件（T16）。"""
 
+import io
+import json
 from datetime import datetime, timezone
+
+from loguru import logger
 
 from sqlmodel import Session, select
 
@@ -15,7 +19,9 @@ from app.models.analysis import FeatureExtraction
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 from app.services import features, signal_ingest
+from app.storage import get_storage
 from app.services.jobs import mark_succeeded
+from app.services.welds import create_version
 
 
 @register_handler("feature_extraction")
@@ -84,6 +90,57 @@ def handle(job_id: int, session: Session) -> None:
     )
     session.add(extraction)
     session.flush()
+
+    # T16.3：产物落 MinIO——改造前特征提取只落库、**不产文件**，所以"生成数据版本"无处可挂。
+    # 写对象是尽力而为（与快照一致）：存储不可达不该让一次成功的提取变成失败任务。
+    artifact_key = f"processed/{record.weld_id}/features/{version_id}.json"
+    try:
+        artifact = json.dumps(
+            {
+                "extraction_id": extraction.id,
+                "version_id": version_id,
+                "status": extraction.status,
+                "normalization": normalization,
+                "format": output_format,
+                "modality_status": modality_status,
+                "unified_vector": unified,
+                "ts_features": ts,
+                "vision_features": vision,
+                "audio_features": audio,
+                "sample_rate": bundle.sample_rate,
+                "sample_count": extraction.sample_count,
+                "duration": extraction.duration,
+            },
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+        get_storage().upload_stream(artifact_key, io.BytesIO(artifact), len(artifact), "application/json")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to write feature artifact {}: {}", artifact_key, exc)
+        artifact_key = None
+
+    # T16：只有 **succeeded** 才生成正式版本——partial（缺模态/启发式模态）不算正式产物（T16.3）；
+    # object_keys 合并源版本文件（否则只挂特征文件会让"读原始信号"断链，T16.2/D18）。
+    version_row = None
+    if result_status == "succeeded" and artifact_key:
+        source_keys = list(version.object_keys or [])
+        version_row = create_version(
+            session,
+            record,
+            action="特征提取",
+            note=f"特征提取任务自动生成（{unified.get('total_dims', 0)} 维统一向量）",
+            object_keys=[*source_keys, *[key for key in (artifact_key,) if key not in source_keys]],
+            operator="算法任务",
+        )
     write_audit(session, (job.result or {}).get("user_id"), "extract", "feature_extraction", str(extraction.id), {"job_id": job.job_uid, "status": extraction.status})
-    mark_succeeded(session, job, {"extraction_id": extraction.id, "status": extraction.status})
+    mark_succeeded(
+        session,
+        job,
+        {
+            "extraction_id": extraction.id,
+            "status": extraction.status,
+            "artifact_key": artifact_key,
+            "version": {"id": version_row.id, "version_no": version_row.version_no} if version_row else None,
+        },
+    )
     session.commit()

@@ -18,6 +18,7 @@ from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 from app.services import media_probe, splitting
 from app.services.jobs import mark_succeeded
+from app.services.welds import create_version
 from app.storage import get_storage
 
 
@@ -128,6 +129,37 @@ def handle(job_id: int, session: Session) -> None:
     task.sample_count = len(windows)
     task.rules = {**rules, "event_bounds": list(bounds)}
     session.add(task)
+
+    # T16：任务成功后自动生成「样本分段」数据版本。
+    # object_keys = **源版本文件 ∪ 切分产物清单**（合并源版本是必须的，只挂产物会让"读原始
+    # 信号"的后续流程断链，见 T16.2/D18）。**只挂清单、不挂逐个切片键**：切片可能有几百个，
+    # 全塞进 object_keys 会把数据详情页的媒体预览（按扩展名扫描）变成几百张切帧图。
+    slice_rows = session.exec(
+        select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
+    ).all()
+    manifest_key = f"processed/{record.weld_id}/split/{task.id}/manifest.json"
+    manifest = {
+        "task_id": task.id,
+        "task_format": task.task_format,
+        "rules": task.rules,
+        "rules_version": rules.get("rules_version", 1),
+        "sample_count": len(windows),
+        "slices": [
+            {"sample_id": row.id, "frame_no": row.frame_no, "object_keys": row.object_keys}
+            for row in slice_rows
+        ],
+    }
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    storage.upload_stream(manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json")
+    source_keys = list(version.object_keys or [])
+    create_version(
+        session,
+        record,
+        action="样本分段",
+        note=f"分段任务 #{task.id} 自动生成（{len(windows)} 个切片，规则版本 {rules.get('rules_version', 1)}）",
+        object_keys=[*source_keys, *[key for key in (manifest_key,) if key not in source_keys]],
+        operator="算法任务",
+    )
     result = {
         "sample_count": len(windows),
         "task_format": task.task_format,

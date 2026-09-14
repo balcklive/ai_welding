@@ -23,6 +23,7 @@
 
 import csv
 import io
+import json
 import random
 from datetime import datetime, timezone
 
@@ -37,8 +38,8 @@ from app.core.db import get_session
 from app.main import app
 from app.models import User
 from app.services import signal_ingest
-from app.models.analysis import AlignmentTask, Sample, SplitTask
-from app.models.datasets import Dataset, DatasetBuildTask, DatasetVersion
+from app.models.analysis import AlignmentTask, Annotation, Sample, SplitTask
+from app.models.datasets import Dataset, DatasetBuildTask, DatasetItem, DatasetVersion
 from app.models.jobs import Job
 from uuid import uuid4
 from app.storage.client import StorageClient
@@ -622,6 +623,17 @@ def test_frame_unit_split_uses_video_fps_and_drops_the_tail(api, db, storage, ru
     assert first.meta["window_seconds"] == 0.4
     assert first.meta["rules_version"] == 2
 
+    # T16：分段成功后自动生成「样本分段」数据版本，object_keys = 源版本文件 ∪ 产物清单
+    versions = _ok(api.get(f"{API}/welds/{record['weld_id']}/versions"))
+    split_version = next((v for v in versions if v["action"] == "样本分段"), None)
+    assert split_version is not None, [v["action"] for v in versions]
+    manifest_key = f"processed/{record['weld_id']}/split/{task.id}/manifest.json"
+    assert manifest_key in split_version["object_keys"], split_version["object_keys"]
+    assert "raw/e2e-83s.csv" in split_version["object_keys"], "必须合并源版本文件，否则读原始信号会断链"
+    manifest = json.loads(storage.objects[manifest_key].decode("utf-8"))
+    assert manifest["sample_count"] == 207 and manifest["rules_version"] == 2
+    assert len(manifest["slices"]) == 207
+
 
 def test_second_unit_split_works_without_video(api, db, storage, run_job):
     """D15：没有视频的数据按**秒**切；按帧则明确报错（不猜默认帧率）。"""
@@ -652,3 +664,101 @@ def test_second_unit_split_works_without_video(api, db, storage, run_job):
     assert by_second["summary"]["window_samples"] == 200
     assert by_second["summary"]["sample_count"] == 6
     assert by_second["summary"]["window_frames"] is None  # 没有 fps 就不编一个帧数
+
+
+# ── 场景 9：数据集版本冻结标注快照（T16.1） ──────────────────────────
+
+
+def test_dataset_version_freezes_annotation_snapshot(api, db, storage, run_job):
+    """版本构建后删掉标注，同一版本的训练输入**不变**（否则"可复现训练"不成立）。
+
+    可观察的判定方式：构建后把 `annotations` 行**全部删除**再训练——
+    冻结生效 → 标签仍来自快照（两类齐全）→ 训练成功；
+    没冻住（训练现查 annotations）→ 全部样本退化成"正常"一类 → 训练直接失败。
+    """
+    dataset_id = _create_dataset(api, "E2E 冻结标注", "时序分类")
+    records = []
+    for index in range(6):
+        record = _register(api, dataset_id, f"E2E 冻结样本-{index}")
+        storage.put(f"raw/e2e-freeze-{index}.csv", synthetic_signal_csv())
+        _attach(api, record["id"], [f"raw/e2e-freeze-{index}.csv"])
+        records.append(record)
+
+    version = _latest_dataset_version(db, dataset_id)
+    assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
+
+    # 给前三条打「气孔」（缺陷白名单内），后三条打「正常」
+    items = db.exec(
+        select(DatasetItem).where(DatasetItem.dataset_version_id == version.id).order_by(DatasetItem.id)
+    ).all()
+    assert len(items) == 6
+    for index, item in enumerate(items):
+        db.add(Annotation(sample_id=item.sample_id, category="气孔" if index < 3 else "正常", kind="box", box=[1, 1, 2, 2]))
+    db.commit()
+
+    # 重新构建一次（新版本）——快照在这次构建时写入
+    storage.put("raw/e2e-freeze-trigger.bin", b"t" * 8)
+    _attach(api, records[0]["id"], ["raw/e2e-freeze-trigger.bin"])
+    fresh_version = _latest_dataset_version(db, dataset_id)
+    assert _run(db, run_job, _build_job_uid(db, fresh_version.id)).status == "succeeded"
+    db.expire_all()
+
+    snapshots = [
+        item.annotations
+        for item in db.exec(
+            select(DatasetItem).where(DatasetItem.dataset_version_id == fresh_version.id)
+        ).all()
+    ]
+    assert all(snapshot is not None for snapshot in snapshots), snapshots
+    frozen_categories = sorted(
+        str(entry["category"]) for snapshot in snapshots for entry in snapshot
+    )
+    assert frozen_categories.count("气孔") == 3 and frozen_categories.count("正常") == 3, frozen_categories
+
+    # **删掉全部标注行**：冻结生效时训练仍能拿到两类；没冻住就会退化成单类而失败
+    for annotation in db.exec(select(Annotation)).all():
+        db.delete(annotation)
+    db.commit()
+
+    _ok(api.post(f"{API}/training-tasks", json={
+        "dataset_version_id": fresh_version.id,
+        "epochs": 2,
+        "batch_size": 2,
+        "learning_rate": 0.01,
+        "val_ratio": 0.2,
+    }))
+    trained = _run(db, run_job, _latest_job_uid(db, "training"))
+    assert trained.status == "succeeded", trained.error
+
+
+# ── 场景 10：特征产物落盘与 partial 闸门（T16.3） ────────────────────
+
+
+def test_partial_feature_extraction_writes_no_version(api, db, storage, run_job, monkeypatch):
+    """partial（缺模态 / 启发式模态）的特征提取**不生成数据版本**——产物不算正式。
+
+    这个版本只有 CSV：视觉与音频都缺失。默认（生产设置）直接失败；放开 `feature_allow_partial`
+    后任务成功但状态是 `partial`，两种情况下都**不应该**出现「特征提取」版本。
+    """
+    dataset_id = _create_dataset(api, "E2E 特征闸门", "时序分类")
+    record = _register(api, dataset_id, "E2E 特征样本", sample_rate="2 kHz")
+    storage.put("raw/e2e-feat.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-feat.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    body = {"weld_id": record["weld_id"], "version_id": record["latest_version_id"]}
+    _ok(api.post(f"{API}/features/extract-tasks", json=body))
+    failed = _run(db, run_job, _latest_job_uid(db, "feature_extraction"))
+    assert failed.status == "failed", "生产设置下缺模态应当直接失败"
+    assert "生产模式禁止使用不完整或非正式模态结果" in str(failed.error), failed.error
+
+    # 放开 partial：任务成功但状态 partial → 仍然不生成版本
+    monkeypatch.setattr("app.core.config.settings.feature_allow_partial", True, raising=False)
+    _ok(api.post(f"{API}/features/extract-tasks", json=body))
+    partial = _run(db, run_job, _latest_job_uid(db, "feature_extraction"))
+    assert partial.status == "succeeded", partial.error
+    assert partial.result["status"] == "partial", partial.result
+    assert partial.result["version"] is None, partial.result
+
+    versions = _ok(api.get(f"{API}/welds/{record['weld_id']}/versions"))
+    assert not any(v["action"] == "特征提取" for v in versions), [v["action"] for v in versions]

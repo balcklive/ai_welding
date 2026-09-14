@@ -74,6 +74,10 @@ class DatasetItem(SQLModel, table=True):
     )
     sample_id: int = Field(foreign_key="samples.id")
     split: str = Field(max_length=8)
+    #: T16.1 标注快照：构建时写入该样本的原始标注 `[{category, confidence, kind}]`，
+    #: 训练读它而不是现查 `annotations` 表——否则版本构建后改标注就会让"同一个版本"训出不同结果。
+    #: NULL = 该版本建于 T16 之前（训练侧回退现查，保持旧行为）。
+    annotations: list | None = Field(default=None, sa_column=Column(JSON))
 
 
 class DatasetBuildTask(SQLModel, table=True):

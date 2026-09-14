@@ -1201,12 +1201,19 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
         select(DatasetItem).where(DatasetItem.dataset_version_id == version.id)
     ).all():
         session.delete(old)
+    # T16.1：构建时把标注**快照**冻进成员行（训练读它，不再现查 annotations 表）
+    annotations_by_sample = _annotation_snapshots(session, [s.id for s in samples])
     item_rows: list[DatasetItem] = []
     for key in groups:
         split = assignments[key]
         for s in groups[key]:
             item_rows.append(
-                DatasetItem(dataset_version_id=version.id, sample_id=s.id, split=split)
+                DatasetItem(
+                    dataset_version_id=version.id,
+                    sample_id=s.id,
+                    split=split,
+                    annotations=annotations_by_sample.get(s.id, []),
+                )
             )
     for row in item_rows:
         session.add(row)
@@ -1518,6 +1525,29 @@ def _assign_splits(group_keys: list) -> dict[object, str]:
             else:
                 assignments[key] = "train"
     return assignments
+
+
+def _annotation_snapshots(
+    session: Session, sample_ids: list[int]
+) -> dict[int, list[dict]]:
+    """样本 → 标注快照（T16.1）：一次查询取全部标注，按样本分组。
+
+    只留训练/追溯需要的字段（category 决定"正常/缺陷"折叠，confidence 与 kind 便于复核），
+    不复制整行——快照是**冻结输入**，不是标注的第二份真相。
+    """
+    if not sample_ids:
+        return {}
+    rows = session.exec(
+        select(Annotation)
+        .where(Annotation.sample_id.in_(sample_ids))
+        .order_by(Annotation.id)
+    ).all()
+    out: dict[int, list[dict]] = defaultdict(list)
+    for row in rows:
+        out[row.sample_id].append(
+            {"category": row.category, "confidence": row.confidence, "kind": row.kind}
+        )
+    return dict(out)
 
 
 def _compute_quality(

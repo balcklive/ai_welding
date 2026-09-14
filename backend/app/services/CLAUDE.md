@@ -228,7 +228,9 @@
     延迟 `from app.storage import get_storage`，测试 monkeypatch `app.storage.get_storage`；
     `run_build` 内的进度 commit 是执行器专用 session 场景（同 alignment）。
 
-- `torch_training.py`：**2026-08-29 真实训练内核**（Task 16 由模拟升级为真实 CPU 训练）。
+- `torch_training.py`：**2026-08-29 真实训练内核**（**T16.1（2026-09-14）：`load_real_examples` 改为读
+  `dataset_items.annotations` 冻结快照**——版本构建后改标注不再影响同一版本的训练输入；该列为 NULL
+  （T16 之前建的版本）时才现查 `annotations` 表，保持旧行为）（Task 16 由模拟升级为真实 CPU 训练）。
   `load_real_examples(session, dataset_version_id, storage)`：读固定 `dataset_items`→`Sample`→`Annotation`
   真实样本，标签折叠为 正常/缺陷 两类（**决策 6 / 验证 §2**：用模块常量 `DEFECT_LABELS`（焊瘤/气孔/
   未熔合/咬边/未焊透/焊穿）**缺陷白名单**折叠——只认白名单内类别为缺陷，熔池/正常等非缺陷剔除，

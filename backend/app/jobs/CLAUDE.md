@@ -76,6 +76,13 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
 - `inference.py`：**Task 16**。`handle(job_id, session)`（`@register_handler("inference")`）→
   `app.services.models.run_inference`（进度逐步 → 确定性 boxes/categories/confidence/latency_ms
   （seed=task.id）→ 回填 inference_tasks.result → job.result 同款）。
+- `features.py`：**Task 12 + T16.3**。`handle(job_id, session)`（`@register_handler("feature_extraction")`）——
+  读 `job.result.request`（weld_id/version_id/normalization/format）→ 真实信号/视觉/音频特征 → `unify`
+  拼 42 维向量 → 落 `feature_extractions` 行 → **T16.3：产物写 MinIO**
+  `processed/{weld_id}/features/{version_id}.json`（写失败仅告警，不让成功的提取变失败）+ **仅当
+  `status == "succeeded"` 才 `create_version(action="特征提取")`**，`object_keys` = 源版本文件 ∪ 产物
+  （合并源版本是必须的：只挂产物会让"读原始信号"断链，T16.2/D18）。partial（缺模态/启发式模态）只落库
+  不产版本。
 - `signal_ingest.py`：**Task 18**。`handle(job_id, session)`（`@register_handler("signal_ingest")`）
   → 按 `signal_ingests.job_id` 取任务 → `app.services.signal_ingest.run_ingest`（下载 CSV → 10 条
   校验 → 启发式 events/anomalies → 写 MinIO Parquet → 回填行 + job.result）。**关键差异**：

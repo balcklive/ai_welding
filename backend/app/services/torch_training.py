@@ -60,13 +60,18 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
     ).all()
     if not rows:
         raise ValueError("数据集版本没有真实样本，无法开始训练")
-    sample_ids = [sample.id for _item, sample in rows if sample.id is not None]
-    annotations = session.exec(
-        select(Annotation).where(Annotation.sample_id.in_(sample_ids)).order_by(Annotation.id)
-    ).all()
+    # T16.1：**优先读构建时冻结的标注快照**（`dataset_items.annotations`）——版本构建之后
+    # 继续改标注不该改变同一版本的训练输入。只在快照缺失（T16 之前建的版本）时才现查
+    # `annotations` 表，保持旧行为。
+    needs_live_annotations = any(item.annotations is None for item, _ in rows)
     by_sample: dict[int, list[Annotation]] = {}
-    for annotation in annotations:
-        by_sample.setdefault(annotation.sample_id, []).append(annotation)
+    if needs_live_annotations:
+        sample_ids = [sample.id for _item, sample in rows if sample.id is not None]
+        annotations = session.exec(
+            select(Annotation).where(Annotation.sample_id.in_(sample_ids)).order_by(Annotation.id)
+        ).all()
+        for annotation in annotations:
+            by_sample.setdefault(annotation.sample_id, []).append(annotation)
     # REAL-DATA-LABELING: this first runnable baseline intentionally collapses
     # all annotated categories into defect and empty annotations into normal.
     label_names = ["正常", "缺陷"]
@@ -76,9 +81,13 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
     for item, sample in rows:
         if sample.id is None:
             continue
-        sample_annotations = by_sample.get(sample.id, [])
+        # 冻结快照优先；缺失则回退现查（见上面的 needs_live_annotations）
+        if item.annotations is None:
+            categories = [a.category for a in by_sample.get(sample.id, [])]
+        else:
+            categories = [str(entry.get("category")) for entry in item.annotations]
         # 缺陷白名单折叠：只认白名单内的类别为缺陷；熔池/正常等非缺陷剔除（决策 6）。
-        label_name = "缺陷" if any(a.category in DEFECT_LABELS for a in sample_annotations) else "正常"
+        label_name = "缺陷" if any(category in DEFECT_LABELS for category in categories) else "正常"
         examples.append(TrainingExample(sample.id, item.split, _features_from_sample(storage, sample, session, feature_cache), label_ids[label_name], label_name))
     if not examples:
         raise ValueError("数据集版本没有可训练的真实样本")
