@@ -28,7 +28,7 @@ export async function getWeld(weldId: string): Promise<DataRecord> {
   return request<DataRecord>(`/welds/${weldId}`, { cacheTtlMs: 15 * 1000 });
 }
 
-/** 删除单条焊缝；已进入切分/标注/固定快照时由后端拒绝。 */
+/** 删除单条样本；已进入切分/标注/数据集版本时由后端拒绝。 */
 export async function deleteWeld(weldId: string): Promise<{ deleted: boolean; deleted_versions: number }> {
   return request<{ deleted: boolean; deleted_versions: number }>(`/welds/${weldId}`, { method: 'DELETE' });
 }

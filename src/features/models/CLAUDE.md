@@ -19,7 +19,7 @@
 
 ## 关键规则/坑
 
-- **训练/测试输入必须是数据集快照**（`dataset_version_id`），不是焊缝版本号——与 `src/features/versions` 的「数据集快照 vs 焊缝版本」语义一致。
+- **训练/测试输入必须是数据集版本**（`dataset_version_id`），不是数据版本号——与 `src/features/versions` 的「数据集版本 vs 数据版本」语义一致（T1 术语）。
 - 训练任务由后端真实 Torch CPU 训练驱动（`app/services/torch_training.py` + MLflow 记录，见 `backend/app/services/CLAUDE.md` 与 `backend/app/integrations/CLAUDE.md`）；前端 `lossToPath` 数据驱动画损失曲线，`Training` 的 `listDatasets()[0]` 是 best-effort 默认。
 - PUT 后先查 `res.ok`，失败抛错丢弃 object_key（同 Registration 约定）。
 - `modelMetricText` 处理 `metric` dict；`Training`/`ModelTestLive`/`InferencePanel` 的成功态均以 Job 轮询为准，错误显示 `job.error.message`。

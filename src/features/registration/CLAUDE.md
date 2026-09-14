@@ -18,4 +18,5 @@
 - **对象键前缀固定 `raw/`**，勿用 `uploads/`（有 30 天生命周期清理）。
 - PUT 后先查 `res.ok`，失败抛错丢弃 object_key；回调读 `regIdRef`/`pendingKeysRef` 修 stale-closure 竞态；file input 重选需清空。
 - 最近上传 ← `listWelds({tab:'recent'})`；采集时间用 `datetime-local`（默认当前本地时间）。
-- **可选项字典（2026-09）**：`optionValues` 初值**为空数组**（字典到达前不闪现兜底品牌），`listOptionGroups()` 单独发请求（失败不影响数据集/最近登记加载），仅在 **catch 分支**回落到 `FALLBACK_OPTIONS`（= 字典化前的硬编码值，保证接口异常时登记流程可用）。焊机型号/焊接方法默认值改为**字典首个启用项**（原写死 `Fronius CMT`/`MAG焊`），只在用户未填时回填。`withCurrent()` 会把当前值补进候选——这样某型号被停用后，**编辑老数据仍能回显与提交**，不会因字典变更丢失既有值。
+- **可选项字典（2026-09）**：`optionValues` 初值**为空数组**（字典到达前不闪现兜底品牌），`listOptionGroups()` 单独发请求（失败不影响数据集/最近登记加载）。**T3.2/T3.3（2026-09-14）**：`FALLBACK_OPTIONS` 已删除——字典失败置 `optionsError`（页面内 `ErrorState` + 重试），且**字典不全时禁止提交**（按钮禁用 + 点击提示）。焊机型号/焊接方法默认值改为**字典首个启用项**（原写死 `Fronius CMT`/`MAG焊`），只在用户未填时回填。`withCurrent()` 会把当前值补进候选——这样某型号被停用后，**编辑老数据仍能回显与提交**，不会因字典变更丢失既有值。
+- **三块数据各自独立失败态（T3.2）**：数据集下拉（`datasetsError`）、最近登记（`recentError`）、可选项字典（`optionsError`）分别请求、分别报错；`retry()` 递增 `reloadKey` 重跑全部。最近登记徽标显示真实 `quality`（原固定显示"已登记"，S10）。

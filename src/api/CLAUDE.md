@@ -7,7 +7,7 @@
 - `client.ts`：统一请求封装（**原生 fetch，不引 axios**）。
   - `BASE = '/api/v1'`、token 存 `localStorage`（key=`token`）。
   - `getToken() / setToken(token) / clearToken()`：token 读写。
-  - `class ApiError extends Error`：`(code, message, status)`——`code` 为信封业务码，`status` 为 HTTP 状态码。
+  - `class ApiError extends Error`：`(code, message, status, detail?)`——`code` 为信封业务码，`status` 为 HTTP 状态码，**`detail` 为信封里的 `detail`（T3.1 新增）**：后端 Pydantic 校验失败返回 422 + `detail.errors()`（含 `loc` 字段路径），**必须原样保留**，否则前端只能显示"失败，请重试"（消费方 `shared/lib/errors.toUserMessage`）。
   - `buildQuery(params: object)`：查询参数 → 查询串（含 `?`）；数组展开为重复键（`channels=a&channels=b`），`undefined/null/''` 跳过。**参数用 `object` 而非 `Record<string, unknown>`**——接口无隐式索引签名，赋给 `Record<...>` 会 TS 报错，此处仅读 entries 无需索引签名。
   - `RequestOptions`：`{ method?, body?, query?, headers?, skipAuth? }`。
     - `query` 同为 `object`（兼容接口/类型别名）。

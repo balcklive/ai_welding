@@ -75,7 +75,7 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
     listLabelCategories().then((list) => { if (!cancelled && list.length) setLabels(activeLabels(list)); }).catch((err) => { if (!cancelled) { setLabels(mockLabelCategories); console.warn('[annotation] listLabelCategories failed', err); } });
     return () => { cancelled = true; };
   }, []);
-  // 只从当前焊缝版本导入真实图片对象，禁止创建无样本的演示任务。
+  // 只从当前数据版本导入真实图片对象，禁止创建无样本的演示任务。
   useEffect(() => {
     if (!dataId || creatingRef.current === dataId) return;
     let cancelled = false;

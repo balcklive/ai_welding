@@ -3,7 +3,9 @@
  *
  * - base = `/api/v1`：开发环境由 Vite proxy 转发到后端，生产同源，无需切换。
  * - 自动注入 `Authorization: Bearer <token>`（token 存 localStorage，key=`token`）。
- * - 统一解包信封 `{code, message, data}`（§1.3）；`code !== 0` → 抛 `ApiError`。
+ * - 统一解包信封 `{code, message, data, detail?}`（§1.3）；`code !== 0` → 抛 `ApiError`。
+ *   **`detail` 必须原样保留**：后端 Pydantic 校验失败返回 422 + `detail.errors()`（含 `loc`
+ *   字段路径），丢掉它前端就只能显示"失败，请重试"（见 `shared/lib/errors.ts`）。
  * - HTTP 401 → `clearToken()` + `window.location.reload()`（App 重新挂载即回到登录页）。
  */
 
@@ -28,6 +30,8 @@ export class ApiError extends Error {
     public code: number,
     message: string,
     public status: number,
+    /** 信封里的 `detail`（如 Pydantic `errors()`）；无则 undefined。 */
+    public detail?: unknown,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -75,7 +79,7 @@ export function buildQuery(params: object): string {
 /** 解析响应体为信封结构；非 JSON / 空响应兜底为可读消息。 */
 async function parseEnvelope(
   res: Response,
-): Promise<{ code: number; message: string; data?: unknown }> {
+): Promise<{ code: number; message: string; data?: unknown; detail?: unknown }> {
   const text = await res.text();
   if (!text) {
     return { code: -1, message: res.statusText || '空响应' };
@@ -85,11 +89,13 @@ async function parseEnvelope(
       code?: number;
       message?: string;
       data?: unknown;
+      detail?: unknown;
     };
     return {
       code: typeof parsed.code === 'number' ? parsed.code : -1,
       message: typeof parsed.message === 'string' ? parsed.message : '请求失败',
       data: parsed.data,
+      detail: parsed.detail,
     };
   } catch {
     return { code: -1, message: text };
@@ -150,11 +156,11 @@ export async function request<T>(
       clearToken();
       window.location.reload();
     }
-    throw new ApiError(envelope.code, envelope.message || '未登录或令牌失效', res.status);
+    throw new ApiError(envelope.code, envelope.message || '未登录或令牌失效', res.status, envelope.detail);
   }
 
   if (envelope.code !== 0) {
-    throw new ApiError(envelope.code, envelope.message || '请求失败', res.status);
+    throw new ApiError(envelope.code, envelope.message || '请求失败', res.status, envelope.detail);
   }
 
   const data = envelope.data as T;

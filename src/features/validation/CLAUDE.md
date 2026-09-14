@@ -13,6 +13,7 @@
 
 ## 关键规则/坑
 
-- **mock 兜底边界**：mock 报告仅接口失败/无版本可查时经 `fallback()` 兜底并显示提示横幅；加载期评分 `—`、状态"加载中"、规则区"核验规则加载中…"。规则名单提为模块级 `mockValidationRuleNames`。
+- **三种状态分离（T3.2，2026-09-14）**：`fallback()` 演示报告与 `mockValidationRuleNames` **已删除**。现在——**空态**（无数据版本 / 该版本尚未核验，走 404 判定 `isNotFound`：给引导文案，不是错误）、**错误态**（`ErrorState` + 重试）、**有结果**（正常渲染）。加载期评分 `—`、状态"加载中"、规则区"核验规则加载中…"。
+- **S12**：`Toolbar` 新增 `exportDisabled`，核验页在 `!report` 时禁用「下载核验报告」（原可点，会导出演示报告）。
 - **规则映射**：由 `ValidationRuleResult.status`（passed/warning/failed）映射图标/文案/状态色（失败红、警告橙、通过绿）；汇总状态 `failed>0→异常 / 仅警告→待复核 / 否则→核验通过`。
 - 15 条规则名与后端 seed/`welds.VALIDATION_RULES` 逐字一致，勿改。

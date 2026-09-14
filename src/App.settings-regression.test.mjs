@@ -24,11 +24,14 @@ test('sidebar 系统设置 entry routes to the settings page', () => {
   assert.match(app, /route === 'settings'\) content = <SettingsPage \/>/);
 });
 
-test('registration page reads hardcoded options from the dictionary', () => {
+test('registration page reads options from the dictionary (no hardcoded fallback)', () => {
   assert.match(registration, /listOptionGroups\(\)/);
   assert.match(registration, /pick\('machine'\)/);
   assert.match(registration, /pick\('weld_method'\)/);
-  assert.match(registration, /FALLBACK_OPTIONS/);
+  // T3.2/T3.3：字典失败不再回落硬编码值——必须置错误态，并在字典不全时禁止提交。
+  assert.doesNotMatch(registration, /const FALLBACK_OPTIONS/);
+  assert.match(registration, /setOptionsError\(err\)/);
+  assert.match(registration, /datasetsError \|\| optionsError/);
   // 原硬编码下拉项必须消失，改由字典渲染（withCurrent 保留停用/历史值）。
   assert.doesNotMatch(registration, /<option>Fronius CMT<\/option>/);
   assert.doesNotMatch(registration, /<option>MAG焊<\/option>/);
@@ -41,7 +44,10 @@ test('registration page reads hardcoded options from the dictionary', () => {
 test('dataset creation takes task type from the dictionary', () => {
   assert.match(datasets, /listOptionGroups\(\)/);
   assert.match(datasets, /group\.key === 'dataset_task'/);
-  assert.match(datasets, /FALLBACK_DATASET_TASKS/);
+  // T3.2/T3.3：字典失败不再回落硬编码任务类型，改为错误态 + 禁止新建（S7 的 hover 提示也改成页面内提示）。
+  assert.doesNotMatch(datasets, /const FALLBACK_DATASET_TASKS/);
+  assert.match(datasets, /setTaskOptionsError\(err\)/);
+  assert.match(datasets, /Boolean\(taskOptionsError\)/);
   assert.doesNotMatch(datasets, /createDataset\(\{ name, task: '目标检测' \}\)/);
   assert.match(datasets, /createDataset\(\{ name, task: task \?\? taskOptions\[0\] \?\? '' \}\)/);
   assert.match(datasets, /choice=\{taskOptions\.length \?/);

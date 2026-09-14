@@ -40,7 +40,7 @@ function AvailabilityTag({ track }: { track: AlignmentTrack }) {
   return <span className={`track-availability ${pair[1]}`} title={track.reason ?? undefined}>{pair[0]}</span>;
 }
 
-/** 模型中心 · 训练数据准备：从数据管理的数据集筛选样本，生成可用于训练的固定版本快照。 */
+/** 模型中心 · 训练数据准备：从数据管理的数据集筛选切片，生成可用于训练的数据集版本。 */
 export function AlignmentWorkspace({ splitOnly = false, dataId }: { embedded?: boolean; splitOnly?: boolean; dataId?: string }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
@@ -144,7 +144,7 @@ export function AlignmentWorkspace({ splitOnly = false, dataId }: { embedded?: b
     setVersionId(alignRes.version.id);
   }, [alignRes]);
   const handleRun = () => {
-    if (!dataId || versionId == null) { setCreateError('当前焊缝版本尚未准备好，请稍后重试。'); return; }
+    if (!dataId || versionId == null) { setCreateError('当前数据版本尚未准备好，请稍后重试。'); return; }
     setCreateError(null);
     const unsupported = !splitOnly ? modalities.filter((item) => item === 'audio' || item === 'infrared') : [];
     const names: Record<string, string> = { video: '视频', timeseries: '时序', audio: '音频', infrared: '红外' };

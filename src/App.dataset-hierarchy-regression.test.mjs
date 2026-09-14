@@ -26,15 +26,17 @@ test('real dataset selection replaces the version id and no-current-version has 
   assert.match(detail, /const \[versions, setVersions\] = useState<DatasetVersion\[]>\(\[\]\)/);
   assert.doesNotMatch(detail, /useState<DatasetVersion\[]>\(mockDatasetVersions\)/);
   assert.doesNotMatch(detail, /versions\[0\]\?\.id/);
-  assert.match(detail, /const currentVersion = currentVersionId == null \? null/);
+  // 当前版本标记必须由 currentVersionId 驱动（不得回落到 versions[0]）。
+  assert.match(detail, /v\.id === currentVersionId \? <StatusPill>当前<\/StatusPill>/);
   assert.match(detail, /const visibleVersions = versions/);
-  assert.match(detail, /当前数据集还没有固定快照/);
+  // T1：界面文案走术语表（"数据集版本"），不再出现"固定快照"。
+  assert.match(detail, /当前数据集还没有\{TERMS\.datasetVersion\}/);
 });
 
 test('records use the selected version split totals instead of the current page', () => {
   assert.match(records, /getDatasetVersion\(dataset\.id, String\(versionId\)\)/);
   assert.match(records, /setVersionSummaryUnavailable\(true\)/);
-  assert.match(records, /快照信息暂不可用/);
+  assert.match(records, /数据集版本信息暂不可用/);
   assert.doesNotMatch(records, /const splitCounts = rows\.reduce/);
 });
 
@@ -55,7 +57,7 @@ test('dataset member endpoint remains the scoped source without horizontal tabs'
   assert.match(datasetsApi, /\/datasets\/\$\{datasetId\}\/versions\/\$\{versionId\}\/items/);
   assert.doesNotMatch(navigation, /route: 'data-center\/list'/);
   assert.match(navigation, /label: '数据集'/);
-  assert.match(datasetFeature, /查看当前快照/);
+  assert.match(datasetFeature, /查看当前\{TERMS\.datasetVersion\}/);
   assert.match(datasetFeature, /listDatasetVersionItems/);
   assert.doesNotMatch(datasetFeature, /dataset-subtabs/);
 });

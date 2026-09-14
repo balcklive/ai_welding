@@ -23,5 +23,5 @@
 - **新增/改名子菜单必须同步三处**：`Route` 联合类型 + `navStructure` + `workspaceHeaders`，并在 `App.tsx` 的 `WorkspaceFrame` 路由分支与懒加载映射里挂对应组件——漏一处即类型错误或死路由。
 - **路由的 URL 契约（阶段一）**：地址形如 `#/<route>`，`route` 的唯一来源是 URL hash——浏览器前进/后退、刷新、收藏、分享链接全部以它为准。`navigate()` 用 `history.pushState`；**同一路由只 `replaceState`**（避免重复点击撑大历史栈，同时保留「已在该子菜单时再点一次 = 回数据集列表」的手势）；`popstate` 与 `hashchange` 都回写 state 并展开所属一级分组（漏了会出现「页面切了但侧栏还是折叠的」）。`Route` 新增后必须同步 `ROUTE_SEGMENTS`（`satisfies` 会拦住漏项）。
 - **坑：不要改成 path 路由**（`/analysis/annotation`）。生产由 FastAPI `app.mount("/", StaticFiles(directory=frontend_dir, html=True))` 托管（backend/app/main.py:108），Starlette 对不存在的路径直接 404（只回退 `404.html`，没有 SPA fallback），path 路由会让刷新/深链 404——要改必须同时加后端 catch-all 与反向代理 `try_files`。另：**不要用 `location.hash = ...` 赋值导航**，会与 `App.tsx` 的 `hashchange` 监听重复处理。
-- 菜单 label 使用业务完整称呼：「焊缝版本」「数据集快照」等，勿用含义不明的「版本」（见 `docs/Playwright 菜单功能测试计划.md` §15）。
+- 菜单 label 使用术语表的业务完整称呼（T1，2026-09-14）：「数据版本」「数据集版本」等，勿用含义不明的「版本」（见 `docs/Playwright 菜单功能测试计划.md` §15）。
 - 纯配置模块，勿放组件或业务逻辑。

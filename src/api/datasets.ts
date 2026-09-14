@@ -35,7 +35,7 @@ export async function deleteDataset(id: string): Promise<{ deleted: boolean; del
   return request<{ deleted: boolean; deleted_versions: number }>(`/datasets/${id}`, { method: 'DELETE' });
 }
 
-/** 数据集详情：样本统计 / 训练验证测试划分 / 数据质量 / 更新时间。 */
+/** 数据集详情：切片统计 / 训练验证测试划分 / 有效切片占比 / 更新时间。 */
 export async function getDataset(id: string): Promise<Dataset> {
   return request<Dataset>(`/datasets/${id}`);
 }
@@ -45,7 +45,7 @@ export async function getDimensions(id: string): Promise<DimensionStatus[]> {
   return request<DimensionStatus[]>(`/datasets/${id}/dimensions`);
 }
 
-/** 模型适配检查（按任务动态返回检查项 + 可训练/暂不可训练）。 */
+/** 模型适配检查（按任务动态返回检查项 + 适配检查通过/未通过）。 */
 export async function getReadiness(id: string): Promise<ReadinessCheck> {
   return request<ReadinessCheck>(`/datasets/${id}/readiness`);
 }
@@ -57,7 +57,7 @@ export async function listDatasetVersions(
   return request<DatasetVersion[]>(`/datasets/${id}/versions`);
 }
 
-/** 新建版本（固定快照，不覆盖旧版，保证可复现）。 */
+/** 新建版本（数据集版本，不覆盖旧版，保证可复现）。 */
 export async function createDatasetVersion(
   id: string,
   body: { name?: string; note?: string },

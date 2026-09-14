@@ -38,7 +38,7 @@ export const navStructure: {
     { route: 'data-center/datasets', label: '数据集' },
     { route: 'data-center/registration', label: '数据登记' },
     { route: 'data-center/validation', label: '数据核验' },
-    { route: 'data-center/versions', label: '焊缝版本' },
+    { route: 'data-center/versions', label: '数据版本' },
   ] },
   { id: 'analysis', label: '分析与标注', icon: Waves, children: [
     { route: 'analysis/select', label: '选择数据' },

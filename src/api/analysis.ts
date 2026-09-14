@@ -64,7 +64,7 @@ export async function getAlignmentTask(
   return request<Job<AlignmentResult>>(`/alignment-tasks/${taskId}`);
 }
 
-/** 恢复指定焊缝版本最近一次对齐任务；没有历史任务时返回 null。 */
+/** 恢复指定数据版本最近一次对齐任务；没有历史任务时返回 null。 */
 export async function getLatestAlignmentTask(
   weldId: string,
   versionId: string,

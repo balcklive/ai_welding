@@ -260,7 +260,7 @@ export interface DatasetSplit {
 }
 
 export interface Dataset {
-  /** 已登记焊缝数，与固定快照中的样本数区分。 */
+  /** 已登记样本数，与数据集版本中的切片数区分。 */
   weld_count?: number;
   id: number;
   dataset_no: string;
@@ -282,7 +282,7 @@ export interface DatasetVersion {
   id: number;
   dataset_id: number;
   version_no: string;
-  /** 固定快照划分；后端恒输出该键，未构建版本为 `{}`（train/val/test 缺省）。 */
+  /** 数据集版本划分；后端恒输出该键，未构建版本为 `{}`（train/val/test 缺省）。 */
   split: Partial<DatasetSplit>;
   item_count: number;
   snapshot_id: string | null;
@@ -310,7 +310,7 @@ export interface DatasetItemRow {
   split: 'train' | 'val' | 'test';
   frame_no: number | null;
   created_at: string | null;
-  /** 成员来源焊缝的当前/锁定数据版本，用于区分数据集快照版本。 */
+  /** 成员来源样本的当前/锁定数据版本，用于区分数据集版本。 */
   weld_version?: string | null;
 }
 
@@ -319,7 +319,7 @@ export interface Model {
   name: string;
   type: string;
   description: string | null;
-  /** 以下为最新版本快照（无版本时缺省）。 */
+  /** 以下为最新数据版本（无版本时缺省）。 */
   version?: string | null;
   metric?: Record<string, unknown> | null;
   status?: string | null;

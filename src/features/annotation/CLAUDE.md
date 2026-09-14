@@ -18,9 +18,9 @@
 
 ## 关键规则/坑
 
-- **标注必须真实数据**：图像模式从当前焊缝版本的真实图片对象建 manual 样本；`AnnotationSignal` 只允许 `getSignals().source === 'real'` 的波形进入标注；`AnnotationVideo` 只播放当前版本对象存储中的真实视频。
+- **标注必须真实数据**：图像模式从当前数据版本的真实图片对象建 manual 样本；`AnnotationSignal` 只允许 `getSignals().source === 'real'` 的波形进入标注；`AnnotationVideo` 只播放当前版本对象存储中的真实视频。
 - **Annotorious key 重挂载**：图像编辑器按 `${imageEditorKey}-${sample?.id}`、视频按帧 `captureKey` 加 key，切换样本/工具/帧时重挂载以重置标注（勿复用同一实例，否则新图片不加载标注）。
 - **波形两级加载**：首屏 `getSignals(max_points:2048)`；`dataZoom` 停止（300ms 防抖）后按可见窗口 `{max_points:4096, start, end}` 增量取细节；stale 响应用 `fetchTokenRef` 丢弃。坑：传 `max_points` 后 api 层不再本地 decimate。
 - **视频预览兜底**：`<video>` 挂 `onError` → 明确原因（`MediaError.code===4` = 编码不支持，提示 media_prep 转码预览版）。
-- 标签类别 `listLabelCategories` 带 10 分钟缓存（`api/analysis`）；后端无 `source=manual` 样本时，样本图从所属焊缝版本 object_keys 取真实图，无图显空态不回落静态演示图。
+- 标签类别 `listLabelCategories` 带 10 分钟缓存（`api/analysis`）；后端无 `source=manual` 样本时，样本图从所属数据版本 object_keys 取真实图，无图显空态不回落静态演示图。
 - **标签类别纳入系统设置（2026-09）**：`GET /label-categories` 现在返回**含停用项**并带 `active`；图像/时序两处调色板统一过 `activeLabels()`——只渲染启用类别（**全被停用时保留原列表**，避免调色板空白无法标注）。停用/改名只影响后续标注，`annotations.category` 存的是字符串快照，历史标注照常显示。

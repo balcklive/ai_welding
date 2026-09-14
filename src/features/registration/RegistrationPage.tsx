@@ -6,23 +6,16 @@ import { listOptionGroups } from '../../api/settings';
 import { attachRawFiles, createRegistration, listWelds } from '../../api/welds';
 import { presignUpload, putFileDirect } from '../../api/files';
 import type { Dataset, RegistrationForm } from '../../api/types';
-import { mockWeldRows, toWeldRow } from '../datasets/weldRows';
+import { toWeldRow } from '../datasets/weldRows';
 import type { WeldRow } from '../datasets/weldRows';
+import { ErrorState } from '../../shared/components/ErrorState';
 import { PageIntro } from '../../shared/components/PageIntro';
 import { StatusPill } from '../../shared/components/StatusPill';
 
 type UploadZoneKey = 'csv' | 'image' | 'video' | 'audio';
 
-/**
- * 可选项字典（系统设置维护）的兜底值：仅在 `GET /settings/options` 失败时使用，
- * 保证接口不可用时登记页仍与字典化之前完全一致（原硬编码值）。
- */
-const FALLBACK_OPTIONS: Record<'machine' | 'weld_method' | 'source' | 'product', string[]> = {
-  machine: ['Fronius CMT', 'OTC FD-V8', 'Panasonic YD-500'],
-  weld_method: ['MAG焊', 'MIG焊', 'TIG焊'],
-  source: [],
-  product: [],
-};
+// T3.2/T3.3：`FALLBACK_OPTIONS` 已删除——可选项字典（系统设置）是唯一来源，
+// 拉取失败就走错误态 + 重试并禁止提交，不再用硬编码值顶替（顶替会写入现场不存在的型号）。
 
 //: 数据来源 / 产品信息的候选值走 <datalist>（保留自由填写），id 需全局唯一。
 const SOURCE_LIST_ID = 'registration-source-options';
@@ -61,8 +54,8 @@ export function RegistrationPage() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   // machine/weld_method 默认值改为「字典中第一个启用项」（加载后回填），不再硬编码品牌。
   const [form, setForm] = useState<RegistrationForm>({ dataset_id: 0, source: '', collected_at: toLocalInputValue(new Date()), weld_name: '', product: '', machine: '', weld_method: '', material: '', thickness: '', current_voltage: '', sample_rate: '', wire_feed_speed: '', welding_speed: '' });
-  // 系统设置维护的可选项（只取启用项）。初始为空：加载期不闪现兜底值，
-  // 仅当 `GET /settings/options` 失败时回落到 FALLBACK_OPTIONS（等价字典化前的硬编码）。
+  // 系统设置维护的可选项（只取启用项）。初始为空：加载期不闪现兜底值；
+  // 拉取失败置 optionsError（页面内错误态 + 禁止提交），不再回落到硬编码值。
   const [optionValues, setOptionValues] = useState<Record<'machine' | 'weld_method' | 'source' | 'product', string[]>>({ machine: [], weld_method: [], source: [], product: [] });
   // 下拉候选 = 字典启用项；当前值若已被停用/改名，仍补进候选，保证老数据可正常回显与提交。
   const withCurrent = (values: string[], current?: string | null) => (current && !values.includes(current) ? [current, ...values] : values);
@@ -70,24 +63,50 @@ export function RegistrationPage() {
   const fileRefs = useRef<Partial<Record<UploadZoneKey, HTMLInputElement | null>>>({});
   // 部分失败重试时复用已生成的登记，避免重复登记：登记成功即记入 regRef。
   const regRef = useRef<{ id: number | string; registration_no: string } | null>(null);
+  // T3.2/T3.3：两块附属数据（可选项字典 / 最近登记）的失败态；字典失败时禁止提交。
+  const [optionsError, setOptionsError] = useState<unknown>(null);
+  const [recentError, setRecentError] = useState<unknown>(null);
+  const [datasetsError, setDatasetsError] = useState<unknown>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const retry = () => setReloadKey((n) => n + 1);
   // 是否已锚定至少一个文件（派生值，驱动按钮启用）。
   const hasFile = Object.values(files).some(Boolean);
   const setField = (key: keyof RegistrationForm) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => setForm((prev) => ({ ...prev, [key]: event.target.value }));
   useEffect(() => {
     let cancelled = false;
-    Promise.all([listDatasets(), listWelds({ tab: 'recent' })]).then(([datasetList, res]) => {
+    setDatasetsError(null);
+    listDatasets().then((datasetList) => {
       if (cancelled) return;
       setDatasets(datasetList);
+    }).catch((err) => {
+      if (cancelled) return;
+      console.warn('[registration] listDatasets failed', err);
+      setDatasets([]);
+      setDatasetsError(err);
+    });
+    return () => { cancelled = true; };
+  }, [reloadKey]);
+  useEffect(() => {
+    let cancelled = false;
+    setRecentLoading(true);
+    setRecentError(null);
+    listWelds({ tab: 'recent' }).then((res) => {
+      if (cancelled) return;
       // 上传是有副作用的新建操作，不应在用户未确认归属前自动选中第一个数据集。
       // 保持占位项，强制用户明确选择目标数据集，避免误归属。
       setRecentRows(res.items.slice(0, 5).map((r) => ({ ...toWeldRow(r), time: (r.collected_at ?? r.created_at ?? '').replace('T', ' ').slice(0, 16) })));
-    }).catch((err) => { if (!cancelled) { setRecentRows(mockWeldRows.slice(0, 3)); console.warn('[registration] registration context failed', err); } })
-      .finally(() => { if (!cancelled) setRecentLoading(false); });
+    }).catch((err) => {
+      if (cancelled) return;
+      console.warn('[registration] recent welds failed', err);
+      setRecentRows([]);
+      setRecentError(err);
+    }).finally(() => { if (!cancelled) setRecentLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
   // 可选项字典：与数据集/最近登记分开发请求——字典失败不能影响登记页其余数据的加载。
   useEffect(() => {
     let cancelled = false;
+    setOptionsError(null);
     listOptionGroups().then((groups) => {
       if (cancelled) return;
       const pick = (key: string) => groups.find((group) => group.key === key)?.items.filter((item) => item.active).map((item) => item.value) ?? [];
@@ -98,12 +117,12 @@ export function RegistrationPage() {
       setForm((prev) => ({ ...prev, machine: prev.machine || next.machine[0] || '', weld_method: prev.weld_method || next.weld_method[0] || '' }));
     }).catch((err) => {
       if (cancelled) return;
-      console.warn('[registration] option dictionary failed, fallback to built-in defaults', err);
-      setOptionValues(FALLBACK_OPTIONS);
-      setForm((prev) => ({ ...prev, machine: prev.machine || FALLBACK_OPTIONS.machine[0], weld_method: prev.weld_method || FALLBACK_OPTIONS.weld_method[0] }));
+      console.warn('[registration] option dictionary failed', err);
+      setOptionValues({ machine: [], weld_method: [], source: [], product: [] });
+      setOptionsError(err);
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
   // 提交：登记（部分失败重试时复用 regRef）→ 逐文件预签名直传 MinIO（进度按区回显）→ 统一挂载。
   const handleSubmit = async () => {
     if (registered || submitting) return;
@@ -149,7 +168,7 @@ export function RegistrationPage() {
     { key: 'dataset', label: '所属数据集', ok: !!form.dataset_id },
     { key: 'source', label: '数据来源', ok: !!form.source.trim() },
     { key: 'collected_at', label: '采集时间', ok: !!form.collected_at },
-    { key: 'weld_name', label: '焊缝 / 批次名称', ok: !!form.weld_name?.trim() },
+    { key: 'weld_name', label: '样本名称（焊缝 / 批次）', ok: !!form.weld_name?.trim() },
     { key: 'file', label: '数据文件（至少选择一个）', ok: hasFile },
   ].filter((item) => !item.ok);
   // 按钮禁用态被点击：提示缺失项 + 对应输入区域红色闪烁约 1.2s。
@@ -183,5 +202,5 @@ export function RegistrationPage() {
     setUploads((prev) => ({ ...prev, [key]: { status: 'pending', fileName: file.name } }));
   };
 
-  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据登记" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />登记数据即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>登记数据</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">登记草稿</span></div><div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label className={flash.dataset ? 'field-flash' : undefined}><span>所属数据集<span className="required-mark"> *</span></span><select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span></span><input list={SOURCE_LIST_ID} placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /><datalist id={SOURCE_LIST_ID}>{optionValues.source.map((value) => <option key={value} value={value} />)}</datalist></label><label className={flash.collected_at ? 'field-flash' : undefined}><span>采集时间<span className="required-mark"> *</span></span><input type="datetime-local" value={form.collected_at ?? ''} onChange={setField('collected_at')} /></label><label className={flash.weld_name ? 'field-flash' : undefined}><span>焊缝 / 批次名称<span className="required-mark"> *</span></span><input placeholder="输入焊缝或批次名称" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input list={PRODUCT_LIST_ID} placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /><datalist id={PRODUCT_LIST_ID}>{optionValues.product.map((value) => <option key={value} value={value} />)}</datalist></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option value="">请选择焊机型号</option>{withCurrent(optionValues.machine, form.machine).map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option value="">请选择焊接方法</option>{withCurrent(optionValues.weld_method, form.weld_method).map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label><label>送丝速度<input placeholder="例如：15.8" value={form.wire_feed_speed ?? ''} onChange={setField('wire_feed_speed')} /></label><label>焊接速度<input placeholder="例如：70.0" value={form.welding_speed ?? ''} onChange={setField('welding_speed')} /></label></div><div className="form-section-title"><span>登记数据文件</span><i /></div><div className={`upload-zones${flash.file ? ' field-flash' : ''}`}>{UPLOAD_ZONES.map((zone) => { const st = uploads[zone.key]; return <div className="upload-zone" key={zone.key}><Upload size={16} /><strong>{zone.label}</strong><span>{zone.hint}</span>{st && <span className={st.status === 'error' ? 'toolbar-error' : 'accent-text'} role={st.status === 'error' ? 'alert' : undefined}>{st.status === 'uploading' ? `上传中：${st.fileName} ${st.progress ?? 0}%` : st.status === 'pending' ? `已选择：${st.fileName}（待上传）` : st.status === 'error' ? (st.errorMsg ?? `${st.fileName} 上传失败，请重试`) : `${st.fileName} 已上传`}</span>}<button className="outline-button" onClick={() => fileRefs.current[zone.key]?.click()}>{st?.status === 'pending' || st?.status === 'done' ? '更换文件' : '选择文件'}</button><input ref={(el) => { fileRefs.current[zone.key] = el; }} type="file" accept={zone.accept} style={{ display: 'none' }} onChange={(event) => handleFile(zone.key, event)} onClick={(e) => { e.currentTarget.value = ''; }} /></div>; })}</div><button className={`full-button${missingFields.length || submitting ? ' full-button--disabled' : ''}`} aria-disabled={missingFields.length > 0 || submitting} onClick={() => { if (submitting) return; if (missingFields.length) handleMissingClick(); else handleSubmit(); }}>{registered ? <><CheckCircle2 size={16} />登记成功：{regNo}</> : submitting ? <><FileCheck2 size={16} />登记中…</> : <><FileCheck2 size={16} />登记数据</>}</button>{(missingHint || regError) && <span className="toolbar-error" role="alert">{missingHint ?? regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>登记规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一编号', '原始文件与后续版本自动关联', '上传后触发入库前数据核验', '所有操作写入审计日志', '挂载标准多模态 CSV 后自动回填全部采集字段'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近登记</h2><p>最近 24 小时新增数据</p></div></div>{recentLoading ? <p className="dataset-empty-state" role="status">最近登记加载中…</p> : recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill>已登记</StatusPill></div>)}</section></aside></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="标准化台账" title="数据登记" description="为每批焊接多模态数据建立统一身份、来源和工艺参数档案。" action={<span className="workflow-chip"><CheckCircle2 size={14} />登记数据即进入数据流程</span>} /><div className="registration-layout"><section className="panel form-panel"><div className="panel-heading"><div><h2>登记数据</h2><p>带 * 的字段为必填项</p></div><span className="draft-tag">登记草稿</span></div>{datasetsError ? <ErrorState scene="加载数据集" error={datasetsError} onRetry={retry} /> : null}{optionsError ? <ErrorState scene="加载可选项字典" error={optionsError} onRetry={retry} /> : null}<div className="form-section-title"><span>基础信息</span><i /></div><div className="form-grid"><label className={flash.dataset ? 'field-flash' : undefined}><span>所属数据集<span className="required-mark"> *</span></span><select value={form.dataset_id || ''} onChange={(event) => setForm((prev) => ({ ...prev, dataset_id: Number(event.target.value) }))}><option value="">请选择数据集</option>{datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name} · {dataset.dataset_no}</option>)}</select></label><label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span></span><input list={SOURCE_LIST_ID} placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /><datalist id={SOURCE_LIST_ID}>{optionValues.source.map((value) => <option key={value} value={value} />)}</datalist></label><label className={flash.collected_at ? 'field-flash' : undefined}><span>采集时间<span className="required-mark"> *</span></span><input type="datetime-local" value={form.collected_at ?? ''} onChange={setField('collected_at')} /></label><label className={flash.weld_name ? 'field-flash' : undefined}><span>样本名称（焊缝 / 批次）<span className="required-mark"> *</span></span><input placeholder="输入样本名称（焊缝 / 批次）" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label><label>关联产品信息<input list={PRODUCT_LIST_ID} placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /><datalist id={PRODUCT_LIST_ID}>{optionValues.product.map((value) => <option key={value} value={value} />)}</datalist></label></div><div className="form-section-title"><span>采集与工艺参数</span><i /></div><div className="form-grid"><label>焊机型号<select value={form.machine ?? ''} onChange={setField('machine')}><option value="">请选择焊机型号</option>{withCurrent(optionValues.machine, form.machine).map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>焊接方法<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option value="">请选择焊接方法</option>{withCurrent(optionValues.weld_method, form.weld_method).map((value) => <option key={value} value={value}>{value}</option>)}</select></label><label>板材材质<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label><label>板材厚度<input placeholder="例如：6 mm" value={form.thickness ?? ''} onChange={setField('thickness')} /></label><label>电流 / 电压<input placeholder="180 A / 22 V" value={form.current_voltage ?? ''} onChange={setField('current_voltage')} /></label><label>采样频率<input placeholder="10 kHz" value={form.sample_rate ?? ''} onChange={setField('sample_rate')} /></label><label>送丝速度<input placeholder="例如：15.8" value={form.wire_feed_speed ?? ''} onChange={setField('wire_feed_speed')} /></label><label>焊接速度<input placeholder="例如：70.0" value={form.welding_speed ?? ''} onChange={setField('welding_speed')} /></label></div><div className="form-section-title"><span>登记数据文件</span><i /></div><div className={`upload-zones${flash.file ? ' field-flash' : ''}`}>{UPLOAD_ZONES.map((zone) => { const st = uploads[zone.key]; return <div className="upload-zone" key={zone.key}><Upload size={16} /><strong>{zone.label}</strong><span>{zone.hint}</span>{st && <span className={st.status === 'error' ? 'toolbar-error' : 'accent-text'} role={st.status === 'error' ? 'alert' : undefined}>{st.status === 'uploading' ? `上传中：${st.fileName} ${st.progress ?? 0}%` : st.status === 'pending' ? `已选择：${st.fileName}（待上传）` : st.status === 'error' ? (st.errorMsg ?? `${st.fileName} 上传失败，请重试`) : `${st.fileName} 已上传`}</span>}<button className="outline-button" onClick={() => fileRefs.current[zone.key]?.click()}>{st?.status === 'pending' || st?.status === 'done' ? '更换文件' : '选择文件'}</button><input ref={(el) => { fileRefs.current[zone.key] = el; }} type="file" accept={zone.accept} style={{ display: 'none' }} onChange={(event) => handleFile(zone.key, event)} onClick={(e) => { e.currentTarget.value = ''; }} /></div>; })}</div><button className={`full-button${missingFields.length || submitting || datasetsError || optionsError ? ' full-button--disabled' : ''}`} aria-disabled={missingFields.length > 0 || submitting || Boolean(datasetsError) || Boolean(optionsError)} onClick={() => { if (submitting) return; if (datasetsError || optionsError) { setMissingHint('基础数据未加载（数据集或可选项字典），请先重试'); return; } if (missingFields.length) handleMissingClick(); else handleSubmit(); }}>{registered ? <><CheckCircle2 size={16} />登记成功：{regNo}</> : submitting ? <><FileCheck2 size={16} />登记中…</> : <><FileCheck2 size={16} />登记数据</>}</button>{(missingHint || regError) && <span className="toolbar-error" role="alert">{missingHint ?? regError}</span>}</section><aside className="registration-aside"><section className="panel"><div className="panel-heading"><div><h2>登记规则</h2><p>平台数据使用约束</p></div><ClipboardCheck size={18} className="accent-text" /></div>{['自动生成唯一编号', '原始文件与后续版本自动关联', '上传后触发入库前数据核验', '所有操作写入审计日志', '挂载标准多模态 CSV 后自动回填送丝速度、焊接速度与采集字段概览'].map((item) => <div className="rule-row" key={item}><CheckCircle2 size={15} />{item}</div>)}</section><section className="panel"><div className="panel-heading"><div><h2>最近登记</h2><p>按登记时间倒序，显示真实核验状态</p></div></div>{recentLoading ? <p className="dataset-empty-state" role="status">最近登记加载中…</p> : recentError ? <ErrorState scene="加载最近登记" error={recentError} onRetry={retry} /> : recentRows.length === 0 ? <p className="dataset-empty-state" role="status">暂无登记数据</p> : recentRows.map((row) => <div className="recent-row" key={row.id}><span className="recent-dot" /><div><strong>{row.id}</strong><small>{row.source} · {row.time.slice(11)}</small></div><StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality === '通过' ? '核验通过' : row.quality}</StatusPill></div>)}</section></aside></div></div>;
 }

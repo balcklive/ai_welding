@@ -5,17 +5,20 @@ import { createVersion, getWeld, listVersions, listWelds, runValidation } from '
 import { presignUpload, putFileDirect } from '../../api/files';
 import type { DataRecord, Dataset, DataVersion } from '../../api/types';
 import { VersionDetailDrawer } from '../versions/VersionDetailDrawer';
-import { fallbackDatasetOptions } from '../datasets/fallbacks';
-import { mockWeldRows, toWeldRow } from '../datasets/weldRows';
+import { toWeldRow } from '../datasets/weldRows';
 import type { WeldRow } from '../datasets/weldRows';
+import { ErrorState } from '../../shared/components/ErrorState';
 import { StatusPill } from '../../shared/components/StatusPill';
 import { formatDateTime } from '../../shared/lib/formatting';
+import { toUserMessage } from '../../shared/lib/errors';
 
 export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, showContext, onChange }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; showContext: boolean; onChange?: () => void }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [welds, setWelds] = useState<DataRecord[]>([]);
   const [loadingWelds, setLoadingWelds] = useState(false);
   const [row, setRow] = useState<WeldRow | null>(null);
+  // T3.2：读取失败不再回退演示行，改为在上下文条上给出原因（不遮挡选择器）。
+  const [rowError, setRowError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     listDatasets().then((list) => {
@@ -37,15 +40,16 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
     return () => { cancelled = true; };
   }, [selectedDatasetId]);
   useEffect(() => {
-    if (!selectedDataId) { setRow(null); return; }
+    if (!selectedDataId) { setRow(null); setRowError(null); return; }
     let cancelled = false;
     setRow(null);
+    setRowError(null);
     getWeld(selectedDataId)
       .then((weld) => { if (!cancelled) setRow(toWeldRow(weld)); })
       .catch((err) => {
         if (!cancelled) {
-          setRow(mockWeldRows.find((item) => item.id === selectedDataId) ?? mockWeldRows[0]);
           console.warn('[selection] getWeld failed', err);
+          setRowError(toUserMessage(err, '读取当前数据').message);
         }
       });
     return () => { cancelled = true; };
@@ -53,8 +57,8 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
   return <div className="selection-switcher" role="region" aria-label="当前数据上下文">
     <div className="selection-switcher-title"><Database size={15} /><span>当前处理数据</span></div>
     <label className="filter-field">数据集<select value={selectedDatasetId ?? ''} onChange={(event) => { const id = event.target.value ? Number(event.target.value) : null; setSelectedDatasetId(id); setSelectedDataId(null); }}><option value="">请选择数据集</option>{datasets.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
-    <label className="filter-field">焊缝数据<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || loadingWelds} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{loadingWelds ? '数据加载中…' : '请选择一条焊缝数据'}</option>{welds.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
-    {showContext && selectedDataId ? <div className="selection-switcher-details"><div><span>焊缝</span><strong>{row?.id ?? '加载中…'}</strong></div><div><span>来源</span><strong>{row?.source ?? '—'}</strong></div><div><span>焊机</span><strong>{row?.machine ?? '—'}</strong></div><div><span>焊缝版本</span><strong>{row?.version ?? '—'}</strong></div>{row && <StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill>}{onChange && <button className="ghost-button selection-context-change" onClick={onChange}>更换数据 <ArrowUpRight size={13} /></button>}</div> : <span className="selection-switcher-hint">选择数据集和焊缝后，分析与标注功能可用</span>}
+    <label className="filter-field">样本<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || loadingWelds} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{loadingWelds ? '数据加载中…' : '请选择一条样本'}</option>{welds.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
+    {showContext && selectedDataId ? <div className="selection-switcher-details"><div><span>样本</span><strong>{row?.id ?? '加载中…'}</strong></div><div><span>来源</span><strong>{row?.source ?? '—'}</strong></div><div><span>焊机</span><strong>{row?.machine ?? '—'}</strong></div><div><span>数据版本</span><strong>{row?.version ?? '—'}</strong></div>{rowError && <span className="selection-context-error" role="alert">{rowError}</span>}{row && <StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill>}{onChange && <button className="ghost-button selection-context-change" onClick={onChange}>更换数据 <ArrowUpRight size={13} /></button>}</div> : <span className="selection-switcher-hint">选择数据集和样本后，分析与标注功能可用</span>}
   </div>;
 }
 
@@ -69,9 +73,9 @@ export function DatasetTestingContext() {
     listDatasets().then((list) => { if (!cancelled) setDs(list.find((item) => item.current_version_id != null) ?? null); }).catch((err) => { if (!cancelled) console.warn('[datasets] testing context failed', err); });
     return () => { cancelled = true; };
   }, []);
-  const name = ds ? `${ds.name} · 快照 ${ds.version ?? '—'}` : '尚未选择数据集快照';
+  const name = ds ? `${ds.name} · 数据集版本 ${ds.version ?? '—'}` : '尚未选择数据集版本';
   const testCount = ds?.split?.test !== undefined ? ds.split.test.toLocaleString() : '—';
-  return <div className="model-dataset-context"><div className="dataset-row-icon"><Box size={16} /></div><div><span>当前测试数据集快照</span><strong>{name}</strong></div><div><span>固定测试集</span><strong>{testCount === '—' ? '—' : `${testCount} 条样本`}</strong></div>{ds?.current_version_id != null ? <StatusPill>固定快照</StatusPill> : <StatusPill tone="orange">待选择</StatusPill>}<span className="form-help">请在下方测试配置中选择</span></div>;
+  return <div className="model-dataset-context"><div className="dataset-row-icon"><Box size={16} /></div><div><span>当前测试数据集版本</span><strong>{name}</strong></div><div><span>测试集切片</span><strong>{testCount === '—' ? '—' : `${testCount} 个切片`}</strong></div>{ds?.current_version_id != null ? <StatusPill>已选定版本</StatusPill> : <StatusPill tone="orange">待选择</StatusPill>}<span className="form-help">请在下方测试配置中选择</span></div>;
 }
 
 /** 选择数据卡片展示形状（selection-card 期望的字段，由 DataRecord 派生）。 */
@@ -83,42 +87,48 @@ export function AnalysisSelect({ onContinue, selectedDatasetId, setSelectedDatas
   const [datasetOptions, setDatasetOptions] = useState<{ id: number; label: string }[]>([]);
   const [weldRows, setWeldRows] = useState<SelectCard[]>([]);
   const [loadingWeld, setLoadingWeld] = useState(false);
+  // T3.2：不再用演示数据兜底——接口失败置错误态，由 ErrorState 给出原因与重试。
+  const [datasetError, setDatasetError] = useState<unknown>(null);
+  const [weldError, setWeldError] = useState<unknown>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const retry = () => setReloadKey((n) => n + 1);
   // 第一级：数据集下拉（数据集为登记时的归属容器，分析以其为入口）。
   useEffect(() => {
     let cancelled = false;
-    const fallback = () => fallbackDatasetOptions;
+    setDatasetError(null);
     listDatasets()
       .then((list) => {
         if (cancelled) return;
         const options = list.map((d) => ({ id: d.id, label: d.name }));
-        setDatasetOptions(options.length ? options : fallback());
-        setSelectedDatasetId(selectedDatasetId ?? options[0]?.id ?? fallback()[0]?.id ?? null);
+        setDatasetOptions(options);
+        setSelectedDatasetId(selectedDatasetId ?? options[0]?.id ?? null);
       })
       .catch((err) => {
         if (cancelled) return;
         console.warn('[analysis] listDatasets failed', err);
-        const options = fallback();
-        setDatasetOptions(options);
-        setSelectedDatasetId(selectedDatasetId ?? options[0]?.id ?? null);
+        setDatasetOptions([]);
+        setDatasetError(err);
       });
     return () => { cancelled = true; };
-  }, [selectedDatasetId, setSelectedDatasetId]);
-  // 第二级：选定数据集后拉该数据集下全部焊缝，未核验通过置灰不可选。
+  }, [selectedDatasetId, setSelectedDatasetId, reloadKey]);
+  // 第二级：选定数据集后拉该数据集下全部样本，核验异常的置灰不可选。
   useEffect(() => {
     if (selectedDatasetId == null) { setWeldRows([]); return; }
     let cancelled = false;
     setLoadingWeld(true);
+    setWeldError(null);
     listWelds({ dataset_id: selectedDatasetId, page_size: 50 })
       .then((res) => { if (!cancelled) setWeldRows(res.items.map(toSelectCard)); })
       .catch((err) => {
         if (cancelled) return;
         console.warn('[analysis] listWelds by dataset failed', err);
-        setWeldRows(mockWeldRows.map((r) => ({ id: r.id, machine: r.machine, types: r.types, quality: r.quality, title: null })));
+        setWeldRows([]);
+        setWeldError(err);
       })
       .finally(() => { if (!cancelled) setLoadingWeld(false); });
     return () => { cancelled = true; };
-  }, [selectedDatasetId]);
-  return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择数据集，再选择一条焊缝开始分析</h2><p>先选定数据集，再在数据集内选择焊缝进入多模态分析流程；核验异常的焊缝置灰不可选，待复核焊缝可直接进入。</p></div></div><div className="selection-dataset-bar"><label className="filter-field">所属数据集<select value={selectedDatasetId ?? ''} onChange={(event) => setSelectedDatasetId(Number(event.target.value))}>{datasetOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label></div>{selectedDatasetId == null ? <p className="selection-empty">正在加载数据集…</p> : loadingWeld ? <p className="selection-empty">正在加载该数据集的焊缝…</p> : weldRows.length ? <div className="selection-grid">{weldRows.map((row) => <button className={`selection-card ${row.quality === '异常' ? 'disabled' : ''}`} disabled={row.quality === '异常'} onClick={() => onContinue(row.id)} key={row.id} title={row.quality === '异常' ? '该焊缝核验异常，不可进入分析' : undefined}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{row.title ?? '未命名焊缝'}</h3><p>{row.machine ?? '—'} · {row.types}</p></div><StatusPill tone={row.quality === '通过' ? 'green' : row.quality === '异常' ? 'red' : 'orange'}>{row.quality === '通过' ? '核验通过' : row.quality}</StatusPill></button>)}</div> : <p className="selection-empty">该数据集暂无数据，请先在数据管理登记数据。</p>}</div>;
+  }, [selectedDatasetId, reloadKey]);
+  return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择数据集，再选择一条样本开始分析</h2><p>先选定数据集，再在数据集内选择样本进入多模态分析流程；核验异常的样本置灰不可选，待复核样本可直接进入。</p></div></div><div className="selection-dataset-bar"><label className="filter-field">所属数据集<select value={selectedDatasetId ?? ''} onChange={(event) => setSelectedDatasetId(Number(event.target.value))}>{datasetOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label></div>{datasetError ? <ErrorState scene="加载数据集" error={datasetError} onRetry={retry} /> : selectedDatasetId == null ? <p className="selection-empty">正在加载数据集…</p> : loadingWeld ? <p className="selection-empty">正在加载该数据集的样本…</p> : weldError ? <ErrorState scene="加载样本列表" error={weldError} onRetry={retry} /> : weldRows.length ? <div className="selection-grid">{weldRows.map((row) => <button className={`selection-card ${row.quality === '异常' ? 'disabled' : ''}`} disabled={row.quality === '异常'} onClick={() => onContinue(row.id)} key={row.id} title={row.quality === '异常' ? '该样本核验异常，不可进入分析' : undefined}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{row.title ?? '未命名样本'}</h3><p>{row.machine ?? '—'} · {row.types}</p></div><StatusPill tone={row.quality === '通过' ? 'green' : row.quality === '异常' ? 'red' : 'orange'}>{row.quality === '通过' ? '核验通过' : row.quality}</StatusPill></button>)}</div> : <p className="selection-empty">该数据集暂无数据，请先在数据管理登记数据。</p>}</div>;
 }
 
 export function VersionPanel({ dataId }: { dataId?: string }) {
