@@ -11,8 +11,9 @@ import { ErrorState } from '../../shared/components/ErrorState';
 import { StatusPill } from '../../shared/components/StatusPill';
 import { formatDateTime } from '../../shared/lib/formatting';
 import { toUserMessage } from '../../shared/lib/errors';
+import { TERMS } from '../../shared/lib/terms';
 
-export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, showContext, onChange }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; showContext: boolean; onChange?: () => void }) {
+export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, showContext, onChange, emphasis = false }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; showContext: boolean; onChange?: () => void; emphasis?: boolean }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [welds, setWelds] = useState<DataRecord[]>([]);
   const [loadingWelds, setLoadingWelds] = useState(false);
@@ -54,16 +55,18 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
       });
     return () => { cancelled = true; };
   }, [selectedDataId]);
-  return <div className="selection-switcher" role="region" aria-label="当前数据上下文">
+  return <div id="data-context-switcher" className={`selection-switcher${emphasis ? ' needs-attention' : ''}`} role="region" aria-label="当前数据上下文">
     <div className="selection-switcher-title"><Database size={15} /><span>当前处理数据</span></div>
     <label className="filter-field">数据集<select value={selectedDatasetId ?? ''} onChange={(event) => { const id = event.target.value ? Number(event.target.value) : null; setSelectedDatasetId(id); setSelectedDataId(null); }}><option value="">请选择数据集</option>{datasets.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
     <label className="filter-field">样本<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || loadingWelds} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{loadingWelds ? '数据加载中…' : '请选择一条样本'}</option>{welds.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
-    {showContext && selectedDataId ? <div className="selection-switcher-details"><div><span>样本</span><strong>{row?.id ?? '加载中…'}</strong></div><div><span>来源</span><strong>{row?.source ?? '—'}</strong></div><div><span>焊机</span><strong>{row?.machine ?? '—'}</strong></div><div><span>数据版本</span><strong>{row?.version ?? '—'}</strong></div>{rowError && <span className="selection-context-error" role="alert">{rowError}</span>}{row && <StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill>}{onChange && <button className="ghost-button selection-context-change" onClick={onChange}>更换数据 <ArrowUpRight size={13} /></button>}</div> : <span className="selection-switcher-hint">选择数据集和样本后，分析与标注功能可用</span>}
+    {showContext && selectedDataId ? <div className="selection-switcher-details"><div><span>样本</span><strong>{row?.id ?? '加载中…'}</strong></div><div><span>来源</span><strong>{row?.source ?? '—'}</strong></div><div><span>焊机</span><strong>{row?.machine ?? '—'}</strong></div><div><span>数据版本</span><strong>{row?.version ?? '—'}</strong></div>{rowError && <span className="selection-context-error" role="alert">{rowError}</span>}{row && <StatusPill tone={row.quality === '异常' ? 'red' : row.quality === '待复核' ? 'orange' : 'green'}>{row.quality}</StatusPill>}{onChange && <button className="ghost-button selection-context-change" onClick={onChange}>更换数据 <ArrowUpRight size={13} /></button>}</div> : <span className="selection-switcher-hint">{emphasis ? '本页需要数据上下文：请先选择数据集和一条样本' : '选择数据集和样本后，分析与标注功能可用'}</span>}
   </div>;
 }
 
-export function SelectionRequired({ onBack }: { onBack: () => void }) {
-  return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择数据集和焊缝数据</h2><p>当前功能必须绑定真实数据后才能执行，请在页面上方选择数据集和一条焊缝。</p><button className="outline-button" onClick={onBack}><ChevronLeft size={14} />前往选择数据</button></div>;
+export function SelectionRequired({ onBack, onSelectHere }: { onBack: () => void; onSelectHere?: () => void }) {
+  // T5/S3：真正的选择器就在本页顶部，"前往选择数据"却跳到数据集列表——改为在本页聚焦高亮选择器；
+  // 确实无法在本页完成时（例如库里还没有数据）才保留去列表/去登记的出口。
+  return <div className="selection-required"><div className="selection-icon"><Database size={23} /></div><h2>请先选择数据集和{TERMS.sample}</h2><p>当前功能必须绑定数据后才能执行——选择器就在本页顶部，选好即可继续。</p>{onSelectHere ? <><button className="outline-button" onClick={onSelectHere}><ArrowUpRight size={14} />在本页选择数据</button><button className="ghost-button" onClick={onBack}>去数据集列表</button></> : <button className="outline-button" onClick={onBack}><ChevronLeft size={14} />前往选择数据</button>}</div>;
 }
 
 export function DatasetTestingContext() {

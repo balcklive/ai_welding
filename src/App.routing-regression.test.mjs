@@ -8,7 +8,10 @@ const navigation = readFileSync(new URL('./app/navigation.ts', import.meta.url),
 
 /** 从 `navigation.ts` 的 `Route` 联合类型里抽出全部字面量。 */
 const declaredRoutes = (() => {
-  const union = navigation.slice(navigation.indexOf('export type Route ='), navigation.indexOf('export const workspaceHeaders'));
+  // 切到 Route 联合类型之后的**下一个** export const 为止——不要写死成某个具体常量的名字，
+  // 否则在两者之间新增常量（如 routeCrumbs）会把它的字面量当成路由（2026-09-14 踩过）。
+  const rest = navigation.slice(navigation.indexOf('export type Route ='));
+  const union = rest.slice(0, rest.indexOf('export const'));
   return [...union.matchAll(/'([^']+)'/g)].map((match) => match[1]);
 })();
 

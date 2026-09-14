@@ -11,7 +11,8 @@ import { Toolbar } from './shared/components/Toolbar';
 import {
   AnalysisSelect, DatasetTestingContext, SelectionRequired, SelectionSwitcher, VersionPanel,
 } from './features/data-context/DataContext';
-import { navStructure, workspaceHeaders } from './app/navigation';
+import { navStructure, routeCrumbs, workspaceHeaders } from './app/navigation';
+import { PageBreadcrumb } from './shared/components/PageScaffold';
 import type { Route } from './app/navigation';
 import { DEFAULT_ROUTE, parseHashRoute, routeToHash } from './app/route-url';
 
@@ -169,18 +170,29 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   // 数据登记是新建数据操作，不依赖当前焊缝上下文；核验/版本页则展示当前上下文。
   const showContext = selectedDataId && (ws === 'analysis' || (ws === 'data-center' && route !== 'data-center/datasets' && route !== 'data-center/registration'));
   const showDataSwitcher = ws === 'analysis' || route === 'data-center/validation' || route === 'data-center/versions';
+  // T5 守卫：本页需要数据上下文却没选时，把顶部选择器置为强调态（页面本身渲染的是
+  // SelectionRequired 引导，选择器就在它上方——两者一起告诉用户"缺什么、在哪儿补"）。
+  const needsDataContext = showDataSwitcher && (selectedDataId == null || (ws === 'analysis' && selectedDatasetId == null));
+  // S3：守卫页的按钮不再跳走，而是聚焦并高亮本页顶部的选择器。
+  const focusDataSwitcher = () => {
+    const switcher = document.getElementById('data-context-switcher');
+    if (!switcher) return;
+    switcher.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    switcher.classList.add('field-flash');
+    window.setTimeout(() => switcher.classList.remove('field-flash'), 1100);
+  };
 
   let content: React.ReactNode = null;
   if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} datasetHomeKey={datasetHomeKey} selectedDatasetId={selectedDatasetId} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
   else if (route === 'data-center/registration') content = <RegistrationPage />;
-  else if (route === 'data-center/validation') content = selectedDataId ? <ValidationPage embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} />;
-  else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} />;
+  else if (route === 'data-center/validation') content = selectedDataId ? <ValidationPage embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/select') content = <AnalysisSelect selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
-  else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded splitOnly dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <AnnotationWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
-  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtractionPage embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} />;
+  else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded splitOnly dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <AnnotationWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtractionPage embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'model-center/dataset-build') content = <TrainingDataPreparation />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} navigate={navigate} />;
   else if (route === 'model-center/training') content = <Training />;
@@ -189,7 +201,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'settings') content = <SettingsPage />;
 
   const frameAction = ws === 'data-center' && route === 'data-center/datasets' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined;
-  return <div className={`workspace-page ${route === 'model-center/repository' ? 'model-repository-page' : ''}`}><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div>{(toolbarConfig.action || toolbarConfig.secondary) && <Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={frameAction} />}</div>{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
+  return <div className={`workspace-page ${route === 'model-center/repository' ? 'model-repository-page' : ''}`}><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div>{(toolbarConfig.action || toolbarConfig.secondary) && <Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={frameAction} />}</div>{routeCrumbs[route] && <PageBreadcrumb crumbs={(routeCrumbs[route] ?? []).map((label) => ({ label }))} />}{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} emphasis={Boolean(needsDataContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
 }
 
 export default App;

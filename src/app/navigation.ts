@@ -19,6 +19,21 @@ export type Route =
   | 'model-center/inference'
   | 'settings';
 
+/**
+ * 面包屑（T6.2）：**只登记由框架渲染面包屑的路由**——即那些会把全局上下文条
+ * （`SelectionSwitcher`）渲染在页面之上的路由，这样骨架顺序才是
+ * 「工作区头 → 面包屑 → 上下文条 → 主体」。
+ *
+ * 对象层级更深的数据集页面（数据集列表/概览/版本成员/全部数据/数据详情）由
+ * `DatasetWorkspace` 用 `PageScaffold` 自己渲染，不在这里重复登记，否则会出现两层面包屑。
+ * 用词与 `docs/数据管理改造技术实施方案.md` §T6.2 的表一致。
+ */
+export const routeCrumbs: Partial<Record<Route, string[]>> = {
+  'data-center/registration': ['数据管理', '数据登记'],
+  'data-center/validation': ['数据管理', '数据核验'],
+  'data-center/versions': ['数据管理', '数据版本'],
+};
+
 export const workspaceHeaders: Record<string, { eyebrow: string; title: string; description: string }> = {
   'data-center': { eyebrow: '数据资产中心', title: '数据管理', description: '以单条焊缝数据为单位，管理数据登记、质量核验和版本链路。' },
   analysis: { eyebrow: '多模态数据生产线', title: '分析与标注', description: '选择一条焊缝后，完成对齐、起收弧识别、切分与标注。' },

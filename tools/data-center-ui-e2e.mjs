@@ -99,6 +99,24 @@ const DIMENSIONS = [
   { name: '焊缝照片', status: '已具备', required: false },
 ];
 
+/** 带步骤名的等待：超时时错误信息直接指出卡在哪一步（批量导航断言时很好用）。 */
+const waitForStep = async (page, selector, label) => {
+  try {
+    await page.waitForSelector(selector, { timeout: 30_000 });
+  } catch {
+    throw new Error(`等待「${label}」超时（${selector}）`);
+  }
+};
+
+/** 带步骤名的点击：失败时指出点的是哪一步。 */
+const clickStep = async (locator, label) => {
+  try {
+    await locator.click({ timeout: 20_000 });
+  } catch (err) {
+    throw new Error(`点击「${label}」失败（${String(err.message).slice(0, 60)}）`);
+  }
+};
+
 const browser = await chromium.launch();
 const ctx = await browser.newContext();
 await ctx.addInitScript(() => localStorage.setItem('token', 'data-center-ui-e2e'));
@@ -119,6 +137,8 @@ await ctx.route(API, (route) => {
   if (/\/datasets\/DS-E2E\/lineage/.test(url)) return route.fulfill(envelope([{ type: 'records', label: '原始样本数据', count: 2, items: [] }]));
   if (/\/datasets\/DS-E2E/.test(url)) return route.fulfill(envelope(DATASET));
   if (/\/datasets/.test(url)) return route.fulfill(envelope([DATASET]));
+  // 单条样本详情要先于列表规则匹配：否则详情会拿到分页对象，`record.modalities.join` 直接崩。
+  if (/\/welds\/WLD-E2E-0001/.test(url)) return route.fulfill(envelope(RECORD));
   if (/\/welds/.test(url)) return route.fulfill(envelope({ items: [RECORD], total: 1, page: 1, page_size: 20 }));
   return route.fulfill(envelope([]));
 });
@@ -182,6 +202,56 @@ try {
   check('全部样本表不再有「核验状态」列', sourceHead.includes('核验状态'), false);
   check('送丝速度为独立列且带单位', sourceHead.includes('送丝速度 m/min'), true);
   check('焊接速度为独立列且带单位', sourceHead.includes('焊接速度 mm/min'), true);
+
+  // T6.1/T6.2：面包屑骨架与用词（含可点回流）
+  await page.locator('.page-breadcrumb button', { hasText: '数据集' }).first().click();
+  await page.waitForTimeout(600);
+  check('面包屑「数据集」可点回列表', await page.locator('.dataset-workspace h2').first().innerText(), '数据集列表');
+  await page.locator('.dataset-list-row').first().click();
+  await page.waitForSelector('.dataset-detail-grid', { timeout: 30_000 });
+  const crumbText = () => page.locator('.page-breadcrumb').first().innerText();
+  check('概览面包屑 = 数据管理 / 数据集 / E2E 数据集', (await crumbText()).replace(/\s+/g, ''), '数据管理/数据集/E2E数据集');
+  await page.getByRole('button', { name: /查看当前数据集版本/ }).click();
+  await page.waitForSelector('.dataset-records-table', { timeout: 30_000 });
+  check('成员页面包屑含「数据集版本 v1.1」', (await crumbText()).includes('数据集版本 v1.1'), true);
+  check('上下文条用统一 class（.context-bar）', await page.locator('.context-bar').count(), 1);
+
+  // T5 核对项（自包含场景，重新进入以免依赖上面的视图状态）：
+  // 成员详情 →「继续处理 → 数据核验」自动带入该条数据（不应落到守卫页）
+  // 坑：hash 没变时 goto 同一 URL 不会重载，页面仍停在上一个视图（数据集内部层级是组件 state）
+  // → 必须用 reload() 才能回到列表。
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForStep(page, '.dataset-list-row', '数据集列表行');
+  await clickStep(page.locator('.dataset-list-row').first(), '数据集列表行');
+  await waitForStep(page, '.dataset-detail-grid', '数据集概览');
+  await clickStep(page.getByRole('button', { name: /查看全部样本/ }), '查看全部样本');
+  await waitForStep(page, '.dataset-records-table', '全部样本表');
+  await clickStep(page.locator('.dataset-record-row:not(.dataset-record-head)').first(), '全部样本首行');
+  await waitForStep(page, '.dataset-record-detail', '成员详情');
+  await clickStep(page.locator('.dataset-record-detail button', { hasText: '数据核验' }).first(), '继续处理-数据核验');
+  await page.waitForTimeout(1200);
+  check('从成员详情进核验：页面已带入该条数据（不是守卫页）', await page.locator('.selection-required').count(), 0);
+  check('核验页渲染出结果区', await page.locator('.validation-summary').count(), 1);
+  check('顶部选择器已带上该样本', (await page.locator('.selection-switcher select').nth(1).inputValue()), 'WLD-E2E-0001');
+
+  // T5：核验页无数据上下文时的守卫（选择器强调态 + 引导按钮在本页完成）
+  // 数据上下文不入 URL，所以"重新回到无上下文状态"只能靠 reload（goto 同一 URL 不会重载）。
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.selection-required', { timeout: 30_000 });
+  check('守卫页存在', await page.locator('.selection-required').count(), 1);
+  check('顶部选择器置为强调态', await page.locator('.selection-switcher.needs-attention').count(), 1);
+  check('选择器给出提示文案', (await page.locator('.selection-switcher-hint').innerText()).includes('本页需要数据上下文'), true);
+  const hereBtn = page.getByRole('button', { name: '在本页选择数据' });
+  check('S3 按钮文案改为「在本页选择数据」', await hereBtn.count(), 1);
+  const hashBefore = await page.evaluate(() => location.hash);
+  await hereBtn.click();
+  await page.waitForTimeout(400);
+  check('点按钮不跳走（仍在本页）', await page.evaluate(() => location.hash), hashBefore);
+
+  // T6.2：登记页面包屑（由框架渲染，位于上下文条之前）
+  await page.goto(`${BASE}/#/data-center/registration`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.registration-layout', { timeout: 30_000 });
+  check('登记页面包屑 = 数据管理 / 数据登记', (await crumbText()).replace(/\s+/g, ''), '数据管理/数据登记');
 
   check('全程无页面级 JS 异常', pageErrors.length, 0);
   if (pageErrors.length) console.log(`   ⚠ pageerror: ${pageErrors.join(' | ')}`);

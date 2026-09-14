@@ -4,7 +4,7 @@
 
 ## 目录
 
-- `components/`：通用 UI 组件（页头、工具栏、状态标签、文本对话框、信息行、**错误态 ErrorState**），详见 `components/CLAUDE.md`。
+- `components/`：通用 UI 组件（页头、工具栏、状态标签、文本对话框、信息行、**错误态 ErrorState**、**页面骨架 PageScaffold / 上下文条 ContextBar**），详见 `components/CLAUDE.md`。
 - `lib/`：纯工具函数（时间格式化、**错误文案翻译 errors.ts**、**术语表 terms.ts**），详见 `lib/CLAUDE.md`。
 
 ## 调用链
