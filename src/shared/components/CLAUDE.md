@@ -6,6 +6,7 @@
 
 - `PageScaffold.tsx`：**T6.1 新增**。导出 `PageBreadcrumb({crumbs})`（面包屑，`Crumb` 带 `onClick` 即渲染成可点回流）与 `PageScaffold({crumbs, context, children})`（**面包屑 → 上下文条（可选）→ 主体**）。工作区头不在这里——它在 `App.tsx` 的 `WorkspaceFrame`。**用词必须走术语表**（见 `docs/数据管理改造技术实施方案.md` §T6.2 的表）。
 - `ContextBar.tsx`：**T6.1 新增**。`ContextBar({items, action})`，`items = [{label, value, hint?}]`——页面级上下文条（`所属数据集 | 数据 | 数据版本 | 状态 [更换]`）。顶部那个全局版本是 `features/data-context` 的 `SelectionSwitcher`，由 App 渲染在面包屑之后；本组件用于数据集层级里需要额外说明"当前在看哪个数据集版本"的页面。
+- `ConfirmDialog.tsx`：**T4a/T7 新增**。`ConfirmDialog({title, description, items, confirmLabel, cancelLabel, tone, confirmDisabled, onConfirm, onCancel})`——确认弹窗（`tone="danger"` 走危险按钮），`items` 逐条列出"将要发生什么"（提交前是默认值清单、删除前是影响范围）。**不用浏览器原生 confirm**（Q21）；"能不能确认"由调用方判断（如后端预检返回 `can_delete=false`）。
 - `ErrorState.tsx`：**T3.1 新增**。`ErrorState({scene, error, onRetry?})`——统一错误态（图标 + 主文案 + 原因 + 重试，`role="alert"`）；文案由 `lib/errors.toUserMessage(error, scene)` 生成。**接口失败的页面一律渲染它，不要再写演示数据兜底**（T3.2）。
 - `InfoRow.tsx`：`InfoRow({label, value, accent})`——单行「标签/值」信息行（标注信息、详情页常用）。
 - `PageIntro.tsx`：`PageIntro({eyebrow, title, description, action})`——页头区（眉题 + 标题 + 描述 + 右侧动作区），多数 feature 页复用。

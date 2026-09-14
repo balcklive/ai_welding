@@ -184,7 +184,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
 
   let content: React.ReactNode = null;
   if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} datasetHomeKey={datasetHomeKey} selectedDatasetId={selectedDatasetId} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
-  else if (route === 'data-center/registration') content = <RegistrationPage />;
+  else if (route === 'data-center/registration') content = <RegistrationPage navigate={navigate} lockedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} setSelectedDataId={setSelectedDataId} />;
   else if (route === 'data-center/validation') content = selectedDataId ? <ValidationPage embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/select') content = <AnalysisSelect selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;

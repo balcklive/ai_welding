@@ -28,6 +28,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
+  - `GET /welds/{weld_id}/delete-impact`（**T7 新增**）：同上的样本版（共用 `collect_record_references`）。
   - `DELETE /welds/{weld_id}`（**2026-08-29 新增**）：删除焊缝及其可安全删除的版本产物；
     已进入切分/固定数据集快照时抛 `WeldDeleteConflict` → `40900`（不删）；正常删除会级联清理
     核验报告/规则、对齐/特征/信号产物与版本链，并审计 delete。业务逻辑
@@ -122,6 +123,8 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
     状态经通用 `GET /jobs/{job_id}` 轮询）。
   - `GET /datasets/{dataset_id}/lineage`（4 层节点）。
+  - `GET /datasets/{dataset_id}/delete-impact`（**T7 新增**）：删除前的影响范围预检
+    → `{counts, blocking, deletable, can_delete}`，与 `DELETE /datasets/{id}` 共用 `collect_dataset_references`。
   - `DELETE /datasets/{dataset_id}`（**2026-08-29 新增**）：删除无业务引用的数据集及固定版本
     元数据；仍有焊缝或训练/测试任务引用时抛 `DatasetDeleteConflict` → `40900`。业务逻辑
     `app.services.datasets.delete_dataset`，测试 `tests/test_dataset_delete.py`。

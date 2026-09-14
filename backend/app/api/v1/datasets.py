@@ -86,6 +86,23 @@ def create_dataset(
     return ok(svc.dataset_payload(dataset))
 
 
+@router.get("/datasets/{dataset_id}/delete-impact")
+def get_dataset_delete_impact(
+    dataset_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """删除前的影响范围预检（T7）：关联数量 + 阻塞原因 + 实际会删掉的数量。
+
+    与 `DELETE /datasets/{id}` **共用** `svc.collect_dataset_references`——弹窗里说的和真删时拦的
+    必须一致（改造前示例弹窗写着"样本 1 仍可删"，而实际规则是只要有登记数据就拒绝）。
+    """
+    dataset = svc.get_dataset_by_identifier(session, dataset_id)
+    if dataset is None:
+        return err(40401, "数据集不存在", status=404)
+    return ok(svc.collect_dataset_references(session, dataset).payload())
+
+
 @router.delete("/datasets/{dataset_id}")
 def delete_dataset(
     dataset_id: str,

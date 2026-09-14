@@ -275,6 +275,17 @@ export interface DatasetQuality {
   deductions?: Record<string, QualityDeduction>;
 }
 
+/** 删除前的影响范围预检（T7）：后端用**与实际删除同一份**引用规则算出来。 */
+export interface DeleteImpact {
+  /** 关联数量（界面展示"影响范围"）。 */
+  counts: Record<string, number>;
+  /** 非空 = 不能删，逐条说明原因。 */
+  blocking: string[];
+  /** 实际会一并删除的数量（与关联数量分开，避免"关联 12、实际删 3"被混成一个数）。 */
+  deletable: Record<string, number>;
+  can_delete: boolean;
+}
+
 export interface DatasetSplit {
   train: number;
   val: number;

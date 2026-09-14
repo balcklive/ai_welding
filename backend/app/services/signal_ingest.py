@@ -176,15 +176,26 @@ def _parse_csv(data: bytes) -> tuple[pd.DataFrame | None, str | None]:
         return None, f"CSV 解析失败: {exc}"
 
 
+_FS_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*([kKmM])?\s*(?:[hH][zZ])?")
+
+
 def _parse_fs(value: str | None) -> int | None:
-    """从登记 `sample_rate` 字符串解析采样率 Hz（"10 kHz"/"1kHz"/"1000"）。"""
+    """从登记 `sample_rate` 字符串解析采样率 Hz。
+
+    覆盖登记表单里的常见写法：`"10 kHz"` / `"1kHz"` / `"1000"` / `"20K"`。
+
+    **坑（2026-09-14 修）**：旧正则 `([kK])?[hH][zZ]?` 强制要求 `Hz`，于是
+    `"20K"` 与纯数字 `"1000"` 都解析成 None（后者连 docstring 都声称支持）——
+    时间列缺失时信号导入靠它兜底推导采样率，两种写法都会失败。实测线上确有 `sample_rate = '20K'`。
+    """
     if not value:
         return None
-    m = re.search(r"(\d+(?:\.\d+)?)\s*([kK])?[hH][zZ]?", str(value))
-    if not m:
+    match = _FS_PATTERN.search(str(value))
+    if not match:
         return None
-    base = float(m.group(1))
-    return int(base * 1000) if m.group(2) else int(base)
+    base = float(match.group(1))
+    scale = {"k": 1000, "m": 1_000_000}.get((match.group(2) or "").lower(), 1)
+    return int(base * scale)
 
 
 def _rule(name: str, status: str, message: str) -> dict:

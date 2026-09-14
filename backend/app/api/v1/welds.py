@@ -25,6 +25,7 @@ from app.models.jobs import Job
 from app.schemas.common import err, ok, paginate
 from app.services import welds as svc
 from app.services import datasets as dataset_svc
+from app.services.datasets import collect_record_references
 from app.services.jobs import create_job
 from app.storage import get_storage
 
@@ -179,6 +180,20 @@ def get_weld(
         return err(40401, "焊缝不存在", status=404)
     forbid_unless_record_owned(session, current_user, record)
     return ok(svc.record_payload(session, record))
+
+
+@router.get("/welds/{weld_id}/delete-impact")
+def get_weld_delete_impact(
+    weld_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """删除前的影响范围预检（T7）：与 `DELETE /welds/{id}` 共用同一份引用采集。"""
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    forbid_unless_record_owned(session, current_user, record)
+    return ok(collect_record_references(session, record).payload())
 
 
 @router.delete("/welds/{weld_id}")

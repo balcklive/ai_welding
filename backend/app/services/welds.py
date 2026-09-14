@@ -38,6 +38,7 @@ from app.models.data import (
     ValidationReport,
     ValidationRuleResult,
 )
+from app.services.datasets import collect_record_references
 from app.services.jobs import _iso_utc
 
 # ── 核验规则名（与 App.tsx / seed.VALIDATION_RULES 逐字一致，勿改顺序） ──
@@ -565,19 +566,21 @@ def get_record_by_weld_id(session: Session, weld_id: str) -> DataRecord | None:
 
 
 def delete_record(session: Session, record: DataRecord) -> dict[str, int]:
-    """删除焊缝及其可安全删除的处理产物。"""
+    """删除样本及其可安全删除的处理产物。
+
+    **与预检共用同一个引用采集函数**（`datasets.collect_record_references`，T7）：改造前只按
+    `SplitTask` 拦截，基础样本 / 数据集版本成员引用 / 标注任务三条路径都漏了——删样本会留下
+    孤儿 `Sample` 指针，防泄漏分组对它退化成"每条一组"。
+    """
+    report = collect_record_references(session, record)
+    if report.blocking:
+        raise WeldDeleteConflict("；".join(report.blocking))
+
     versions = session.exec(
         select(DataVersion).where(DataVersion.record_id == record.id)
     ).all()
     version_ids = [version.id for version in versions if version.id is not None]
     if version_ids:
-        # 固定数据集快照和切分/标注产物都是可复现资产，不能因删除原始焊缝而失效。
-        split_ids = [task.id for task in session.exec(
-            select(SplitTask).where(SplitTask.version_id.in_(version_ids))
-        ).all() if task.id is not None]
-        if split_ids:
-            raise WeldDeleteConflict("焊缝已进入固定数据集快照或标注流程，不能删除")
-
         for version_id in version_ids:
             for report in session.exec(select(ValidationReport).where(
                 ValidationReport.version_id == version_id

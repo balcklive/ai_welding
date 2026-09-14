@@ -193,6 +193,12 @@
     ③ `run_build` 另加两条告警（不拦截）：无主样本（`record_id is None`，防泄漏分组对它退化
     成每条一组）与成员数超 `MEMBER_WARN_THRESHOLD`。"构建前要求用户确认"尚未实现（需新契约）。
     **注意**：`filter` 与 `annotation_task` 两种来源**未加**锚点排除（用户显式指定，属预期）。
+  - **删除预检（T7，2026-09-14）**：`ReferenceReport{counts, blocking, deletable}` +
+    `collect_dataset_references` / `collect_record_references`——**预检接口与实际删除共用同一份采集**，
+    避免"弹窗说的"和"真删拦的"漂移（改造前 `delete_dataset` 只要还有任意登记数据就拒绝，而示例弹窗
+    写着"样本 1 仍可删"）。数据集阻塞项：仍有登记样本、版本被训练/测试引用；样本阻塞项：已进分段任务、
+    已被数据集版本成员引用、已进标注任务（后两条是改造前漏掉的路径，会留下孤儿 `Sample`）。
+    `services/welds.py::delete_record` 也改用它（跨域 import，无循环）。
   - `get_lineage` = 4 层节点：原始焊缝 / 标注任务 / 数据集版本 / 模型训练。
   - 解析辅助 `_sample_record_id`：样本 → 所属焊缝（meta.record_id > meta.weld_id > split_task/
     annotation_task→version→record），按焊缝分组划分的依据。

@@ -31,11 +31,13 @@ test('analysis select no longer consumes the flat candidates endpoint', () => {
   assert.doesNotMatch(select, /listCandidates/);
 });
 
-test('registration form picks the owning dataset and defaults the field', () => {
-  assert.match(registration, /所属数据集/);
-  assert.match(registration, /dataset_id: 0/);
-  // 上传时序重构后必填校验改由 missingFields 数组驱动（dataset/source/weld_name/file）。
-  assert.match(registration, /ok: !!form\.dataset_id/);
+test('registration page inherits and locks the owning dataset (T4.1)', () => {
+  // 所属数据集继承自上下文并锁定；无上下文时先走"选择数据集"步骤再锁定（confirmDataset）。
+  assert.match(registration, /lockedDatasetId/);
+  assert.match(registration, /dataset_id: inheritedDatasetId \?\? 0/);
+  assert.match(registration, /const confirmDataset/);
+  // 必填校验由 missingFields 驱动：数据集看**锁定值**（不再看 form.dataset_id），来源看表单。
+  assert.match(registration, /ok: lockedDatasetId != null/);
   assert.match(registration, /ok: !!form\.source\.trim\(\)/);
 });
 

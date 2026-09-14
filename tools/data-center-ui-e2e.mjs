@@ -124,6 +124,17 @@ await ctx.addInitScript(() => localStorage.setItem('token', 'data-center-ui-e2e'
 // 所以下面的匹配都按 DS-E2E 写；顺序也要紧——items 在 versions 之前。
 await ctx.route(API, (route) => {
   const url = route.request().url();
+  const method = route.request().method();
+  // 登记页（T4a）：可选项字典 + 提交链路（POST /registrations → 预签名 → 挂载）
+  if (/\/settings\/options/.test(url)) return route.fulfill(envelope({ groups: [
+    { key: 'machine', label: '焊机型号', description: '', color: null, free_text: false, items: [{ id: 1, value: 'E2E 焊机', color: null, active: true, sort_order: 10 }] },
+    { key: 'weld_method', label: '焊接方法', description: '', color: null, free_text: false, items: [{ id: 2, value: 'MAG焊', color: null, active: true, sort_order: 10 }] },
+    { key: 'source', label: '数据来源', description: '', color: null, free_text: true, items: [] },
+    { key: 'product', label: '产品信息', description: '', color: null, free_text: true, items: [] },
+  ] }));
+  if (method === 'POST' && /\/registrations\/[^/]+\/raw-files/.test(url)) return route.fulfill(envelope({ id: 4242, version_no: 'v1.0', object_keys: ['raw/e2e-signal.csv'] }));
+  if (method === 'POST' && /\/registrations$/.test(url)) return route.fulfill(envelope({ id: 1, weld_id: 'WLD-E2E-0001', registration_no: 'REG-E2E-00001' }));
+  if (/\/files\/presign-upload/.test(url)) return route.fulfill(envelope({ object_key: 'raw/e2e-signal.csv', upload_url: 'https://fake.local/put' }));
   if (/\/datasets\/DS-E2E\/dimensions/.test(url)) return route.fulfill(envelope(DIMENSIONS));
   // 成员表要有行才会渲染表格（空成员时是空态）——这里给 1 条，好断言表头契约。
   if (/\/datasets\/DS-E2E\/versions\/4242\/items/.test(url)) return route.fulfill(envelope({
@@ -142,6 +153,9 @@ await ctx.route(API, (route) => {
   if (/\/welds/.test(url)) return route.fulfill(envelope({ items: [RECORD], total: 1, page: 1, page_size: 20 }));
   return route.fulfill(envelope([]));
 });
+
+// 预签名直传的 PUT 落在「对象存储」域上：给个空 200，避免登记链路卡在 XHR。
+await ctx.route('https://fake.local/**', (route) => route.fulfill({ status: 200, body: '' }));
 
 const page = await ctx.newPage();
 page.setDefaultNavigationTimeout(60_000);
@@ -252,6 +266,38 @@ try {
   await page.goto(`${BASE}/#/data-center/registration`, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('.registration-layout', { timeout: 30_000 });
   check('登记页面包屑 = 数据管理 / 数据登记', (await crumbText()).replace(/\s+/g, ''), '数据管理/数据登记');
+
+  // T4a：无上下文进入 → 先选所属数据集并锁定；默认值可见可识别；提交前汇总确认；成功后三个出口
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForStep(page, '.registration-step', '第 1 步：选择所属数据集');
+  check('未带上下文时先走「选择所属数据集」步骤', await page.locator('.registration-step').count(), 1);
+  await page.locator('.registration-step select').selectOption(String(DATASET.id));
+  await clickStep(page.getByRole('button', { name: '确认并填写登记信息' }), '确认所属数据集');
+  await waitForStep(page, '.locked-dataset', '所属数据集锁定提示');
+  check('锁定后显示只读的所属数据集', (await page.locator('.locked-dataset').innerText()).includes('E2E 数据集'), true);
+
+  // 默认值（字典首项）必须带"默认"标记
+  check('默认值字段带「默认」标记', await page.locator('.default-mark').count() > 0, true);
+  // 锚定一个带时间列的 CSV：采样率应从文件推导出来（T4.2.1 来源 2）
+  const csv = ['time,Current,Voltage,GasSpeed,WireSpeed'];
+  for (let i = 0; i < 400; i += 1) csv.push(`${(i / 2000).toFixed(4)},180,22,15,8`);
+  await page.locator('.upload-zones input[type="file"]').first().setInputFiles({ name: 'e2e-signal.csv', mimeType: 'text/csv', buffer: Buffer.from(csv.join('\n')) });
+  await page.waitForTimeout(600);
+  check('从上传的 CSV 推导出采样率默认值', (await page.locator('input[placeholder="10 kHz"]').inputValue()), '2 kHz');
+  // 填完必填项 → 提交 → 必须先弹"默认值确认"
+  await page.locator('input[placeholder="例如：产线相机 · 03号"]').fill('E2E 产线');
+  await page.locator('input[placeholder="输入样本名称（焊缝 / 批次）"]').fill('E2E 样本');
+  await clickStep(page.locator('.form-panel .full-button'), '登记数据');
+  await waitForStep(page, '.app-dialog', '默认值汇总确认弹窗');
+  check('提交前弹出默认值确认（列出仍是默认值的字段）', (await page.locator('.dialog-items li').count()) > 0, true);
+  await clickStep(page.getByRole('button', { name: '确认无误，提交' }), '确认无误，提交');
+  await waitForStep(page, '.registration-result', '登记结果卡');
+  const exits = await page.locator('.registration-result-actions button').allInnerTexts();
+  check('结果卡给出三个出口', exits.join('/'), '查看这条数据/继续登记下一条/去数据核验');
+  check('结果卡显示登记编号', (await page.locator('.registration-result h2').innerText()).includes('REG-E2E-00001'), true);
+  await clickStep(page.getByRole('button', { name: '继续登记下一条' }), '继续登记下一条');
+  await waitForStep(page, '.locked-dataset', '继续登记后的表单');
+  check('继续登记保留数据集上下文且清空样本名称', await page.locator('input[placeholder="输入样本名称（焊缝 / 批次）"]').inputValue(), '');
 
   check('全程无页面级 JS 异常', pageErrors.length, 0);
   if (pageErrors.length) console.log(`   ⚠ pageerror: ${pageErrors.join(' | ')}`);

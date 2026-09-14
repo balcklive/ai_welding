@@ -1,9 +1,9 @@
 """数据集服务（Task 15）：数据集 CRUD / 输入维度 / 适配检查 / 版本 / 血缘 / 构建任务。
 
-契约 `docs/API接口清单.md` §3.5；业务规则 `docs/数据库设计.md` §5（固定快照、按焊缝 ID
-划分避免泄漏、quality 计算）。实施边界 §3.1：构建任务 = 真实异步编排 + 模拟结果——Job
-生命周期与 `dataset_items`/`dataset_versions.quality`/快照写 MinIO 为真，样本来源不足时
-兜底生成**确定性合成样本**（引用真实登记焊缝），保证 demo 非空。
+契约 `docs/API接口清单.md` §3.5；业务规则 `docs/数据库设计.md` §5（数据集版本、按样本
+分组避免泄漏、quality 计算）。构建任务是**真实异步编排 + 真实成员收集**：Job 生命周期、
+`dataset_items`、`dataset_versions.quality`、快照写 MinIO 都是真的；样本来源不足时**报错**
+而不再兜底合成（见 run_build）。
 
 **写操作不 commit**（由路由/执行器统一提交，与 `services/jobs.py` 约定一致）；仅
 `run_build` 内的进度 commit 是执行器专用 session 场景（同 alignment/annotation 服务）。
@@ -11,14 +11,15 @@
 关键设计（坑，改动勿破坏）：
 - `dataset_no`：`DS-{任务类别}-{序号}`，类别 = DEFECT/POOL/QUALITY（对齐 seed），
   序号 = 该类别前缀记录数 + 1（零填充 3 位）。
-- 输入维度 7 项与 `src/App.tsx::inputDimensions` 顺序一致；`required` 照 `requiredByTask`
-  （目标检测→[Current,Voltage,GasSpeed]、语义分割→[熔池视频]、多模态回归→[Current,Voltage]）。
-  维度可用性由**当前版本 dataset_items→samples.object_keys 按扩展名/内容启发式**判定。
-- readiness 照 `ModelReadiness`：每任务 4 项检查，全部 passed → 可训练，否则暂不可训练。
-- 构建分片：候选样本按 record_id 分组 → 稳定 seed 打乱组序 → 8:1:1 划分，**同焊缝样本
+- `INPUT_DIMENSIONS`（9 项）与 `REQUIRED_BY_TASK` 见下方常量：`required` 同时驱动字段面板的
+  "当前任务必需"与 T2.3 的「必需字段缺失」扣分，改之前先读常量的注释。
+  维度可用性由**样本 object_keys 按扩展名/内容启发式**判定（真实数据判定见 T2.3 的遗留项）。
+- readiness 照 `ModelReadiness`：每任务 4 项检查，全部 passed → 可训练（后端闸门，D2）。
+- 构建分片：候选样本按 record_id 分组 → 稳定 seed 打乱组序 → 8:1:1 划分，**同样本切片
   绝不跨 split**（防泄漏）。组数 <3 时退化为 train / train+test（宁可少分片也不泄漏）。
-- 兜底合成样本：来源 gather 为空时，遍历全部登记焊缝各生成 3 个合成 `Sample`（对象键按
-  焊缝 modalities 推导），使按焊缝划分的 demo 非空且可测。
+- 成员来源（T11）：`dataset_records` 来源按样本二选一（最近一次成功分段的切片 / 基础样本），
+  排除标注锚点样本；判重按 `(record_id, object_keys)`，无产物视为唯一。
+- 删除（T7）：预检与真删共用 `collect_dataset_references` / `collect_record_references`。
 - 快照对象键：`datasets/{dataset_version_id}/snapshot.json`；写 MinIO **尽力而为**
   （失败仅告警不使构建失败，本地 DB 为权威）。
 - `name`/`note` 请求字段：`dataset_versions` 表无对应列（文档 §3.15 即无），仅接受不落库。
@@ -31,6 +32,7 @@ import json
 import random
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -40,12 +42,15 @@ from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from app.models.analysis import (
+    AlignmentTask,
     Annotation,
     AnnotationTask,
+    FeatureExtraction,
     Sample,
+    SignalIngest,
     SplitTask,
 )
-from app.models.data import DataRecord, DataVersion
+from app.models.data import DataRecord, DataVersion, ValidationReport
 from app.models.datasets import Dataset, DatasetBuildTask, DatasetItem, DatasetVersion
 from app.models.jobs import Job
 from app.models.models import TestTask, TrainingTask
@@ -65,6 +70,10 @@ INPUT_DIMENSIONS: list[str] = [
     "Sound_feature",
     "焊缝照片",
     "熔池视频",
+    # S11：登记页能填送丝/焊接速度，数据集字段面板却没有对应项，用户不知道填了有什么用。
+    # 这两项由标准多模态 CSV 携带（`wir` / `weld_speed` 通道），故不列为任何任务的必需字段。
+    "送丝速度",
+    "焊接速度",
 ]
 
 #: 各任务必需维度。**改动前先想清楚它同时驱动两处**：`get_dimensions` 的"当前任务必需"标记，
@@ -206,29 +215,177 @@ def create_dataset(
     return dataset
 
 
-def delete_dataset(session: Session, dataset: Dataset) -> dict[str, int]:
-    """删除无业务数据引用的数据集及其固定版本元数据。"""
+@dataclass(frozen=True)
+class ReferenceReport:
+    """删除前的引用报告（T7）。
+
+    **预检接口与实际删除共用同一个采集函数**：否则"弹窗里说的"和"真删时拦的"会漂移——
+    这正是改造前的问题（`delete_dataset` 只要还有任意登记数据就拒绝，而弹窗示例却写得像能删）。
+    """
+
+    counts: dict[str, int]
+    """关联数量（界面展示"影响范围"）。"""
+    blocking: list[str]
+    """非空 = 不能删，逐条说明原因。"""
+    deletable: dict[str, int]
+    """实际会一并删除的数量（与 `counts` 分开，避免把"关联 12 条、实际删 3 条"混成一个数）。"""
+
+    @property
+    def can_delete(self) -> bool:
+        return not self.blocking
+
+    def payload(self) -> dict:
+        return {
+            "counts": self.counts,
+            "blocking": self.blocking,
+            "deletable": self.deletable,
+            "can_delete": self.can_delete,
+        }
+
+
+def collect_dataset_references(session: Session, dataset: Dataset) -> ReferenceReport:
+    """数据集删除的引用矩阵（T7.2）。
+
+    阻塞项：还有登记样本（数据集不空）、或其版本被训练/测试任务引用。
+    一并删除：数据集版本 + 版本成员清单行（`dataset_items`）+ 构建任务行。
+    **不删**：登记样本本身（属于数据台账）、标注任务、切片（`samples`）。
+    """
     record_count = int(session.exec(
         select(func.count(DataRecord.id)).where(DataRecord.dataset_id == dataset.id)
     ).one())
-    if record_count:
-        raise DatasetDeleteConflict(
-            f"数据集仍包含 {record_count} 条焊缝数据，请先迁移或清理数据后再删除"
+    versions = session.exec(
+        select(DatasetVersion).where(DatasetVersion.dataset_id == dataset.id)
+    ).all()
+    version_ids = [version.id for version in versions if version.id is not None]
+    item_count = int(session.exec(select(func.count(DatasetItem.id)).where(
+        DatasetItem.dataset_version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    build_count = int(session.exec(select(func.count(DatasetBuildTask.id)).where(
+        DatasetBuildTask.dataset_version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    training_count = int(session.exec(select(func.count(TrainingTask.id)).where(
+        TrainingTask.dataset_version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    test_count = int(session.exec(select(func.count(TestTask.id)).where(
+        TestTask.dataset_version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    annotation_count = int(session.exec(select(func.count(AnnotationTask.id)).where(
+        AnnotationTask.id.in_(
+            select(Sample.annotation_task_id).where(
+                Sample.annotation_task_id.is_not(None)
+            )
         )
+    )).one()) if False else 0  # 标注任务归属焊缝而非数据集，不作为本数据集的引用（见 counts 说明）
+
+    blocking: list[str] = []
+    if record_count:
+        blocking.append(f"仍包含 {record_count} 条登记样本，请先迁移或清理")
+    if training_count:
+        blocking.append(f"数据集版本已被 {training_count} 个训练任务引用")
+    if test_count:
+        blocking.append(f"数据集版本已被 {test_count} 个测试任务引用")
+    return ReferenceReport(
+        counts={
+            f"样本数": record_count,
+            f"数据集版本数": len(versions),
+            "切片数": item_count,
+            "训练任务": training_count,
+            "测试任务": test_count,
+        },
+        blocking=blocking,
+        deletable={
+            f"数据集版本": len(versions),
+            "切片清单行": item_count,
+            "构建任务": build_count,
+        },
+    )
+
+
+def collect_record_references(session: Session, record: DataRecord) -> ReferenceReport:
+    """单条样本删除的引用矩阵（T7.2）。
+
+    阻塞项（改造前只看分段任务，会漏）：已进入分段任务（切片是数据集版本的成员来源）、
+    其样本已被数据集版本成员引用、已进入标注任务。
+    一并删除：数据版本 + 核验报告/规则 + 对齐/特征/信号导入产物。
+    **不删**：数据集版本成员行（那属于数据集，见阻塞项）。
+    """
+    versions = session.exec(
+        select(DataVersion).where(DataVersion.record_id == record.id)
+    ).all()
+    version_ids = [version.id for version in versions if version.id is not None]
+    split_tasks = session.exec(select(SplitTask).where(
+        SplitTask.version_id.in_(version_ids)
+    )).all() if version_ids else []
+    split_ids = [task.id for task in split_tasks if task.id is not None]
+    annotation_tasks = session.exec(select(AnnotationTask).where(
+        AnnotationTask.split_task_id.in_(split_ids)
+    )).all() if split_ids else []
+    report_count = int(session.exec(select(func.count(ValidationReport.id)).where(
+        ValidationReport.version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    alignment_count = int(session.exec(select(func.count(AlignmentTask.id)).where(
+        AlignmentTask.version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    feature_count = int(session.exec(select(func.count(FeatureExtraction.id)).where(
+        FeatureExtraction.version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+    signal_count = int(session.exec(select(func.count(SignalIngest.id)).where(
+        SignalIngest.version_id.in_(version_ids)
+    )).one()) if version_ids else 0
+
+    # 该样本的切片 + 基础样本（meta.record_id）——用于判断是否已被数据集版本收录
+    sample_ids: set[int] = set()
+    if split_ids:
+        sample_ids |= {sample.id for sample in session.exec(select(Sample).where(
+            Sample.split_task_id.in_(split_ids)
+        )).all() if sample.id is not None}
+    sample_ids |= {
+        sample.id
+        for sample in session.exec(select(Sample)).all()
+        if sample.id is not None and (sample.meta or {}).get("record_id") == record.id
+    }
+    item_count = int(session.exec(select(func.count(DatasetItem.id)).where(
+        DatasetItem.sample_id.in_(sample_ids)
+    )).one()) if sample_ids else 0
+
+    blocking: list[str] = []
+    if split_tasks:
+        blocking.append(f"已进入 {len(split_tasks)} 个分段任务（其切片是数据集版本的成员来源）")
+    if item_count:
+        blocking.append(f"已被 {item_count} 处数据集版本成员引用")
+    if annotation_tasks:
+        blocking.append(f"已进入 {len(annotation_tasks)} 个标注任务")
+    return ReferenceReport(
+        counts={
+            "数据版本": len(versions),
+            "分段任务": len(split_tasks),
+            "标注任务": len(annotation_tasks),
+            "数据集版本成员引用": item_count,
+            "核验报告": report_count,
+            "对齐产物": alignment_count,
+            "特征提取": feature_count,
+            "信号导入": signal_count,
+        },
+        blocking=blocking,
+        deletable={
+            "数据版本": len(versions),
+            "核验报告": report_count,
+            "对齐/特征/信号产物": alignment_count + feature_count + signal_count,
+        },
+    )
+
+
+def delete_dataset(session: Session, dataset: Dataset) -> dict[str, int]:
+    """删除无业务数据引用的数据集及其固定版本元数据（与预检共用 `collect_dataset_references`）。"""
+    report = collect_dataset_references(session, dataset)
+    if report.blocking:
+        raise DatasetDeleteConflict("；".join(report.blocking))
 
     versions = session.exec(
         select(DatasetVersion).where(DatasetVersion.dataset_id == dataset.id)
     ).all()
     version_ids = [version.id for version in versions if version.id is not None]
     if version_ids:
-        training_count = int(session.exec(select(func.count(TrainingTask.id)).where(
-            TrainingTask.dataset_version_id.in_(version_ids)
-        )).one())
-        test_count = int(session.exec(select(func.count(TestTask.id)).where(
-            TestTask.dataset_version_id.in_(version_ids)
-        )).one())
-        if training_count or test_count:
-            raise DatasetDeleteConflict("数据集版本已被训练或测试任务使用，不能删除")
         for version_id in version_ids:
             for item in session.exec(select(DatasetItem).where(
                 DatasetItem.dataset_version_id == version_id
@@ -376,6 +533,9 @@ def _dimension_availability_from_samples(samples: list[Sample]) -> dict[str, boo
                 available["Current"] = True
                 available["Voltage"] = True
                 available["GasSpeed"] = True
+                # 标准多模态 CSV 同时带 wir / weld_speed 通道（见 signal_ingest 的列映射）
+                available["送丝速度"] = True
+                available["焊接速度"] = True
     return available
 
 

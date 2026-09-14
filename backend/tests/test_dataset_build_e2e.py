@@ -80,12 +80,15 @@ class FakeStorage:
         return None
 
 
-def synthetic_signal_csv(fs: int = FS, seconds: float = 1.0) -> bytes:
-    """起弧 0.2s / 收弧 0.8s 的方波焊接信号（实测可过 10 条导入校验与事件检测）。"""
+def synthetic_signal_csv(fs: int = FS, seconds: float = 1.0, with_time: bool = True) -> bytes:
+    """起弧 0.2s / 收弧 0.8s 的方波焊接信号（实测可过 10 条导入校验与事件检测）。
+
+    `with_time=False` 去掉时间列——此时导入必须靠登记的 `sample_rate` 兜底推采样率（`_parse_fs`）。
+    """
     rng = random.Random(7)
     out = io.StringIO(newline="")
     writer = csv.writer(out)
-    writer.writerow(["time", "Current", "Voltage", "GasSpeed", "WireSpeed"])
+    writer.writerow(["time", "Current", "Voltage", "GasSpeed", "WireSpeed"] if with_time else ["Current", "Voltage", "GasSpeed", "WireSpeed"])
     for index in range(int(fs * seconds)):
         moment = index / fs
         welding = ARC <= moment <= TAIL
@@ -94,7 +97,8 @@ def synthetic_signal_csv(fs: int = FS, seconds: float = 1.0) -> bytes:
             if welding
             else (rng.uniform(0, 0.5), 0.0, 0.2, 0.0)
         )
-        writer.writerow([f"{moment:.4f}", *[f"{value:.3f}" for value in row]])
+        cells = [f"{value:.3f}" for value in row]
+        writer.writerow([f"{moment:.4f}", *cells] if with_time else cells)
     return out.getvalue().encode()
 
 
@@ -166,7 +170,7 @@ def _create_dataset(api, name: str, task: str = "目标检测") -> int:
     return _ok(api.post(f"{API}/datasets", json={"name": name, "task": task}))["id"]
 
 
-def _register(api, dataset_id: int, weld_name: str) -> dict:
+def _register(api, dataset_id: int, weld_name: str, sample_rate: str = "2 kHz") -> dict:
     return _ok(
         api.post(
             f"{API}/registrations",
@@ -180,7 +184,7 @@ def _register(api, dataset_id: int, weld_name: str) -> dict:
                 "material": "Q235",
                 "thickness": "6mm",
                 "current_voltage": "180A/22V",
-                "sample_rate": "2 kHz",
+                "sample_rate": sample_rate,
             },
         )
     )
@@ -374,3 +378,61 @@ def test_failed_split_does_not_feed_members(api, db, storage, run_job):
 
     total, _ = _members(api, dataset_id, version.id)
     assert total == 1, "没有成功的分段任务 → 只收一条基础样本"
+
+
+# ── 场景 4：登记里写的采样率写法要能被解析（`_parse_fs` 修复回归） ──────
+
+
+def test_sample_rate_written_without_hz_unit_still_ingests(api, db, storage, run_job):
+    """登记写 `20K`（不带 Hz）、CSV 又**没有时间列** → 必须靠登记的采样率兜底。
+
+    旧 `_parse_fs` 的正则强制要求 `Hz`，`20K` 与纯数字都解析成 None → 时间列缺失时采样率推导
+    失败（实测线上确有 `sample_rate = '20K'`）。这里从登记一路打到读回信号，断言 20 kHz 生效。
+    """
+    dataset_id = _create_dataset(api, "E2E 采样率写法", "时序分类")
+    record = _register(api, dataset_id, "E2E 无时间列样本", sample_rate="20K")
+    storage.put("raw/e2e-no-time.csv", synthetic_signal_csv(fs=20000, seconds=0.6, with_time=False))
+
+    _attach(api, record["id"], ["raw/e2e-no-time.csv"])
+    ingest = _run(db, run_job, _latest_job_uid(db, "signal_ingest"))
+    assert ingest.status == "succeeded", ingest.error
+
+    signals = _ok(api.get(f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/signals?max_points=100"))
+    assert signals["sample_rate"] == 20000, signals["sample_rate"]
+
+
+# ── 场景 5：删除预检与实际删除必须一致（T7） ─────────────────────────
+
+
+def test_delete_impact_matches_actual_delete(api, db, storage, run_job):
+    """预检说能删就真能删、说不能删就真会被拒——两者共用同一份引用规则。
+
+    改造前弹窗只能靠前端猜（示例甚至写着"样本 1 仍可删"），而真删时只要还有登记数据就拒绝。
+    """
+    dataset_id = _create_dataset(api, "E2E 删除预检")
+    record = _register(api, dataset_id, "E2E 删除预检样本")
+    storage.put("raw/e2e-del.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-del.csv"])
+    version = _latest_dataset_version(db, dataset_id)
+    assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
+
+    # 有登记样本 → 预检阻塞，真删也必须被拒
+    dataset_impact = _ok(api.get(f"{API}/datasets/{dataset_id}/delete-impact"))
+    assert dataset_impact["can_delete"] is False
+    assert any("登记样本" in reason for reason in dataset_impact["blocking"]), dataset_impact
+    assert dataset_impact["counts"]["样本数"] == 1
+    denied = api.delete(f"{API}/datasets/{dataset_id}").json()
+    assert denied["code"] == 40900, denied
+
+    # 样本已进构建版本（成员引用）→ 预检阻塞，真删同样被拒
+    weld_impact = _ok(api.get(f"{API}/welds/{record['weld_id']}/delete-impact"))
+    assert weld_impact["can_delete"] is False, weld_impact
+    assert any("数据集版本成员引用" in reason for reason in weld_impact["blocking"]), weld_impact
+    denied_weld = api.delete(f"{API}/welds/{record['weld_id']}").json()
+    assert denied_weld["code"] == 40900, denied_weld
+
+    # 空数据集 → 预检放行，真删成功（且不再整页 reload，由前端局部刷新）
+    empty_id = _create_dataset(api, "E2E 可删空数据集")
+    empty_impact = _ok(api.get(f"{API}/datasets/{empty_id}/delete-impact"))
+    assert empty_impact["can_delete"] is True and empty_impact["blocking"] == []
+    assert api.delete(f"{API}/datasets/{empty_id}").json()["code"] == 0

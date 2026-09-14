@@ -9,6 +9,7 @@ import { request } from './client';
 import type {
   DataRecord,
   DataVersion,
+  DeleteImpact,
   Page,
   Registration,
   RegistrationForm,
@@ -28,7 +29,12 @@ export async function getWeld(weldId: string): Promise<DataRecord> {
   return request<DataRecord>(`/welds/${weldId}`, { cacheTtlMs: 15 * 1000 });
 }
 
-/** 删除单条样本；已进入切分/标注/数据集版本时由后端拒绝。 */
+/** 删除前的影响范围预检（T7）：与 `deleteWeld` 共用后端同一份引用规则。 */
+export async function getWeldDeleteImpact(weldId: string): Promise<DeleteImpact> {
+  return request<DeleteImpact>(`/welds/${weldId}/delete-impact`);
+}
+
+/** 删除单条样本；已进入分段/标注/数据集版本成员引用时由后端拒绝。 */
 export async function deleteWeld(weldId: string): Promise<{ deleted: boolean; deleted_versions: number }> {
   return request<{ deleted: boolean; deleted_versions: number }>(`/welds/${weldId}`, { method: 'DELETE' });
 }

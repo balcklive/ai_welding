@@ -10,6 +10,7 @@ import type {
   DatasetItemRow,
   DatasetSource,
   DatasetVersion,
+  DeleteImpact,
   DimensionStatus,
   LineageNode,
   Page,
@@ -30,7 +31,12 @@ export async function createDataset(body: {
   return request<Dataset>('/datasets', { method: 'POST', body });
 }
 
-/** 删除数据集；存在焊缝或训练历史引用时由后端拒绝。 */
+/** 删除前的影响范围预检（T7）：与 `deleteDataset` 共用后端同一份引用规则。 */
+export async function getDatasetDeleteImpact(id: string): Promise<DeleteImpact> {
+  return request<DeleteImpact>(`/datasets/${id}/delete-impact`);
+}
+
+/** 删除数据集；存在样本或训练/测试引用时由后端拒绝（阻塞原因见 delete-impact）。 */
 export async function deleteDataset(id: string): Promise<{ deleted: boolean; deleted_versions: number }> {
   return request<{ deleted: boolean; deleted_versions: number }>(`/datasets/${id}`, { method: 'DELETE' });
 }

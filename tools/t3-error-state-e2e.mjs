@@ -133,13 +133,11 @@ await scenario('数据登记（后端停机）', async () => {
   // 三块数据各自独立报错：数据集下拉 / 最近登记 / 可选项字典。
   await assertErrorState(page, '数据登记', 3);
   await assertNoDemoData(page, '数据登记');
-  // T3.3：字典与数据集都不可用时禁止提交。
-  check('数据登记 · 提交按钮禁用（aria-disabled）', await page.locator('.full-button').first().getAttribute('aria-disabled'), 'true');
-  // 该按钮刻意不用原生 disabled（要能接收点击并给出缺失原因），Playwright 会把 aria-disabled
-  // 当作不可点击而一直等待——这里强制点击，验证的正是"禁用态被点"这条路径。
-  await page.locator('.full-button').first().click({ force: true });
-  await page.waitForTimeout(400);
-  check('数据登记 · 点击禁用按钮给出原因', await page.locator('.toolbar-error').count() > 0, true);
+  // T3.3 + T4a：数据集/字典都不可用时停在「第 1 步：选择所属数据集」，确认按钮禁用——
+  // 不会进到表单，也就不可能提交。
+  check('数据登记 · 数据集不可用时停在选择数据集步骤', await page.locator('.registration-step').count(), 1);
+  check('数据登记 · 确认按钮禁用', await page.locator('.registration-step .primary-button').isDisabled(), true);
+  check('数据登记 · 未进入登记表单', await page.locator('.form-grid').count(), 0);
 });
 
 // 3) 分析「选择数据」

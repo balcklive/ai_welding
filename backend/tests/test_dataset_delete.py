@@ -59,6 +59,7 @@ def test_delete_dataset_with_records_is_rejected(engine):
         session.commit()
         session.refresh(dataset)
 
-        with pytest.raises(DatasetDeleteConflict, match="仍包含 1 条焊缝数据"):
+        # T1/T7：措辞随术语表改为"登记样本"，且阻塞原因由引用报告逐条给出。
+        with pytest.raises(DatasetDeleteConflict, match="仍包含 1 条登记样本"):
             delete_dataset(session, dataset)
         assert session.exec(select(Dataset).where(Dataset.id == dataset.id)).first() is not None
