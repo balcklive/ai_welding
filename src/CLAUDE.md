@@ -7,7 +7,7 @@
 - `index.css`：Tailwind 全局样式。
 - `vite-env.d.ts`：Vite 类型声明。
 - `api/`：前端接口层（Task 18 起）。`client.ts`（统一 fetch 封装：解包信封、注入 JWT、401 清 token 重载）、`types.ts`（全部实体/请求体类型，契约见 `docs/API接口清单.md`）。详见 `api/CLAUDE.md`。
-- `hooks/`：前端 React 钩子层（Task 20 起）。`useJob.ts` 通用异步任务轮询（消费 `api/jobs.getJob`）。详见 `hooks/CLAUDE.md`。
+- `hooks/`：前端 React 钩子层（Task 20 起）。`useJob.ts` 通用异步任务轮询（消费 `api/jobs.getJob`）、`usePagedWelds.ts` 样本候选分页搜索（2026-09-14 R5）、`useIngestStatus.ts` 登记链路状态（2026-09-14 R2）、`useLabelStudioTask.ts` LS 同步态。详见 `hooks/CLAUDE.md`。
 - `pages/`：前端页面层（Task 20 起）。`Login.tsx` 最小登录页（登录成功写 token+user 到 localStorage 并通知外层）。详见 `pages/CLAUDE.md`。
 - `app/`：应用级路由与导航配置（Task 21 重构）。`navigation.ts` 定义 `Route` 联合类型 + `navStructure` 侧边栏树 + `workspaceHeaders` 页头文案，是 App.tsx 导航的单一来源。详见 `app/CLAUDE.md`。
 - `features/`：按业务域拆分的工作区页面（2026-08-29 重构自 App.tsx）。overview/datasets/registration/validation/versions/analysis/annotation/alignment/models/features/data-context/**settings** 各一目录，由 App.tsx `WorkspaceFrame` 懒加载。详见 `features/CLAUDE.md` 及各子目录。

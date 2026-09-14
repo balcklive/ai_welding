@@ -12,12 +12,13 @@
 - **2026-09-14（T2 结构 + 术语）**：概览统计卡改为「样本数（`weld_count`）+ 切片数（`item_count`）」，有效切片占比改用新增的 `QualityStat` 组件，**只读后端 `effective_ratio`**（历史版本没有该字段 → 显示 `—`；**不得用三个 `*_rate` 反推**，各原因可重叠）；`DatasetInputPanel` 与 `ModelReadiness` 合并为 **`FieldCompleteness`（字段完备性）**，不再拉 `getReadiness`（后端闸门保留，模型中心自己按需拉）；成员表去掉「核验状态」列与筛选下拉、全部样本表去掉「核验状态」列并把送丝/焊接速度拆两列（`index.css` 的 `.dataset-record-row.member-row` / `.source-row` 分别声明列数）；成员详情去掉核验状态行与右侧徽标。界面契约回归见 `tools/data-center-ui-e2e.mjs`。
 - **2026-09-14（T7 删除确认）**：数据集与样本的删除都改成自研 `ConfirmDialog`（不用原生 confirm，Q21）+ **后端预检** `getDatasetDeleteImpact` / `getWeldDeleteImpact`（与真删共用同一份引用规则）：弹窗列出"关联 · N / 将一并删除 · N"，有阻塞项时逐条说明原因并禁用确认；删除成功后**不再 `window.location.reload()`**，而是 `onDeleted` → 回列表并局部刷新。
 - 内部组件：`DatasetDetail`（概览 + 删除条）/ `DatasetDetailContent` / `DatasetRecords`（快照成员）/ `DatasetSourceRecords`（全部焊缝）/ `RawSignalPreview`（原始多通道波形，复用 `/signals`）/ `RawMediaPreview`（视频/图片预览）/ `DatasetRecordDetail`（成员详情，设置 `selectedDataId`）/ `DatasetInputPanel`（输入维度）/ `ModelReadiness`（模型适配检查）。**2026-09 多模态字段**：`RawSignalPreview` 不再写死 `channels` 过滤 → 后端返回该焊缝全部分量通道（核心 4 + 焊接速度/六轴/熔池扩展）逐个 toggle；`DatasetSourceRecords` 源记录表新增「送丝 / 焊接速度」列；`DatasetRecordDetailContent` 数据详情加「送丝速度/焊接速度」InfoRow，且含 `record.data_fields` 时额外渲染「采集字段概览」段（全通道稳态代表值）。
+- **2026-09-14（R4 / R2 / R3）**：① 成员页在 `versionSummary.annotations_frozen === false`（历史版本没冻结标注快照）时给一行如实说明——训练读的是「当前」标注、不受该版本约束；② `DatasetRecordDetailContent` 加「信号导入」InfoRow（`useIngestStatus`），失败时渲染独立的「信号导入失败」面板（逐个失败文件 + 原因 + 「重新导入」`reimportSignals`）——**刷新/换设备后仍能看到真实导入状态**（T4.4 的跨刷新恢复落点）；③ 字段完备性的时序维度改由后端按**真实导入通道**判定（R3），前端零改动。
 - `weldRows.ts`：`toWeldRow(record)`——`DataRecord → WeldRow` 映射。**`mockWeldRows` 已删除（T3.2）**；`fallbacks.ts` 整文件已删除。
 
 ## 调用链
 
 - 被谁调用：`src/App.tsx`（`data-center/datasets` 懒加载）。
-- 调用谁：`src/api/datasets`（listDatasets/createDataset/deleteDataset/**getDatasetDeleteImpact**/getDataset/getDimensions/listDatasetVersions/getDatasetVersion/listDatasetVersionItems/createDatasetVersion）、`src/api/welds`（listWelds/getWeld/deleteWeld/**getWeldDeleteImpact**）、`src/api/files`（getFileUrl）、`src/api/analysis`（getSignals）、`src/api/settings`（listOptionGroups，取 `dataset_task` 组）、`src/shared/components`（含带 `choice` 的 `TextDialog`）、`src/features/versions/VersionDetailDrawer`（mode="dataset"）。
+- 调用谁：`src/api/datasets`（listDatasets/createDataset/deleteDataset/**getDatasetDeleteImpact**/getDataset/getDimensions/listDatasetVersions/getDatasetVersion/listDatasetVersionItems/createDatasetVersion）、`src/api/welds`（listWelds/getWeld/deleteWeld/**getWeldDeleteImpact**/**reimportSignals**）、`src/hooks/useIngestStatus`（信号导入状态）、`src/api/files`（getFileUrl）、`src/api/analysis`（getSignals）、`src/api/settings`（listOptionGroups，取 `dataset_task` 组）、`src/shared/components`（含带 `choice` 的 `TextDialog`）、`src/features/versions/VersionDetailDrawer`（mode="dataset"）。
 
 ## 关键规则/坑
 

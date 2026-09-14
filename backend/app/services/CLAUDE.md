@@ -50,6 +50,8 @@
   `record_payload`/`records_payload`（批量预查 latest 版本防 N+1）/`version_payload`/
   `validation_payload`；**`find_duplicate_version`** 现按 `version_request_key(action,note,object_keys)`
   查同焊缝重复加工版本，配合 `data_versions.request_key` 唯一约束兜底并发重复请求，供路由返回 40900。
+  **T4b（2026-09-14，R1/R6）**：`NUMBER_RANGES` + `normalize_number`（厚度/送丝/焊接速度三个"以字符串存的数字"字段的**统一归一化入口**，越界抛 `ValueError`）、`normalize_fields`、`parse_current_voltage` / `format_current_voltage`（旧列 `180 A / 22 V` 与拆分列的互转，与迁移 `0017` 同一套规则）、`_record_current_voltage`（核验读登记电流电压：新列优先、解析旧列回退）。`registration_request_key` **不再包含旧列**，电流电压取**解析后的新值**的规范数字（`180`/`180.0`/`180A/22V` 得到同一个键）；`create_registration` 写入只写新列（`current_voltage` 恒为 NULL）。
+  **`reuse_or_create_version`（T16.3/R7）**：分析产物版本的幂等入口——`(action, note, object_keys)` 已存在则**复用**，否则建；并发撞 `data_versions` 唯一约束时**只回滚到 SAVEPOINT**（`begin_nested`，不能回滚整个任务事务，否则同一任务里已落库的切片/特征行会被一起丢掉），随后把 `latest_version_id` 指回已存在的那个版本。消费方：`jobs/split.py`（样本分段）、`jobs/features.py`（特征提取）。**对齐不接入**：它的产物键与 note 都不带任务身份，接入会把两次不同的对齐误判成重复。
 - `splitting.py`：**T10（2026-09-14）改为「秒是唯一基准」**。
   - `RULES_VERSION = 2`（1 = 旧口径「帧 = 采样点」，历史任务的 `rules` 里没有该键）；写进 `rules`
     与切片 `meta`，供 D16-A 区分新旧切片。
@@ -189,6 +191,18 @@
     **坑（review 修复）**：quality 的 `dimension_missing_rate` 必须用**本次构建的 in-flight
     samples**（`_dimension_availability_from_samples`）判维度——`datasets.current_version_id`
     在 quality 计算之后才回填，按当前版本查样本会让首次构建的维度缺失率恒为 1.0。
+    **R3（2026-09-14）**：维度依据分两套——**时序维度**读该登记数据**全部数据版本里导入成功**的
+    `signal_ingests.column_map`（`CHANNEL_TO_DIMENSION`；按 record 而不是"当前版本"，因为分析产物
+    版本会把 `latest_version_id` 指走且自身没有导入行），**视觉/音频维度**仍按对象键扩展名。
+    改造前两者都靠文件名启发式，"看见 `.csv` 就等于电流电压齐全"是假通过。
+    **R5（2026-09-14）**：成员收集与归属解析下推 SQL——`_samples_with_record_join(dataset_id)`
+    用三条归属路径（meta / split_task / annotation_task）join 并在 **SQL 侧限定本数据集**，
+    `_latest_split_tasks_for_records` 批量取"每条登记数据最近一次成功分段任务"（原先逐条查），
+    `_RecordResolver(session, dataset_id)` 支持按数据集限定预载（**只在 `dataset_records` 来源用**：
+    其余来源的样本可能落在数据集外，限定会把它们误判成无主样本、连带破坏防泄漏分片）。
+    **R4（2026-09-14）**：`ensure_version_rebuildable`（成功版本禁止原地重建 → `VersionAlreadyBuilt`，
+    手工入口与重试入口都调用，`run_build` 里再拦一次）、`version_build_state`、`annotations_frozen`
+    （历史版本的 `dataset_items.annotations` 为 NULL → 训练只能现查标注，如实返回 `False`）。
     **T11（2026-09-14，成员口径与判重）**：来源白名单与判重规则都改过，改这两处前先读
     `tests/test_dataset_members.py`——
     ① `_samples_for_dataset_records` 不再是"数据集下全部 Sample 都收"：每条登记数据
@@ -230,7 +244,8 @@
 
 - `torch_training.py`：**2026-08-29 真实训练内核**（**T16.1（2026-09-14）：`load_real_examples` 改为读
   `dataset_items.annotations` 冻结快照**——版本构建后改标注不再影响同一版本的训练输入；该列为 NULL
-  （T16 之前建的版本）时才现查 `annotations` 表，保持旧行为）（Task 16 由模拟升级为真实 CPU 训练）。
+  （T16 之前建的版本）时才现查 `annotations` 表，保持旧行为，**并写 warning 日志**（R4：不静默——
+  该版本的训练输入不可复现，`GET …/versions/{vid}` 的 `annotations_frozen=false` 是同一事实的对外出口））（Task 16 由模拟升级为真实 CPU 训练）。
   `load_real_examples(session, dataset_version_id, storage)`：读固定 `dataset_items`→`Sample`→`Annotation`
   真实样本，标签折叠为 正常/缺陷 两类（**决策 6 / 验证 §2**：用模块常量 `DEFECT_LABELS`（焊瘤/气孔/
   未熔合/咬边/未焊透/焊穿）**缺陷白名单**折叠——只认白名单内类别为缺陷，熔池/正常等非缺陷剔除，

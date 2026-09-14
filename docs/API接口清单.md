@@ -147,10 +147,12 @@
 > - `brand` → 映射 `machine` 前缀（`machine LIKE 'brand%'`，无 brand 列）；`source` → `source LIKE '前缀%'`；`status` → `quality` 精确匹配。
 > - `dataset_id` → `dataset_id` 精确匹配（列已有索引）；`dataset_id` 指向不存在的数据集 → `40401 数据集不存在`。
 | GET | `/api/v1/welds/{weld_id}` | 单条焊缝详情（来源/焊机/模态/核验状态/最新版本） | — 需登录 |
-| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `dataset_id`, `source`, `collected_at`, `weld_name`, `product`, `machine`, `weld_method`, `material`, `thickness`, `current_voltage`, `sample_rate`, `wire_feed_speed?`, `welding_speed?`；`dataset_id` 必填，登记不得成为孤立数据（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填；`wire_feed_speed`/`welding_speed` 可由挂载标准多模态 CSV 导入后按稳态中位数自动回填，`data_fields` 不接受客户端） |
-| GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录 |
-| PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息（含 `dataset_id` 可将数据移动到另一数据集） | body 同 POST（部分字段可选） |
-| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量）。**含 `.csv` 对象键时自动创建 `signal_ingest` 任务**（解析+校验+写 MinIO Parquet，幂等：同文件不重复建任务）；**含视频扩展名 key 时自动创建 `media_prep` 任务**（探测编码 → 非浏览器友好（如 mpeg4）转 H.264+faststart 预览版写 `processed/{weld_id}/video/`，已是 h264+faststart 免转；失败不阻塞登记） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0) |
+| POST | `/api/v1/registrations` | 新建数据登记，生成唯一登记编号；同时生成 v1.0「原始数据」版本 | body: `dataset_id`, `source`(2–64), `collected_at`(不晚于当天), `weld_name`(2–64), `machine`(**必须命中系统设置字典**), `weld_method`(**同前**), `material`(1–32), `thickness`(0.1–200，可带 `mm`), `current_a`(1–2000), `voltage_v`(1–200), `sample_rate`(可被解析), `product?`(≤128), `wire_feed_speed?`(0–50), `welding_speed?`(0–5000)；`dataset_id` 必填，登记不得成为孤立数据（`operator` 由服务端取当前登录用户；`modalities` 创建时初始 `[]`，由 `POST …/raw-files` 挂载原始文件时按文件类型推导回填；`wire_feed_speed`/`welding_speed` 可由挂载标准多模态 CSV 导入后按稳态中位数自动回填，`data_fields` 不接受客户端）。**T4.2 必填集**：除 `product`/`wire_feed_speed`/`welding_speed` 外全部必填；校验失败返回 **422 + `detail.errors()`**（`loc` 字段路径，信封 `42200`），字典未命中返回 **400**；`extra="forbid"`（拼错字段名不静默丢弃）。**D7/T4b 兼容**：`current_voltage`（`180 A / 22 V` / `180A/22V` / `180/22` / `180`）仍接受，但**只写新列**（旧列保持 NULL），且要过与新字段同一套量程；蓝绿切换期的老客户端可继续只发它 |
+| GET | `/api/v1/registrations/{registration_id}` | 登记信息详情 | — 需登录。**读取侧双出口**：`current_a`/`voltage_v` 是权威值；`current_voltage` 给旧客户端——历史行原样返回旧列，新登记的行按新列拼回 `180 A / 22 V` |
+| PATCH | `/api/v1/registrations/{registration_id}` | 编辑当前选中数据的登记信息（含 `dataset_id` 可将数据移动到另一数据集） | body 同 POST（部分字段可选，量程/字典校验一致）；`current_voltage` **不在可写白名单**，仅在未给新列时作兼容解析进新列；编辑时若 `machine`/`weld_method` 与当前值相同则放行（选项可能已被停用/改名） |
+| POST | `/api/v1/registrations/{registration_id}/raw-files` | 关联登记原始文件到 v1.0「原始数据」版本（文件上传完成后调用，回填版本 `object_keys`、累加记录容量）。**含 `.csv` 对象键时自动创建 `signal_ingest` 任务**（解析+校验+写 MinIO Parquet，幂等：同文件不重复建任务）；**含视频扩展名 key 时自动创建 `media_prep` 任务**（探测编码 → 非浏览器友好（如 mpeg4）转 H.264+faststart 预览版写 `processed/{weld_id}/video/`，已是 h264+faststart 免转；失败不阻塞登记） | body: `object_keys[]`, `storage_bytes?`(可选，缺省 0)。**重复挂载同一 CSV → 409 + 独立错误码 `40901`**（T4.4：前端据此判定"上一次挂载其实成功了、只是响应丢了"，继续进导入态而不是卡在失败）；响应带出自动构建任务 `dataset_build{dataset_version_id,version_no,job_id}` |
+| GET | `/api/v1/registrations/{registration_id}/ingest-status` | **登记链路状态（T4.4）**：`awaiting_upload`（v1.0 无 `object_keys`）/ `importing`（有 `signal_ingests` 行 pending·running）/ `failed` / `ready`，附 `uploaded_files`、`csv_total`、`csv_failed[{source_object_key,message}]`。**全部由已有数据推导**（不新增表），刷新/换设备看到的是同一个真相；「登记成功」≠「导入完成」 | — 需登录 |
+| POST | `/api/v1/registrations/{registration_id}/reimport` | **重新导入失败的 CSV（T4.4）**：清掉 `failed` 的 `signal_ingests` 行与其 Job 后重新入队（不必删库——失败行也会被挂载接口的 409 拦掉，线上踩过"永远卡住"）。无 failed 行 → 400 | body 无 |
 | GET | `/api/v1/welds/{weld_id}/versions` | 版本链（v1.0~v1.3 + 操作人/时间/动作） | — 需登录 |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}` | 单个版本详情 | — 需登录 |
 | POST | `/api/v1/welds/{weld_id}/versions` | 新建数据版本（去噪处理/人工修正等加工动作落库为独立版本，不覆盖旧版） | body: `action`(去噪处理/人工修正), `note?`, `object_keys[]?` |
@@ -190,16 +192,19 @@
 | GET | `/api/v1/datasets` | 数据集列表（任务类型/样本数/完成度/版本/状态） | 需登录 |
 | POST | `/api/v1/datasets` | 新建数据集 | body: `name`, `task`, `source?`(样本来源，见下方说明) |
 | GET | `/api/v1/datasets/{dataset_id}` | 详情：样本统计 / 训练验证测试划分 / 数据质量 / 更新时间 | — 需登录 |
-| GET | `/api/v1/datasets/{dataset_id}/dimensions` | 输入维度状态：`Voltage/GasSpeed/Current/Molten_feature/Sound_feature/焊缝照片/熔池视频`（已具备/缺失/必需） | — 需登录 |
+| GET | `/api/v1/datasets/{dataset_id}/dimensions` | 输入维度状态：`Voltage/GasSpeed/Current/Molten_feature/Sound_feature/焊缝照片/熔池视频/送丝速度/焊接速度`（已具备/缺失/必需） | — 需登录。**依据分两套（R3）**：时序维度看**真实导入成功的通道**（`signal_ingests.column_map`，缺列的 CSV 不会被判成已具备）；视觉/音频维度看对象键扩展名 |
 | GET | `/api/v1/datasets/{dataset_id}/readiness` | 模型适配检查：按任务动态返回检查项与「可训练/暂不可训练」 | — 需登录 |
 | GET | `/api/v1/datasets/{dataset_id}/versions` | 数据集版本列表 | 需登录 |
 | POST | `/api/v1/datasets/{dataset_id}/versions` | 新建版本（固定快照，不覆盖旧版，保证可复现） | body: `name`, `note` |
-| GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}` | 版本详情（固定样本清单、划分） | — 需登录 |
+| GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}` | 版本详情（固定样本清单、划分） | — 需登录。**`annotations_frozen`（R4）**：`true` = 每个成员行都带构建时的标注快照（训练输入不随以后改标注而变）；`false` = 历史版本（T16 之前构建）快照为 NULL，训练只能现查当前标注、**不可复现**，界面如实提示；`null` = 空版本 |
 | GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}/items` | 版本成员分页列表（样本粒度，不按焊缝去重） | query: `q`(weld_id/weld_name/registration_no 包含匹配), `quality`(精确), `split`(train/val/test), `page`, `page_size`；response: `Page<DatasetItemRow>` |
-| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source` |
+| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source`。**已构建成功的版本不能原地重建**（R4：`run_build` 会清空旧成员，等于把已用于训练的版本换成另一份数据）→ `40000`；要换规则/样本请新建数据集版本 |
+| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry` | **T8**：重试构建（绕过手工闸门、幂等，已有进行中任务返回它 `created=false`）。失败版本可重试；**已成功版本 → `40000`**（R4） | body 无 |
 | GET | `/api/v1/datasets/{dataset_id}/lineage` | 数据血缘：原始焊缝→标注任务→数据集版本→模型训练 | — 需登录 |
 
 > **§3.5 成员快照**：`GET /datasets/{dataset_id}/versions/{version_id}/items` 固定从 `dataset_items` 读取，返回 `DatasetItemRow`（sample_id、焊缝/登记/来源/焊机/模态/核验/划分/帧号/时间）；前端不得用全局 `/welds` 加载后过滤。
+>
+> **§3.5 成员来源与幂等（T11 / T16.3）**：构建成员按登记数据二选一（最近一次成功分段任务的切片 / 一条基础样本），排除标注锚点样本；分析产物版本（样本分段 / 特征提取）**同一个产物只生成一个版本**（幂等键 = action + note + object_keys，R7）。
 >
 > **§3.5 错误语义**：`40401` = 数据集不存在；`40402` = 数据集版本不存在（含版本不属于该数据集）；`GET /datasets/{dataset_id}/versions/{version_id}/items` 的 `split` 仅允许 `train/val/test`，否则返回 `40000`。
 >
@@ -314,6 +319,8 @@ createRegistration(body: RegistrationForm): Promise<Registration>     // POST /r
 updateRegistration(id: string, body: Partial<RegistrationForm>): Promise<Registration>
 attachRawFiles(id: string, objectKeys: string[]): Promise<DataVersion> // POST /registrations/{id}/raw-files
 getRegistration(id: string): Promise<Registration>                    // GET /registrations/{id}
+getIngestStatus(id: string): Promise<IngestStatus>                     // GET /registrations/{id}/ingest-status（T4.4 登记链路状态）
+reimportSignals(id: string): Promise<IngestStatus>                     // POST /registrations/{id}/reimport（重新导入失败的 CSV）
 listVersions(weldId: string): Promise<DataVersion[]>                  // GET /welds/{id}/versions
 createVersion(weldId: string, body: { action: '去噪处理' | '人工修正'; note?: string; object_keys?: string[] }): Promise<DataVersion>  // POST /welds/{id}/versions
 getVersion(weldId: string, versionId: string): Promise<DataVersion>   // GET /welds/{id}/versions/{version_id}

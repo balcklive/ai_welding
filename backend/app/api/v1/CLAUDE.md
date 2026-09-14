@@ -34,8 +34,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     核验报告/规则、对齐/特征/信号产物与版本链，并审计 delete。业务逻辑
     `app.services.welds.delete_record`，测试 `tests/test_weld_delete.py`。
   - 业务逻辑在 `app.services.welds`；每处写操作后显式 `session.commit()`。**Task 4 修复**：除管理员外，列表/详情/登记编辑/版本/核验均按 `audit_logs(create,weld).user_id` 的稳定 owner ACL；`record.operator` 仅作展示。
-    错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40000=参数错误。
+    错误码：40401=焊缝/登记不存在、40402=版本不存在、40403=该版本尚未核验、40901=CSV 已存在导入任务（按"已挂载成功"继续）、40000=参数错误。
   - **2026-09 多模态字段**：`RegistrationCreate/Update` 新增可空 `wire_feed_speed`/`welding_speed`（同 `EDITABLE_FIELDS`/幂等键/`_record_dict` 已同步）；`data_fields` 不接受客户端，由 CSV 导入自动写。
+  - **T4b 强校验（2026-09-14，R1/R6）**：`RegistrationCreate/Update` 增必填集与量程——`source`/`weld_name` 2–64、`material` 1–32、`thickness` 0.1–200（剥 `mm`）、`current_a` 1–2000、`voltage_v` 1–200、`wire_feed_speed` 0–50、`welding_speed` 0–5000、`sample_rate` 必须可被 `_parse_fs` 解析、`collected_at` 不晚于当天（**±1 天容差**：前端发的是本地墙钟、后端按 UTC 存，见 `_COLLECTED_AT_TOLERANCE`），`extra="forbid"`。校验器（`_checked_number`/`_checked_sample_rate`/`_checked_collected_at`/`_checked_legacy_current_voltage`）**新建与编辑共用一份**。`machine`/`weld_method` 还要命中系统设置字典（`_dictionary_violation`，命中不了 → 400；编辑时放行"与当前值相同"，选项被停用不该让老数据改不动）。电流/电压声明成可选但由 `model_validator._require_current_and_voltage` 强制"必须解析出两个值"——老客户端只发 `current_voltage` 也能过，但不能少给一个。
+  - **T4.4 状态与恢复（2026-09-14，R2）**：新增 `GET /registrations/{id}/ingest-status`（**全部由已有数据推导**：`awaiting_upload/importing/failed/ready` + `csv_failed`）与 `POST /registrations/{id}/reimport`（清掉 failed 行与其 Job 后重新入队，无 failed 行 → 400）。挂载接口的 `CSV 已存在导入任务` 改用**独立错误码 `40901`**（`CSV_INGEST_CONFLICT`）——前端据此判定"上次其实挂载成功了、只是响应丢了"，继续进导入态而不是卡死。
 - `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
@@ -127,6 +129,8 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
     状态经通用 `GET /jobs/{job_id}` 轮询）。
   - `GET /datasets/{dataset_id}/lineage`（4 层节点）。
+  - **构建不可重建（R4，2026-09-14）**：`POST …/build-tasks` 与 `POST …/build-tasks/retry` 都先过 `svc.ensure_version_rebuildable`——**已构建成功的版本返回 400**（`run_build` 会清空旧成员，等于把已用于训练的版本换成另一份数据）；失败版本照常可重试。`GET …/versions/{version_id}` 另带 `annotations_frozen`（`true`/`false`/`null`）：`false` = 历史版本（T16 之前构建）没有标注快照，训练只能现查当前标注、不可复现。
+  - `GET /datasets/{dataset_id}/dimensions`（**R3**）：时序维度改由**真实导入成功的通道**（`signal_ingests.column_map`）判定，缺列的 CSV 不再被判成"已具备"。
   - `GET /datasets/{dataset_id}/delete-impact`（**T7 新增**）：删除前的影响范围预检
     → `{counts, blocking, deletable, can_delete}`，与 `DELETE /datasets/{id}` 共用 `collect_dataset_references`。
   - `DELETE /datasets/{dataset_id}`（**2026-08-29 新增**）：删除无业务引用的数据集及固定版本

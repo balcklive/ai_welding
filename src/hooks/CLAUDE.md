@@ -1,10 +1,12 @@
 # CLAUDE.md — src/hooks/
 
-前端 React 钩子层（契约：`docs/API接口清单.md` §4.3 横切工具）。当前进度：**Task 20**（`useJob` 通用任务轮询）+ **2026-09-06 一期 LS 感知**（`useLabelStudioTask`）。消费 `src/api/` 的域模块，向页面提供轮询/状态封装。
+前端 React 钩子层（契约：`docs/API接口清单.md` §4.3 横切工具）。当前进度：**Task 20**（`useJob` 通用任务轮询）+ **2026-09-06 一期 LS 感知**（`useLabelStudioTask`）+ **2026-09-14 数据管理改造二期补齐**（`usePagedWelds` 选择器分页、`useIngestStatus` 登记链路状态）。消费 `src/api/` 的域模块，向页面提供轮询/状态封装。
 
 ## 脚本
 
 - `useLabelStudioTask.ts`：**2026-09-06 一期·轨道 A**。轮询标注任务的 LS 同步状态（`getLabelStudioTask(taskId)` → `GET /labelstudio/tasks/{job_uid}`）。`useLabelStudioTask(taskId, jobDone)`（`jobDone`=标注 job 是否已终态 succeeded/failed）返回 `{ lsTask, failed }`；`pending_ls`/`annotating` 期间每 3s 轮询；`synced` 停止；**`legacy` 且 `jobDone=false` 继续轮询**（防 executor 运行前的短暂 legacy 窗口错过 LS 态），`legacy` 且 `jobDone=true` 停止（确证 off 路径）。请求失败每 5s 重试并记 `error`。消费方：`features/annotation/AnnotationWorkspace`（仅用 `ls_status` 感知任务是否已被推到 LS，借 `lsActive` 放宽样本加载闸门；**LS 工作台已不再嵌入主应用**，见该目录 CLAUDE.md）。
+- `usePagedWelds.ts`：**2026-09-14（T9/R5）**。样本选择器的**服务端搜索 + 分页追加**：`usePagedWelds(datasetId, query, pageSize=20)` → `{ items, total, hasMore, loading, error, loadMore, retry }`。300ms 防抖，默认每页 20（与后端 `page_size` 上限 100 对齐）；**失败时清空候选**（不把上一个数据集/上一个关键词的结果当成这次的结果）；`loadMore` 按 `weld_id` 去重后追加。消费方：`features/data-context/DataContext.tsx` 的 `SelectionSwitcher` 与 `AnalysisSelect`——改造前两处写死 `page_size: 50` 且没有翻页入口，第 51 条之后永远选不到。
+- `useIngestStatus.ts`：**2026-09-14（T4.4/R2）**。登记链路状态轮询：`useIngestStatus(registrationId, intervalMs=2000)` → `{ status, error, refresh }`，状态由后端 `GET /registrations/{id}/ingest-status` **从已有数据推导**（刷新/换设备一致）。只在 `importing` 时继续排期（递归 `setTimeout`，终态/失败天然停），避免每 2 秒刷一次错误。另导出 `ingestStatusText(status)` 供页面与数据详情共用文案。
 - `useJob.ts`：通用异步任务轮询钩子。
   - `useJob<T = unknown>(jobId: string | null, intervalMs = 1500)` → `{ job, status, progress, result, error, start, stop }`。
     - `job: Job<T> | null`——最近一次轮询到的 Job；从未拉取/已停止后为 `null`。

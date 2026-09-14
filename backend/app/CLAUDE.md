@@ -4,7 +4,7 @@
 
 ## 脚本
 
-- `main.py`：FastAPI 实例 `app`。`GET /api/v1/health` 保留兼容，`/health/live` 只检查进程存活，`/health/ready` 聚合数据库、Alembic revision、关键表与 MinIO 检查；部署与 Docker HEALTHCHECK 只使用 readiness。启动 seed 失败会中止 lifespan，不再带病启动；`JOB_EXECUTOR_ENABLED=false` 时不启动后台 Job executor，供候选部署容器预检。另挂 `GZipMiddleware`（minimum_size=2048）和 `AccessLogMiddleware`；`include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并注册统一异常处理器。
+- `main.py`：FastAPI 实例 `app`。`GET /api/v1/health` 保留兼容，`/health/live` 只检查进程存活，`/health/ready` 聚合数据库、Alembic revision、关键表与 MinIO 检查；部署与 Docker HEALTHCHECK 只使用 readiness。启动 seed 失败会中止 lifespan，不再带病启动；`JOB_EXECUTOR_ENABLED=false` 时不启动后台 Job executor，供候选部署容器预检。另挂 `GZipMiddleware`（minimum_size=2048）和 `AccessLogMiddleware`；`include_router(api_router, prefix="/api/v1")` 聚合 v1 路由，并注册统一异常处理器。**422 处理器只输出 `loc`/`msg`/`type`**（T4b/R6，2026-09-14）：`exc.errors()` 的 `ctx` 里可能带原始异常对象（自定义校验器抛 `ValueError` 时），直接序列化会 500；前端 `shared/lib/errors` 只消费这两项。
 - `core/seed.py`：**Task 6**。`seed_all/seed_admin/seed_demo`，详见 `core/CLAUDE.md`。
 - `core/__init__.py`：空。
 - `core/config.py`：pydantic-settings `Settings` + 模块级单例 `settings`。字段覆盖 MinIO/MySQL/Auth/API 日志；`mysql_url` property 拼 `mysql+pymysql://...`。

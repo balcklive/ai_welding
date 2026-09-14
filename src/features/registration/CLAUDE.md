@@ -9,12 +9,14 @@
 ## 调用链
 
 - 被谁调用：`src/App.tsx`（`data-center/registration` 懒加载）。
-- 调用谁：`src/api/welds`（createRegistration/attachRawFiles/listWelds）、`src/api/datasets`（listDatasets，默认取第一个）、`src/api/files`（presignUpload/putFileDirect/uploadFile）、`src/api/settings`（listOptionGroups，取 machine/weld_method/source/product 四组启用项）、`src/features/datasets/weldRows`（toWeldRow）、`src/app/navigation`（`Route`，三个出口跳转用）。
+- 调用谁：`src/api/welds`（createRegistration/attachRawFiles/listWelds/reimportSignals）、`src/hooks/useIngestStatus`（登记链路状态）、`src/api/datasets`（listDatasets，默认取第一个）、`src/api/files`（presignUpload/putFileDirect/uploadFile）、`src/api/settings`（listOptionGroups，取 machine/weld_method/source/product 四组启用项）、`src/features/datasets/weldRows`（toWeldRow）、`src/app/navigation`（`Route`，三个出口跳转用）。
 
 ## 关键规则/坑
 
 - **T4a（2026-09-14）登记改造**：① **所属数据集继承并锁定**——`App.tsx` 传 `lockedDatasetId`（当前 `selectedDatasetId`）；带上下文进入直接进表单并显示只读的「所属数据集」，未带上下文则先渲染 `.registration-step`（选数据集 → `confirmDataset` → 锁定）；必填校验看 `lockedDatasetId`（不是 `form.dataset_id`）。② **默认值链（T4.2.1）**：上下文（数据集/采集时间）→ 本次上传的 CSV 推导采样率（`sampleRateFromCsv`，只处理数值时间列，解析不出就留空）→ 该用户上次成功登记的值（localStorage `ai-welding:last-registration:<userId>`，`DEFAULTABLE_FIELDS` 白名单）→ 字典首项；只在字段为空时回填，填过的字段带 `<em className="default-mark">默认</em>`，并有「清除默认值（N 项）」一键清空。③ **提交前汇总确认**：只要还有"仍是默认值"的字段，点「登记数据」先弹 `ConfirmDialog` 列出这些字段与值，确认后才提交（默认值会让必填校验永不触发，这一步才是真正防填错的地方）。④ **三个出口（T4.3）**：结果卡 `.registration-result` 给「查看这条数据 / 继续登记下一条 / 去数据核验」；后两个分别带上下文跳转与重置表单（保留数据集与上次工艺参数作为默认）。⑤ **登记完成后显示数据集版本构建状态**（T8）：挂载响应带出 `dataset_build.job_id`，结果卡用 `useJob` 轮询显示「构建中 / 已完成 / 构建失败（可在数据集页面重新构建）」；刷新后由数据集页面的 `build_status` 恢复（上下文不入 URL，登记页本身不持久化）。⑥ 写操作失败**保留用户输入**（T3.2 的读写分开规则）。
-- 单元/契约回归：`src/App.analysis-select-regression.test.mjs` 钉住"继承并锁定 + missingFields 看 lockedDatasetId"；界面契约 E2E `tools/data-center-ui-e2e.mjs` 覆盖两步流程、默认标记、CSV 推采样率、确认弹窗、三个出口、继续登记。
+- **T4b（2026-09-14，R1/R6）**：① 「电流 / 电压」从一格拆成**两个输入框**（`input placeholder="例如：180"` 与 `"例如：22"`，各带"默认"标记与单位后缀）；② `DefaultableField` 改为 `DEFAULTABLE_FIELDS` 元组推导出的字符串字段联合类型，`loadLastValues` 按白名单过滤（老版本可能存过 `current_voltage`）；③ 提交载荷里 `current_a`/`voltage_v` 转数字、厚度剥 `mm`——**表单字符串 → 请求数字的边界只在这一处**；④ 必填/量程与后端同一套（电流 1–2000、电压 1–200、厚度 0.1–200、送丝 0–50、焊接 0–5000）。
+- **T4.4（2026-09-14，R2）**：① `uploadedKeys` 记住**已直传成功**的对象键（按上传区）——重试只补失败的那个文件，**换文件时清掉该区的键**（否则会把上一个文件挂到这次登记上）；② 提交期间用 `<fieldset className="form-fieldset" disabled>`（CSS `display:contents`，不打断栅格）禁用整个表单，避免"提交中改了表单、重试却复用了已建登记"；③ 失败时在表单外给 `.registration-error`：说明「当前登记 REG-… 已创建」+「重试提交 / 放弃本次登记」两个出口；④ `attachRawFiles` 撞上 `CSV_INGEST_CONFLICT_CODE`（40901）时**按已挂载成功继续**（下一次挂载重试必然撞它）；⑤ 结果卡用 `useIngestStatus` 显示信号导入四态，失败时列出文件与原因并给「重新导入」（`reimportSignals`）；⑥ 错误文案统一走 `toUserMessage(err, '登记数据')`（T3.1）。
+- 单元/契约回归：`src/App.analysis-select-regression.test.mjs` 钉住"继承并锁定 + missingFields 看 lockedDatasetId"；界面契约 E2E `tools/data-center-ui-e2e.mjs` 覆盖两步流程、默认标记、CSV 推采样率、确认弹窗、三个出口、继续登记、**两个电流/电压输入框与提交载荷字段**、**导入状态与重新导入**；后端 `backend/tests/test_registration_t4b.py` 覆盖校验/兼容/迁移对拍。
 
 - **延迟上传**：选择文件只锚定（`files` state 存 File，状态 `pending`「已选择（待上传）」，不发网络请求），点「登记数据」才提交。
 - **必填项 UX**：5 个启用条件（dataset（T4a 起看 `lockedDatasetId`）/source/collected_at/weld_name/hasFile）由 `missingFields` 统一驱动，按钮不用原生 `disabled` 而是 `.full-button--disabled` + `aria-disabled`，点击列出缺失项并对输入区红色闪烁。

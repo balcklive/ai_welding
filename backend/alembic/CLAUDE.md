@@ -35,6 +35,11 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 - 回滚：`uv run alembic downgrade -1`
 - 离线渲染 SQL（不连库）：`uv run alembic upgrade head --sql`
 
+## 迁移清单（近期）
+
+- `0017_split_current_voltage`（**T4b / D7，2026-09-14**）：`data_records` 增 `current_a` / `voltage_v`（`NUMERIC(8,2)`），从旧列 `current_voltage` 解析回填（`180 A / 22 V`、`180A/22V`、`180/22`、`180`；空串不算失败）。**解析失败逐行写 alembic 日志**（不再静默跳过）；**旧列保留**（写入只写新列，回滚靠 `downgrade` 的**反向回填**——逐行 Python 拼串而非 MySQL 方言函数，保证 SQLite 测试库也能跑）。
+- 注意：解析规则在 `app/services/welds.py`（`parse_current_voltage` / `format_current_voltage`）里有一份**运行时副本**，迁移里刻意留了独立实现（迁移不 import 应用代码）；两边由 `backend/tests/test_registration_t4b.py` 的逐形态对拍钉住。
+
 ## 坑/限制
 
 - **手写迁移的原因**：远程 MySQL（`settings.mysql_host`）在本机不可达，`--autogenerate` 无法对比，故 `0001_initial.py` 按 `docs/数据库设计.md` §3 手写。

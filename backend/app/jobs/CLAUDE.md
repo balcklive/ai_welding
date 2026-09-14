@@ -35,6 +35,7 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.run_alignment`
   （真实信号事件 + ffmpeg 视频探测/关键帧 + 真实产物 CSV/JPG/tracks.json，部分成功语义；
   自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
+- **分析产物版本幂等（T16.3/R7，2026-09-14）**：`split.py` 与 `features.py` 生成「样本分段」/「特征提取」版本时统一走 `services.welds.reuse_or_create_version`——**同一个产物只产生一个版本**（幂等身份 = action + note + object_keys：note 里带任务 id/维度、object_keys 里带产物键，所以"同任务重入复用、换参数重跑新建"）。`features.py` 的产物键另带**提取参数的短哈希**（`features/{version_id}-{params_tag}.json`），否则"同源版本换归一化/输出格式重跑"会互相覆盖同一个文件。**对齐不接入**（产物键与 note 都不带任务身份）。
 - `split.py`：**Task 14 + T10**。`handle(job_id, session)`（`@register_handler("split")`）→
   `simulate_split(session, task, job)`（**领域逻辑直接在本模块**，任务清单未规划 split service）：
   读 `window_seconds`/`stride_seconds`（**秒**，T10 起）；历史任务没有这两个键时用 `_rule_seconds`
