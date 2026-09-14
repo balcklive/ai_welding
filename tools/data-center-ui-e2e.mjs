@@ -158,6 +158,12 @@ await ctx.route(API, (route) => {
   if (/\/datasets\?.*options=1/.test(url)) return route.fulfill(envelope([{ id: DATASET.id, dataset_no: DATASET.dataset_no, name: DATASET.name, task: DATASET.task, status: DATASET.status, sample_count: DATASET.sample_count, weld_count: DATASET.weld_count, progress: DATASET.progress, current_version_id: DATASET.current_version_id, version: DATASET.version, split: DATASET.split }]));
   if (/\/datasets\?/.test(url) && /q=zzz/.test(url)) return route.fulfill(envelope({ items: [], total: 0, page: 1, page_size: 20 }));
   if (/\/datasets(\?|$)/.test(url)) return route.fulfill(envelope({ items: [DATASET], total: 1, page: 1, page_size: 20 }));
+  // 切分页（T10）：版本链 / 信号 / 最近一次对齐任务（视频轨道带 25 fps）
+  if (/\/welds\/WLD-E2E-0001\/versions\/4242\/alignment-tasks\/latest/.test(url)) return route.fulfill(envelope({ id: 'job_align_e2e', type: 'alignment', status: 'succeeded', progress: 100, result: { events: { weld_segment: [0, 83] }, event_source: 'real', tracks: [{ channel: 'video', modality: 'video', availability: 'available', aligned: true, metadata: { fps: 25 } }], assets: [] }, error: null, created_at: null, finished_at: null }));
+  if (/\/welds\/WLD-E2E-0001\/versions\/4242\/split-preview/.test(url)) return route.fulfill(envelope({ input: { version_id: 4242, duration: 83, sample_rate: 10000, source: 'real', video_fps: 25 }, events: { weld_segment: [0, 83] }, summary: { sample_count: 207, effective_start: 0, effective_end: 83, window_seconds: 0.4, stride_seconds: 0.4, window_frames: 10, stride_frames: 10, window_samples: 4000 }, windows: [] }));
+  if (/\/signals/.test(url)) return route.fulfill(envelope({ duration: 83, sample_rate: 10000, source: 'real', events: { weld_segment: [0, 83] }, anomalies: [], channels: [{ id: 'cur', name: '电流', unit: 'A', values: [1, 2, 3], lo: 0, hi: 200, mean: 180 }, { id: 'vol', name: '电压', unit: 'V', values: [1, 2, 3], lo: 0, hi: 30, mean: 22 }] }));
+  if (/\/welds\/WLD-E2E-0001\/versions/.test(url)) return route.fulfill(envelope([{ id: 4242, record_id: 7, version_no: 'v1.0', action: '原始数据', operator: null, note: null, object_keys: [], created_at: '2026-09-01T10:00:00' }]));
+  if (/\/jobs\/job_align_e2e/.test(url)) return route.fulfill(envelope({ id: 'job_align_e2e', type: 'alignment', status: 'succeeded', progress: 100, result: { events: { arc: 0.2, weld_segment: [0, 83], tail: 82.9 }, event_source: 'real', tracks: [{ channel: 'video', modality: 'video', availability: 'available', aligned: true, metadata: { fps: 25, duration: 83 } }], assets: [] }, error: null, created_at: null, finished_at: null }));
   // 单条样本详情要先于列表规则匹配：否则详情会拿到分页对象，`record.modalities.join` 直接崩。
   if (/\/welds\/WLD-E2E-0001/.test(url)) return route.fulfill(envelope(RECORD));
   if (/\/welds/.test(url)) return route.fulfill(envelope({ items: [RECORD], total: 1, page: 1, page_size: 20 }));
@@ -332,6 +338,22 @@ try {
   await clickStep(page.getByRole('button', { name: '继续登记下一条' }), '继续登记下一条');
   await waitForStep(page, '.locked-dataset', '继续登记后的表单');
   check('继续登记保留数据集上下文且清空样本名称', await page.locator('input[placeholder="输入样本名称（焊缝 / 批次）"]').inputValue(), '');
+
+  // T10：切分页——帧与采样率必须分开（改造前界面显示"10 帧 ≈ 00:00.00"）
+  await page.goto(`${BASE}/#/analysis/split`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(500);
+  await page.locator('.selection-switcher select').nth(1).selectOption('WLD-E2E-0001');
+  await waitForStep(page, '.cut-summary', '切分统计卡');
+  // 采样率来自 /signals（异步）——先等它落地，否则会读到 fallback 的 1000 Hz（曾经因此假失败）
+  await page.waitForFunction(() => document.body.innerText.includes('10000 Hz'), null, { timeout: 20_000 }).catch(() => {});
+  const splitText = await page.locator('.cut-summary').innerText();
+  check('切片时长给出帧与秒两个口径', splitText.includes('10 帧') && splitText.includes('0.400 秒'), true);
+  check('时序窗口 = 切片秒数 × 时序采样率', (splitText.match(/([\d,]+) 采样点/)?.[1] ?? '无采样点'), '4,000');
+  const splitBody = await text();
+  check('页面上同时给出视频帧率与时序采样率', `fps=${splitBody.includes('fps')}, hz=${splitBody.includes('10000 Hz')}`, 'fps=true, hz=true');
+  // 旧缺陷的原文是「10 帧 ≈ 00:00.00」（把帧当采样点算时长）；时间轴上的 00:00.00 是正常刻度
+  check('不再出现"帧 ≈ 时分秒"的换算', splitBody.includes('帧 ≈'), false);
+  check('单位选择器存在且当前为帧', await page.locator('.split-control').first().inputValue(), 'frame');
 
   check('全程无页面级 JS 异常', pageErrors.length, 0);
   if (pageErrors.length) console.log(`   ⚠ pageerror: ${pageErrors.join(' | ')}`);

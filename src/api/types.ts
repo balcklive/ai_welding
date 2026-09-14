@@ -623,8 +623,11 @@ export interface SignalQuery {
 }
 
 export interface SplitRules {
+  /** 窗口长度；单位由 `unit` 决定（T10：`frame` 按视频帧 / `second` 按秒）。 */
   fixed_rate: number;
   stride?: number;
+  /** 切分单位（T10）：`frame`（默认，需视频帧率）/ `second`（无视频时的唯一选择，D15）。 */
+  unit?: 'frame' | 'second';
   keep_event_buffer?: number;
   task_format?: string;
   event_start?: number;
@@ -632,9 +635,10 @@ export interface SplitRules {
 }
 
 export interface SplitPreview {
-  input: { version_id: number; duration: number; sample_rate: number; source: 'real' };
+  input: { version_id: number; duration: number; sample_rate: number; source: 'real'; video_fps?: number | null };
   events: WeldEvent;
-  summary: { sample_count: number; effective_start: number; effective_end: number; window_seconds: number; stride_seconds: number };
+  /** T10：秒是唯一基准；`window_frames`/`stride_frames` 只在能拿到视频帧率时给出。 */
+  summary: { sample_count: number; effective_start: number; effective_end: number; window_seconds: number; stride_seconds: number; window_frames?: number | null; stride_frames?: number | null; window_samples?: number };
   windows: { index: number; start: number; end: number; frame_start: number; frame_end: number }[];
 }
 

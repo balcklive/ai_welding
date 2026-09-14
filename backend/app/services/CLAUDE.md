@@ -50,6 +50,16 @@
   `record_payload`/`records_payload`（批量预查 latest 版本防 N+1）/`version_payload`/
   `validation_payload`；**`find_duplicate_version`** 现按 `version_request_key(action,note,object_keys)`
   查同焊缝重复加工版本，配合 `data_versions.request_key` 唯一约束兜底并发重复请求，供路由返回 40900。
+- `splitting.py`：**T10（2026-09-14）改为「秒是唯一基准」**。
+  - `RULES_VERSION = 2`（1 = 旧口径「帧 = 采样点」，历史任务的 `rules` 里没有该键）；写进 `rules`
+    与切片 `meta`，供 D16-A 区分新旧切片。
+  - `resolve_rule_seconds(unit, window_value, stride_value, video_fps, sample_rate)`：把界面上的
+    「帧 / 秒」换算成秒。**只在这一处换算**——预览接口与任务接口共用，否则会出现"预览 207、执行 8 万"。
+    `unit="frame"` 时必须能拿到视频帧率，拿不到就报错（不猜默认值）。
+  - `build_windows(*, duration, sample_rate, window_seconds, stride_seconds, event_bounds)`：
+    采样点由 `秒 × 采样率` **四舍五入**推导；**只保留完整窗口**（丢尾片，D20），切片等长。
+  - `SplitWindow.frame_start/frame_end` 是**信号采样点下标**（历史字段名），视频帧号另记在切片
+    meta 的 `video_frame_no`（窗口中点 × fps）。
 - `dsp.py`：**Task 11**。真实 DSP 纯函数（输入 np 数组 + fs，输出 JSON 安全结构）：
   `filter_signal`（butter(4)+sosfiltfilt 零相位，kind 低通/高通/带通，cutoff 为 0~1 归一化
   频率相对奈奎斯特，带通需 cutoff<cutoff2<1）；`compute_psd`（scipy welch →

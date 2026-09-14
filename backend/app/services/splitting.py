@@ -21,13 +21,26 @@ class SplitInputError(ValueError):
     """输入不满足生产分段前置条件。"""
 
 
+#: 切分规则版本（T10）：1 = 旧口径「帧 = 采样点」（历史任务的 rules 里没有这个键，按 1 解释），
+#: 2 = **秒是唯一基准**（帧只作为界面单位，换算经视频帧率）。写进 `rules` 与切片 `meta`，
+#: 供 D16-A 区分新旧切片。
+RULES_VERSION = 2
+
+
 @dataclass(frozen=True)
 class SplitWindow:
+    """一个切片窗口。
+
+    **`frame_start` / `frame_end` 是信号采样点下标**（字段名是历史遗留，勿按视频帧理解）——
+    视频帧号另记在切片 meta 的 `video_frame_no`（取窗口中点换算）。
+    """
+
     index: int
     start: float
     end: float
     frame_start: int
     frame_end: int
+    window_seconds: float = 0.0
 
 
 def load_input(session: Session, record: DataRecord, version: DataVersion):
@@ -46,26 +59,65 @@ def load_input(session: Session, record: DataRecord, version: DataVersion):
     return bundle
 
 
+def resolve_rule_seconds(
+    *,
+    unit: str,
+    window_value: float,
+    stride_value: float,
+    video_fps: float | None,
+    sample_rate: int,
+) -> tuple[float, float]:
+    """把界面上的切分规则换算成**秒**（T10：唯一基准），返回 `(window_seconds, stride_seconds)`。
+
+    **换算只在这一个函数里做**——预览接口与任务接口共用，否则会出现"预览 207、执行 8 万"。
+
+    - `unit="second"`：直接就是秒；
+    - `unit="frame"`：必须能拿到视频帧率（`秒 = 帧数 ÷ fps`）；拿不到就报错而不是猜默认值
+      （无视频时"帧"没有意义，见 D15）。
+    """
+    if unit not in ("frame", "second"):
+        raise SplitInputError("切分单位只能是 frame（帧）或 second（秒）")
+    if window_value <= 0 or stride_value <= 0:
+        raise SplitInputError("切片时长与步长必须大于 0")
+    if unit == "frame":
+        if not video_fps or video_fps <= 0:
+            raise SplitInputError(
+                "按帧切分需要可用的视频帧率：当前版本没有视频，或帧率探测失败。请改用按秒切分"
+            )
+        return window_value / video_fps, stride_value / video_fps
+    return float(window_value), float(stride_value)
+
+
 def build_windows(
-    *, duration: float, sample_rate: int, window_frames: int, stride_frames: int,
+    *,
+    duration: float,
+    sample_rate: int,
+    window_seconds: float,
+    stride_seconds: float,
     event_bounds: tuple[float, float],
 ) -> list[SplitWindow]:
-    if window_frames < 1 or stride_frames < 1:
-        raise SplitInputError("窗口长度和步长必须为大于 0 的整数采样点")
+    """按**秒**计算窗口，采样点由 `秒 × 采样率` 四舍五入推导（T10）。
+
+    **只保留完整窗口**（丢弃不足一个窗口的尾片，D20）：切片采样点数一致，训练侧不用处理不等长。
+    非整数帧率（如 29.97）时，秒数由 `帧数 ÷ fps` 得到，不做整数截断，避免累积漂移。
+    """
+    window_samples = max(1, round(window_seconds * sample_rate))
+    stride_samples = max(1, round(stride_seconds * sample_rate))
     start, end = event_bounds
     if start < 0 or end <= start or end > duration:
         raise SplitInputError("事件边界必须位于真实信号时长内，且结束时间大于开始时间")
-    total_frames = max(0, math.floor((end - start) * sample_rate))
-    if total_frames < window_frames:
-        raise SplitInputError("有效事件区间短于一个样本窗口，无法生成生产样本")
-    count = 1 + (total_frames - window_frames) // stride_frames
+    total_samples = max(0, math.floor((end - start) * sample_rate))
+    if total_samples < window_samples:
+        raise SplitInputError("有效事件区间短于一个切片窗口，无法生成切片")
+    count = 1 + (total_samples - window_samples) // stride_samples
     return [
         SplitWindow(
             index=i + 1,
-            start=start + (i * stride_frames) / sample_rate,
-            end=min(end, start + (i * stride_frames + window_frames) / sample_rate),
-            frame_start=math.floor(start * sample_rate) + i * stride_frames,
-            frame_end=math.floor(start * sample_rate) + i * stride_frames + window_frames,
+            start=start + (i * stride_samples) / sample_rate,
+            end=min(end, start + (i * stride_samples + window_samples) / sample_rate),
+            frame_start=math.floor(start * sample_rate) + i * stride_samples,
+            frame_end=math.floor(start * sample_rate) + i * stride_samples + window_samples,
+            window_seconds=window_seconds,
         )
         for i in range(count)
     ]

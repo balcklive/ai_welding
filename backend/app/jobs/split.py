@@ -21,6 +21,22 @@ from app.services.jobs import mark_succeeded
 from app.storage import get_storage
 
 
+def _rule_seconds(rules: dict, sample_rate: int) -> tuple[float, float]:
+    """规则里的窗口长度与步长（**秒**，T10）。
+
+    T10 起规则以秒为准（`window_seconds` / `stride_seconds`）；历史任务（没有这两个键）按**旧口径**
+    解释——那时 `fixed_rate` / `stride` 是"采样点"数，换算成秒 = `点数 ÷ 采样率`，结果与旧实现
+    一致，所以旧任务不重跑也不会改变分片结果。
+    """
+    window_seconds = rules.get("window_seconds")
+    stride_seconds = rules.get("stride_seconds")
+    if window_seconds and stride_seconds:
+        return float(window_seconds), float(stride_seconds)
+    legacy_window = max(1, int(rules.get("fixed_rate") or 1))
+    legacy_stride = max(1, int(rules.get("stride") or legacy_window))
+    return legacy_window / sample_rate, legacy_stride / sample_rate
+
+
 @register_handler("split")
 def handle(job_id: int, session: Session) -> None:
     task = session.exec(select(SplitTask).where(SplitTask.job_id == job_id)).first()
@@ -43,11 +59,12 @@ def handle(job_id: int, session: Session) -> None:
         rules.get("event_end"),
         float(rules.get("keep_event_buffer") or 0),
     )
+    window_seconds, stride_seconds = _rule_seconds(rules, bundle.sample_rate)
     windows = splitting.build_windows(
         duration=bundle.duration,
         sample_rate=bundle.sample_rate,
-        window_frames=int(rules["fixed_rate"]),
-        stride_frames=int(rules["stride"]),
+        window_seconds=window_seconds,
+        stride_seconds=stride_seconds,
         event_bounds=bounds,
     )
     storage = get_storage()
@@ -60,14 +77,20 @@ def handle(job_id: int, session: Session) -> None:
                 "sample_index": index,
                 "window_start": window.start,
                 "window_end": window.end,
+                # 注意：这两个是**信号采样点下标**（历史字段名），视频帧号见下面的 video_frame_no
                 "frame_start": window.frame_start,
                 "frame_end": window.frame_end,
+                "window_seconds": window.window_seconds,
                 "source_version_id": version.id,
                 "task_format": task.task_format,
-                # T11/D16-A：切片标出产出它的规则版本，供"新旧切片共存"时区分口径。
-                # 0 = 旧口径（帧 = 采样点，T10 前的实现）；T10 落地后由 rules 携带真实版本号。
-                "rules_version": rules.get("rules_version", 0),
+                # T11/D16-A：标出产出这条切片的规则版本，供"新旧切片共存"时区分口径。
+                # 1 = 旧口径（帧 = 采样点，T10 之前）；2 = 秒为唯一基准。
+                "rules_version": rules.get("rules_version", 1),
             }
+            # T10：视频帧号取**窗口中点**对应的帧（窗口本身按秒算；没有 fps 就不记）。
+            fps = rules.get("video_fps")
+            if isinstance(fps, (int, float)) and fps > 0:
+                metadata["video_frame_no"] = int(((window.start + window.end) / 2) * fps)
             if task.task_format == "目标检测":
                 if not video_bytes:
                     raise splitting.SplitInputError("目标检测需要真实视频输入")

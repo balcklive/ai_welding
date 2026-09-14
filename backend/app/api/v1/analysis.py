@@ -105,11 +105,15 @@ class AlignmentTaskCreate(BaseModel):
 class SplitTaskCreate(BaseModel):
     """POST …/welds/{weld_id}/versions/{version_id}/split-tasks 请求体（契约 §3.4）。
 
-    `fixed_rate`(帧/样本，>=1) 必填；`keep_event_buffer`(±s) 默认 0；`task_format` 默认目标检测。
+    `fixed_rate` 是**窗口长度**、`stride` 是**步长**，单位由 `unit` 决定（T10：
+    `unit="frame"` 按视频帧、`unit="second"` 按秒；默认 frame 以兼容旧前端）；
+    `keep_event_buffer`(±s) 默认 0；`task_format` 默认目标检测。
     """
 
-    fixed_rate: int
-    stride: int | None = None
+    fixed_rate: float
+    stride: float | None = None
+    #: 切分单位（T10）：`frame`（帧，默认）/ `second`（秒）。无视频时只能用 `second`（D15）。
+    unit: str = "frame"
     keep_event_buffer: float = 0.0
     task_format: str = "目标检测"
     event_start: float | None = None
@@ -118,6 +122,48 @@ class SplitTaskCreate(BaseModel):
 
 class SplitPreviewRequest(SplitTaskCreate):
     """生产样本分段预览参数。"""
+
+
+def _version_video_fps(session: Session, record: DataRecord, version: DataVersion) -> float | None:
+    """该版本可用的**视频帧率**（T10），拿不到返回 None。
+
+    优先读多模态对齐时 ffmpeg 探测并存下的元数据（`alignment_tasks.tracks[].metadata.fps`）——
+    避免每次预览都下载视频跑一遍 ffmpeg；没有对齐产物时才实时探测（受 200MB 上限保护）。
+    **不猜默认帧率**：拿不到就让上层禁用"按帧"（D15：无视频时"帧"没有意义）。
+    """
+    from app.models.analysis import AlignmentTask
+
+    tasks = session.exec(
+        select(AlignmentTask)
+        .where(AlignmentTask.version_id == version.id)
+        .order_by(AlignmentTask.id.desc())
+    ).all()
+    for task in tasks:
+        for track in task.tracks or []:
+            metadata = (track or {}).get("metadata") or {}
+            fps = metadata.get("fps")
+            if isinstance(fps, (int, float)) and fps > 0:
+                return float(fps)
+
+    video_key = next(
+        (key for key in (version.object_keys or []) if str(key).lower().endswith(svc._VIDEO_EXTS)),
+        None,
+    )
+    if not video_key:
+        return None
+    try:
+        from app.storage import get_storage
+        from app.services.media_probe import MAX_VIDEO_PROBE_BYTES, analyze_video
+
+        payload = get_storage().get_object(video_key)
+        if not payload or len(payload) > MAX_VIDEO_PROBE_BYTES:
+            return None
+        metadata, _frames = analyze_video(payload, [])
+    except Exception as exc:  # noqa: BLE001 - 探测失败只是没有帧率，不该让预览整体失败
+        logger.warning("Video fps probe failed for {}: {}", video_key, exc)
+        return None
+    fps = (metadata or {}).get("fps")
+    return float(fps) if isinstance(fps, (int, float)) and fps > 0 else None
 
 
 # ── 分析候选 ──────────────────────────────────────────────────────────
@@ -698,11 +744,6 @@ def preview_split_task(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """使用生产规则计算预览；不创建任务、不写入样本。"""
-    if body.fixed_rate < 1:
-        return err(40000, "fixed_rate 需为 >=1 的整数（帧/样本）", status=400)
-    stride = body.stride or body.fixed_rate
-    if stride < 1:
-        return err(40000, "stride 需为 >=1 的整数（帧）", status=400)
     if body.task_format not in _SPLIT_FORMATS:
         return err(40000, f"task_format 需为 {'/'.join(sorted(_SPLIT_FORMATS))}", status=400)
     resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
@@ -711,8 +752,17 @@ def preview_split_task(
     record = svc.get_record_by_weld_id(session, weld_id)
     version = svc.get_version(session, version_id)
     assert record is not None and version is not None
+    stride_value = body.stride or body.fixed_rate
     try:
         bundle = splitting.load_input(session, record, version)
+        fps = _version_video_fps(session, record, version)
+        window_seconds, stride_seconds = splitting.resolve_rule_seconds(
+            unit=body.unit,
+            window_value=body.fixed_rate,
+            stride_value=stride_value,
+            video_fps=fps,
+            sample_rate=bundle.sample_rate,
+        )
         bounds = splitting.event_bounds(
             bundle, body.event_start, body.event_end,
             body.keep_event_buffer,
@@ -720,8 +770,8 @@ def preview_split_task(
         windows = splitting.build_windows(
             duration=bundle.duration,
             sample_rate=bundle.sample_rate,
-            window_frames=body.fixed_rate,
-            stride_frames=stride,
+            window_seconds=window_seconds,
+            stride_seconds=stride_seconds,
             event_bounds=bounds,
         )
     except splitting.SplitInputError as exc:
@@ -732,14 +782,19 @@ def preview_split_task(
             "duration": bundle.duration,
             "sample_rate": bundle.sample_rate,
             "source": "real",
+            "video_fps": fps,
         },
         "events": {**(bundle.events or {}), "weld_segment": list(bounds)},
         "summary": {
             "sample_count": len(windows),
             "effective_start": bounds[0],
             "effective_end": bounds[1],
-            "window_seconds": body.fixed_rate / bundle.sample_rate,
-            "stride_seconds": stride / bundle.sample_rate,
+            # T10：秒是唯一基准；帧值只在能拿到 fps 时给出（两者都给，便于界面双口径展示）
+            "window_seconds": window_seconds,
+            "stride_seconds": stride_seconds,
+            "window_frames": round(window_seconds * fps) if fps else None,
+            "stride_frames": round(stride_seconds * fps) if fps else None,
+            "window_samples": max(1, round(window_seconds * bundle.sample_rate)),
         },
         "windows": [window.__dict__ for window in windows[:100]],
     })
@@ -758,11 +813,6 @@ def create_split_task(
     同事务 commit，返回 `{job_id}`。成功后（后台执行器）按规则在 `samples` 表生成样本，
     回填 `SplitTask.sample_count` 与 Job.result（`{sample_count, samples:[...]}`）。
     """
-    if body.fixed_rate < 1:
-        return err(40000, "fixed_rate 需为 >=1 的整数（帧/样本）", status=400)
-    stride = body.stride or body.fixed_rate
-    if stride < 1:
-        return err(40000, "stride 需为 >=1 的整数（帧）", status=400)
     if body.task_format not in _SPLIT_FORMATS:
         return err(
             40000,
@@ -779,18 +829,45 @@ def create_split_task(
     assert version is not None  # resolved above
     if msg := _split_input_error(record, version):
         return err(40000, msg, status=400)
+    stride_value = body.stride or body.fixed_rate
     try:
         bundle = splitting.load_input(session, record, version)
+        fps = _version_video_fps(session, record, version)
+        window_seconds, stride_seconds = splitting.resolve_rule_seconds(
+            unit=body.unit,
+            window_value=body.fixed_rate,
+            stride_value=stride_value,
+            video_fps=fps,
+            sample_rate=bundle.sample_rate,
+        )
         bounds = splitting.event_bounds(
             bundle, body.event_start, body.event_end,
             body.keep_event_buffer,
         )
+        # 预览与执行共用同一套规则：这里只算一遍数量，确认区间放得下至少一个完整窗口
+        splitting.build_windows(
+            duration=bundle.duration,
+            sample_rate=bundle.sample_rate,
+            window_seconds=window_seconds,
+            stride_seconds=stride_seconds,
+            event_bounds=bounds,
+        )
     except splitting.SplitInputError as exc:
         return err(40000, str(exc), status=400)
 
+    # T10 规则：**秒是唯一基准**（`window_seconds`/`stride_seconds`），帧值只在能拿到 fps 时附带；
+    # `rules_version` 参与幂等键——单位口径变了就是另一套规则，不能命中旧任务的 request_key。
     rules = {
-        "fixed_rate": body.fixed_rate,
-        "stride": stride,
+        "rules_version": splitting.RULES_VERSION,
+        "unit": body.unit,
+        "window_seconds": window_seconds,
+        "stride_seconds": stride_seconds,
+        "window_frames": round(window_seconds * fps) if fps else None,
+        "stride_frames": round(stride_seconds * fps) if fps else None,
+        "video_fps": fps,
+        "signal_sample_rate": bundle.sample_rate,
+        "requested_value": body.fixed_rate,
+        "requested_stride": stride_value,
         "keep_event_buffer": body.keep_event_buffer,
         "event_bounds": list(bounds),
         "event_start": body.event_start,
@@ -825,7 +902,9 @@ def create_split_task(
             {
                 "weld_id": weld_id,
                 "version_id": version_id,
-                "fixed_rate": body.fixed_rate,
+                "window_seconds": window_seconds,
+                "stride_seconds": stride_seconds,
+                "unit": body.unit,
                 "task_format": body.task_format,
             },
         )

@@ -35,13 +35,14 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   按 `alignment_tasks.job_id` 取任务 → 调 `app.services.alignment.run_alignment`
   （真实信号事件 + ffmpeg 视频探测/关键帧 + 真实产物 CSV/JPG/tracks.json，部分成功语义；
   自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
-- `split.py`：**Task 14**。`handle(job_id, session)`（`@register_handler("split")`）→
+- `split.py`：**Task 14 + T10**。`handle(job_id, session)`（`@register_handler("split")`）→
   `simulate_split(session, task, job)`（**领域逻辑直接在本模块**，任务清单未规划 split service）：
-  解析规则 `fixed_rate`（帧/样本，>=1）→ `sample_count = max(1, int(DURATION*1000)//fixed_rate)`
+  读 `window_seconds`/`stride_seconds`（**秒**，T10 起）；历史任务没有这两个键时用 `_rule_seconds`
+  按旧口径换算（`fixed_rate`/`stride` 是采样点数 → `点数 ÷ 采样率`，结果与旧实现一致，不重跑）
   （DURATION=signals 5.42s → 5420 帧，确定性）→ 进度逐步 → 逐样本建 `Sample` 行
   （frame_no = **任务内序号** 1..n（不是真实视频帧号，勿用于跨任务判重，见 services/CLAUDE.md 的 T11 段），
-  `meta` 含 `sample_index/window_start/window_end/frame_start/frame_end/source_version_id/task_format`
-  与 **`rules_version`**（0 = 旧口径"帧=采样点"；T10 落地后由 rules 携带真实版本号，供 D16-A 区分新旧切片），
+  `meta` 含 `sample_index/window_start/window_end/frame_start/frame_end（采样点下标）/window_seconds/video_frame_no/source_version_id/task_format`
+  与 **`rules_version`**（默认 1 = 旧口径"帧=采样点"；T10 的新任务由 rules 携带 2，供 D16-A 区分新旧切片），
   `object_keys=processed/{weld_id}/split/{sample.id}.jpg|.json`，
   **先 flush 拿 id 再回填 object_keys**）并**真实写入 JPG/JSON 到 MinIO**；任一写失败会清理已写对象并回滚样本/
   `task.sample_count`/`job.result` → 回填 `task.sample_count` + `job.result`
