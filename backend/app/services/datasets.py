@@ -631,7 +631,6 @@ def _dimension_availability_from_samples(
     `record_ids`（样本 → 登记数据 id）由调用方传可省一次全表预载；不传时用 `_RecordResolver`
     现算。ponytail: 面板/训练闸门这条路径会预载 4 张表，几万行规模由 R5 一起下推 SQL。
     """
-
     available: dict[str, bool] = {d: False for d in INPUT_DIMENSIONS}
     for sample in samples:
         for key in sample.object_keys or []:
@@ -1223,7 +1222,11 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
         raise ValueError("没有可用于构建数据集的真实样本，请先完成样本分段或标注")
 
     # 按焊缝（record_id）分组，避免同焊缝样本跨分片泄漏。
-    resolver = _RecordResolver(session)
+    # R5：`dataset_records` 来源的样本已在 SQL 侧限定到本数据集，归属解析也按数据集预载；
+    # 其余来源（用户显式指定的切分/标注任务/手选样本）可能落在数据集外，必须全量预载，
+    # 否则它们会被判成"无主样本"，防泄漏分片随之失效。
+    scoped = (source.get("type") if isinstance(source, dict) else source) == "dataset_records"
+    resolver = _RecordResolver(session, dataset.id if scoped else None)
     record_ids: dict[int, int | None] = {}
     for s in samples:
         record_ids[s.id] = resolver.resolve(s)
@@ -1376,9 +1379,28 @@ class _RecordResolver:
     预载的 4 张表都是小行（id + 外键），几万行量级完全放得下；换来的是构建路径上**零**逐条查询。
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, dataset_id: int | None = None) -> None:
+        """`dataset_id` 给定时只预载该数据集相关的四类行（R5：构建不再随全库增长）。
+
+        只在**样本本身已被限定在该数据集内**时使用（`dataset_records` 来源）——否则
+        数据集外的样本会因查不到归属而退化成"孤儿组"，防泄漏分片就失效了。
+        """
+        record_query = select(DataRecord)
+        version_query = select(DataVersion)
+        split_query = select(SplitTask)
+        annotation_query = select(AnnotationTask)
+        if dataset_id is not None:
+            in_dataset = select(DataRecord.id).where(DataRecord.dataset_id == dataset_id)
+            in_versions = select(DataVersion.id).where(DataVersion.record_id.in_(in_dataset))
+            in_splits = select(SplitTask.id).where(SplitTask.version_id.in_(in_versions))
+            record_query = record_query.where(DataRecord.dataset_id == dataset_id)
+            version_query = version_query.where(DataVersion.record_id.in_(in_dataset))
+            split_query = split_query.where(SplitTask.version_id.in_(in_versions))
+            annotation_query = annotation_query.where(
+                AnnotationTask.split_task_id.in_(in_splits)
+            )
         self._records_by_weld_id = {
-            record.weld_id: record for record in session.exec(select(DataRecord)).all()
+            record.weld_id: record for record in session.exec(record_query).all()
         }
         self._records_by_id = {
             record.id: record
@@ -1387,17 +1409,17 @@ class _RecordResolver:
         }
         self._versions = {
             version.id: version.record_id
-            for version in session.exec(select(DataVersion)).all()
+            for version in session.exec(version_query).all()
             if version.id is not None
         }
         self._splits = {
             split.id: split.version_id
-            for split in session.exec(select(SplitTask)).all()
+            for split in session.exec(split_query).all()
             if split.id is not None
         }
         self._annotation_splits = {
             task.id: task.split_task_id
-            for task in session.exec(select(AnnotationTask)).all()
+            for task in session.exec(annotation_query).all()
             if task.id is not None
         }
 
@@ -1444,23 +1466,74 @@ def _is_annotation_anchor(sample: Sample) -> bool:
     return sample.split_task_id is None and sample.annotation_task_id is not None
 
 
-def _latest_succeeded_split_task(session: Session, record_id: int) -> SplitTask | None:
-    """该焊缝版本链上**最近一次成功**的分段任务（T11：成员来源只认它）。
+def _samples_with_record_join(dataset_id: int | None = None):
+    """把 `samples` 与它所属的登记数据 join 起来（三条归属路径 OR，与 `_RecordResolver` 同序）。
 
-    旧分段任务的产物算"历史切片"（D16-A），留在库里但不进新版本。
+    路径（优先级从高到低，与 `_RecordResolver.resolve` 一致）：
+    1. `meta.record_id` / `meta.weld_id`（历史手工/导入样本，没有外键）；
+    2. `split_task_id → data_versions.record_id`；
+    3. `annotation_task_id → split_tasks → data_versions.record_id`。
+
+    `dataset_id` 给定时在 **SQL 侧**限定到该数据集（R5）——改造前是 `select(Sample)` 全表读
+    再逐条在内存里判归属，几万切片的库里每次构建都要把全表拉进内存。返回 `[(Sample, DataRecord)]`。
     """
-    version_ids = list(
-        session.exec(select(DataVersion.id).where(DataVersion.record_id == record_id)).all()
+    split_version = aliased(DataVersion)
+    split_record = aliased(DataRecord)
+    anno_split = aliased(SplitTask)
+    anno_version = aliased(DataVersion)
+    anno_record = aliased(DataRecord)
+    meta_record = aliased(DataRecord)
+
+    query = (
+        select(Sample, split_record, anno_record, meta_record)
+        .outerjoin(SplitTask, SplitTask.id == Sample.split_task_id)
+        .outerjoin(split_version, split_version.id == SplitTask.version_id)
+        .outerjoin(split_record, split_record.id == split_version.record_id)
+        .outerjoin(AnnotationTask, AnnotationTask.id == Sample.annotation_task_id)
+        .outerjoin(anno_split, anno_split.id == AnnotationTask.split_task_id)
+        .outerjoin(anno_version, anno_version.id == anno_split.version_id)
+        .outerjoin(anno_record, anno_record.id == anno_version.record_id)
+        .outerjoin(
+            meta_record,
+            and_(
+                Sample.split_task_id.is_(None),
+                Sample.annotation_task_id.is_(None),
+                _version_item_meta_record_join(Sample, meta_record),
+            ),
+        )
     )
-    if not version_ids:
-        return None
-    row = session.exec(
-        select(SplitTask, Job)
+    if dataset_id is not None:
+        query = query.where(
+            or_(
+                split_record.dataset_id == dataset_id,
+                anno_record.dataset_id == dataset_id,
+                meta_record.dataset_id == dataset_id,
+            )
+        )
+    return query
+
+
+def _latest_split_tasks_for_records(
+    session: Session, record_ids: set[int]
+) -> dict[int, SplitTask]:
+    """每条登记数据的**最近一次成功分段任务**（T11）——批量一次查询（R5）。
+
+    改造前是逐条登记数据查一次（`_latest_succeeded_split_task`），几千条数据就是几千次往返。
+    版本必须属于给定记录，任务必须成功；同一条记录取 `SplitTask.id` 最大的那个。
+    """
+    if not record_ids:
+        return {}
+    rows = session.exec(
+        select(DataVersion.record_id, SplitTask)
+        .join(SplitTask, SplitTask.version_id == DataVersion.id)
         .join(Job, Job.id == SplitTask.job_id)
-        .where(SplitTask.version_id.in_(version_ids), Job.status == "succeeded")
+        .where(DataVersion.record_id.in_(record_ids), Job.status == "succeeded")
         .order_by(SplitTask.id.desc())
-    ).first()
-    return row[0] if row is not None else None
+    ).all()
+    latest: dict[int, SplitTask] = {}
+    for record_id, task in rows:
+        latest.setdefault(record_id, task)  # 倒序遍历，首条即最新
+    return latest
 
 
 def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sample]:
@@ -1473,6 +1546,8 @@ def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sam
 
     **明确排除标注锚点样本**（见 `_is_annotation_anchor`）——它们是标注工作台的锚点，不是切片。
     修复前的行为是"该数据集下全部 Sample 都收"，导致线上数据集版本里 8 个成员有 7 个是锚点样本。
+
+    R5：候选样本与分段任务都在 **SQL 侧限定到本数据集**，不再全表读 + 逐条反查。
     """
     records = list(
         session.exec(select(DataRecord).where(DataRecord.dataset_id == dataset.id)).all()
@@ -1481,20 +1556,27 @@ def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sam
         return []
 
     record_ids = {record.id for record in records if record.id is not None}
-    resolver = _RecordResolver(session)
     by_record: dict[int, list[Sample]] = defaultdict(list)
-    for sample in session.exec(select(Sample)).all():
-        if _is_annotation_anchor(sample):
+    seen: set[int] = set()
+    for sample, split_record, anno_record, meta_record in session.exec(
+        _samples_with_record_join(dataset.id)
+    ).all():
+        if sample.id in seen or _is_annotation_anchor(sample):
             continue
-        record_id = resolver.resolve(sample)
+        record = split_record if split_record is not None else (anno_record or meta_record)
+        record_id = record.id if record is not None else None
         if record_id is not None and record_id in record_ids:
+            seen.add(sample.id)
             by_record[record_id].append(sample)
 
+    latest_splits = _latest_split_tasks_for_records(
+        session, {rid for rid in record_ids if rid is not None}
+    )
     members: list[Sample] = []
     for record in records:
         if record.id is None:
             continue
-        split_task = _latest_succeeded_split_task(session, record.id)
+        split_task = latest_splits.get(record.id)
         if split_task is not None:
             members.extend(
                 sample for sample in by_record.get(record.id, [])
@@ -1525,12 +1607,21 @@ def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sam
 
 
 def _filter_samples(session: Session, filters: dict) -> list[Sample]:
-    """按登记字段筛选样本（samples→所属焊缝 record 属性，前缀匹配 source）。"""
+    """按登记字段筛选样本（samples→所属焊缝 record 属性，前缀匹配 source）。
+
+    R5：归属解析交给 SQL 的 join（`_samples_with_record_join`），不再"全表读样本 + 逐条反查"。
+    `filter` 来源由用户显式给定条件、不限定数据集，故这里不传 `dataset_id`。
+    """
     out: list[Sample] = []
-    resolver = _RecordResolver(session)
-    for sample in session.exec(select(Sample)).all():
-        record = resolver.record_of(sample)
+    seen: set[int] = set()
+    for sample, split_record, anno_record, meta_record in session.exec(
+        _samples_with_record_join()
+    ).all():
+        if sample.id in seen:
+            continue
+        record = split_record if split_record is not None else (anno_record or meta_record)
         if record is not None and _record_matches(record, filters):
+            seen.add(sample.id)
             out.append(sample)
     return out
 

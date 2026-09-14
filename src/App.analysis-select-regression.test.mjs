@@ -6,6 +6,7 @@ const app = fs.readFileSync(new URL('./App.tsx', import.meta.url), 'utf8');
 const dataContext = fs.readFileSync(new URL('./features/data-context/DataContext.tsx', import.meta.url), 'utf8');
 const registrationPage = fs.readFileSync(new URL('./features/registration/RegistrationPage.tsx', import.meta.url), 'utf8');
 const types = fs.readFileSync(new URL('./api/types.ts', import.meta.url), 'utf8');
+const pagedWeldsHook = fs.readFileSync(new URL('./hooks/usePagedWelds.ts', import.meta.url), 'utf8');
 
 const select = dataContext.slice(dataContext.indexOf('function AnalysisSelect('), dataContext.indexOf('function VersionPanel('));
 const registration = registrationPage;
@@ -18,7 +19,12 @@ test('analysis select is dataset-first: dataset dropdown, then welds scoped by d
   assert.doesNotMatch(select, /listDatasets\(/);
   assert.match(select, /selection-dataset-bar/);
   assert.match(select, /所属数据集/);
-  assert.match(select, /listWelds\(\{ dataset_id: selectedDatasetId/);
+  // R5：样本按 dataset_id 服务端搜索 + 分页追加（原先写死 page_size:50 且没有翻页入口，
+  // 第 51 条之后永远选不到）——调用点收敛到 usePagedWelds，真正的 listWelds 在钩子里。
+  assert.match(select, /usePagedWelds\(selectedDatasetId, weldQuery\)/);
+  assert.match(pagedWeldsHook, /listWelds\(\{ dataset_id: datasetId/);
+  assert.match(pagedWeldsHook, /page: nextPage/);
+  assert.doesNotMatch(select, /page_size: 50/);
 });
 
 test('analysis select lists all welds in the dataset and greys out unvalidated ones', () => {

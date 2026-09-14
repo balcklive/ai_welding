@@ -402,6 +402,16 @@ try {
   check('不再出现"帧 ≈ 时分秒"的换算', splitBody.includes('帧 ≈'), false);
   check('单位选择器存在且当前为帧', await page.locator('.split-control').first().inputValue(), 'frame');
 
+  // R5：分析「选择数据」的卡片是服务端分页的——第 51 条之后要继续可达（原先写死 50 条且没有翻页）
+  await page.goto(`${BASE}/#/analysis/select`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('.selection-card', { timeout: 30_000 });
+  check('选择数据首页只渲染一页（20 条，不是全量）', await page.locator('.selection-card').count(), 20);
+  check('还有下一页时给出「加载更多」', (await page.locator('.selection-workspace .selection-load-more').innerText()).includes('共 25'), true);
+  await clickStep(page.locator('.selection-workspace .selection-load-more'), '加载更多');
+  await page.waitForTimeout(500);
+  check('加载更多后第 21–25 条可达', await page.locator('.selection-card').count(), 25);
+  check('取完最后一页后按钮消失', await page.locator('.selection-workspace .selection-load-more').count(), 0);
+
   check('全程无页面级 JS 异常', pageErrors.length, 0);
   if (pageErrors.length) console.log(`   ⚠ pageerror: ${pageErrors.join(' | ')}`);
 } catch (err) {
