@@ -785,6 +785,51 @@ def create_auto_build_task(session: Session, dataset: Dataset) -> tuple[DatasetV
     return version, job
 
 
+class VersionAlreadyBuilt(ValueError):
+    """该数据集版本已构建成功——成员与标注快照已冻结，不能原地重建（R4）。"""
+
+
+def annotations_frozen(session: Session, version: DatasetVersion) -> bool | None:
+    """该版本的标注是否已冻结（T16.1 / R4）。
+
+    - `True`：每个成员行的 `dataset_items.annotations` 都有快照 → 训练输入不随以后改标注而变；
+    - `False`：**历史版本**（T16 之前构建）该列为 NULL → 训练只能现查 `annotations` 表，
+      跨时间不可复现。如实返回，不静默当成已冻结；
+    - `None`：空版本（没有成员行），冻结与否无从谈起。
+    """
+    rows = session.exec(
+        select(DatasetItem.annotations).where(DatasetItem.dataset_version_id == version.id)
+    ).all()
+    if not rows:
+        return None
+    return all(row is not None for row in rows)
+
+
+def version_build_state(session: Session, version: DatasetVersion) -> str | None:
+    """该版本**最新一次**构建任务的状态（无任务 → `None` = 未构建）。"""
+    row = session.exec(
+        select(Job.status)
+        .join(DatasetBuildTask, DatasetBuildTask.job_id == Job.id)
+        .where(DatasetBuildTask.dataset_version_id == version.id)
+        .order_by(DatasetBuildTask.id.desc())
+    ).first()
+    return row
+
+
+def ensure_version_rebuildable(session: Session, version: DatasetVersion) -> None:
+    """成功版本禁止原地重建（R4）：抛 `VersionAlreadyBuilt`，由路由转成 400。
+
+    为什么必须拦：`run_build` 会**清空该版本旧成员**再按当下标注重建（`dataset_items` 被删了
+    重写），一旦允许，已经用于训练/测试的版本会在背后被换成另一份数据——"同一版本 = 同一训练
+    输入"这条可复现性承诺就没了。失败版本允许受控重试；要换规则/换样本请**新建版本**。
+    """
+    if version_build_state(session, version) == "succeeded":
+        raise VersionAlreadyBuilt(
+            f"数据集版本 {version.version_no} 已构建成功，不能再原地重建（成员与标注快照已冻结）；"
+            "请新建数据集版本后重新构建"
+        )
+
+
 def create_retry_build_task(
     session: Session, dataset: Dataset, version: DatasetVersion
 ) -> tuple[Job, bool]:
@@ -793,7 +838,8 @@ def create_retry_build_task(
     **必须绕过手工闸门**：手工接口 `POST …/build-tasks` 有 `status != 可训练 → 400` 的闸门，而
     自动构建走服务层直建任务、本就不经闸门——于是"首次自动构建失败后用现有接口重试"会被挡住。
     这里按自动构建的来源（`dataset_records`）重建任务，并且**幂等**：该版本已有 pending/running
-    的构建任务时直接返回它，不重复建。
+    的构建任务时直接返回它，不重复建。**已构建成功的版本不允许重试**（R4，调用方先过
+    `ensure_version_rebuildable`）。
     """
     existing = session.exec(
         select(DatasetBuildTask, Job)
@@ -1215,6 +1261,23 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     dataset = session.get(Dataset, version.dataset_id)
     if dataset is None:
         raise ValueError(f"Dataset does not exist: id={version.dataset_id}")
+
+    # R4 的最后一道闸：两个入口（手工 build-tasks / retry）都已拦成功版本，这里再查一次
+    # ——脚本直调、执行器重投都会走到这条路上，而**覆盖已发布版本的成员**是不可逆的。
+    prior = session.exec(
+        select(Job.id)
+        .join(DatasetBuildTask, DatasetBuildTask.job_id == Job.id)
+        .where(
+            DatasetBuildTask.dataset_version_id == version.id,
+            Job.status == "succeeded",
+            Job.id != job.id,
+        )
+    ).first()
+    if prior is not None:
+        raise VersionAlreadyBuilt(
+            f"数据集版本 {version.version_no} 已有成功的构建结果，拒绝覆盖其成员与标注快照；"
+            "请新建数据集版本后重新构建"
+        )
 
     source = _build_source(build_task, job)
     samples = _gather_samples(session, source, dataset)

@@ -858,3 +858,111 @@ def test_reimport_without_failed_rows_is_rejected(api, db, storage, run_job):
 
     response = api.post(f"{API}/registrations/{record['id']}/reimport")
     assert response.status_code == 400, response.json()
+
+# ── 场景：冻结与幂等（T16 / R4 + R7）──────────────────────────────────
+
+
+def test_succeeded_version_cannot_be_rebuilt_in_place(api, db, storage, run_job):
+    """成功版本禁止原地重建（R4）：`run_build` 会清空旧成员，等于把已用于训练的版本换成另一份数据。
+
+    手工入口与重试入口都要拦；要换规则/换样本请新建数据集版本。
+    """
+    dataset_id = _create_dataset(api, "E2E 冻结版本", "时序分类")
+    record = _register(api, dataset_id, "E2E 冻结样本")
+    storage.put("raw/e2e-freeze.csv", synthetic_signal_csv())
+    attached = _attach(api, record["id"], ["raw/e2e-freeze.csv"])
+    assert _run(db, run_job, attached["dataset_build"]["job_id"]).status == "succeeded"
+
+    version_id = attached["dataset_build"]["dataset_version_id"]
+    before = _members(api, dataset_id, version_id)
+
+    manual = api.post(
+        f"{API}/datasets/{dataset_id}/versions/{version_id}/build-tasks",
+        json={"source": {"type": "dataset_records", "dataset_id": dataset_id}},
+    )
+    assert manual.status_code == 400, manual.json()
+    assert "已构建成功" in manual.json()["message"]
+
+    # 重试入口同样拒绝（改造前它会照建一个新任务，再跑一次就把成员覆盖掉）
+    retry = api.post(f"{API}/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry")
+    assert retry.status_code == 400, retry.json()
+
+    assert _members(api, dataset_id, version_id) == before
+
+
+def test_failed_version_can_still_be_retried(api, db, storage, run_job, monkeypatch):
+    """失败版本允许受控重试（R4 的另一半）：拦的是"成功版本重建"，不是"坏了也不能修"。"""
+    dataset_id = _create_dataset(api, "E2E 失败可重试", "时序分类")
+    record = _register(api, dataset_id, "E2E 失败样本")
+    storage.put("raw/e2e-retry.csv", synthetic_signal_csv())
+    attached = _attach(api, record["id"], ["raw/e2e-retry.csv"])
+    ticket = attached["dataset_build"]
+
+    # 注意：不要用 `monkeypatch.undo()`——`run_job` fixture 借的是**同一个** monkeypatch 实例，
+    # undo 会把执行器的测试 session 一起撤销。改回原函数即可。
+    from app.services import datasets as dataset_svc
+
+    original = dataset_svc._samples_for_dataset_records
+    monkeypatch.setattr(
+        dataset_svc,
+        "_samples_for_dataset_records",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("模拟构建失败")),
+    )
+    assert _run(db, run_job, ticket["job_id"]).status == "failed"
+
+    monkeypatch.setattr(dataset_svc, "_samples_for_dataset_records", original)
+    retry = api.post(f"{API}/datasets/{dataset_id}/versions/{ticket['dataset_version_id']}/build-tasks/retry")
+    assert retry.status_code == 200, retry.json()
+    assert _run(db, run_job, retry.json()["data"]["job_id"]).status == "succeeded"
+
+
+def test_version_detail_reports_annotation_freeze_state(api, db, storage, run_job):
+    """`annotations_frozen`：新构建版本 = true；历史版本（成员行 annotations 为 NULL）= false。"""
+    dataset_id = _create_dataset(api, "E2E 冻结标记", "时序分类")
+    record = _register(api, dataset_id, "E2E 冻结标记样本")
+    storage.put("raw/e2e-flag.csv", synthetic_signal_csv())
+    attached = _attach(api, record["id"], ["raw/e2e-flag.csv"])
+    assert _run(db, run_job, attached["dataset_build"]["job_id"]).status == "succeeded"
+    version_id = attached["dataset_build"]["dataset_version_id"]
+
+    detail = _ok(api.get(f"{API}/datasets/{dataset_id}/versions/{version_id}"))
+    assert detail["annotations_frozen"] is True
+
+    # 模拟 T16 之前建的版本：把成员行的快照置空
+    for item in db.exec(select(DatasetItem).where(DatasetItem.dataset_version_id == version_id)).all():
+        item.annotations = None
+    db.commit()
+    detail = _ok(api.get(f"{API}/datasets/{dataset_id}/versions/{version_id}"))
+    assert detail["annotations_frozen"] is False
+
+
+def test_repeated_split_task_generates_one_version(api, db, storage, run_job):
+    """R7：同一个分段任务重入（执行器重投 / `run_job` 再跑一次）只产生一个「样本分段」版本。"""
+    dataset_id = _create_dataset(api, "E2E 分段幂等", "时序分类")
+    record = _register(api, dataset_id, "E2E 分段幂等样本")
+    storage.put("raw/e2e-idem.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-idem.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    body = {
+        "weld_id": record["weld_id"],
+        "version_id": record["latest_version_id"],
+        "fixed_rate": 0.1,
+        "stride": 0.1,
+        "unit": "second",
+        "task_format": "时序分类",
+    }
+    created = _ok(api.post(f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-tasks", json=body))
+    job_uid = created["job_id"]
+    assert _run(db, run_job, job_uid).status == "succeeded"
+
+    def _split_versions():
+        return [v for v in _ok(api.get(f"{API}/welds/{record['weld_id']}/versions")) if v["action"] == "样本分段"]
+
+    assert len(_split_versions()) == 1
+    first_id = _split_versions()[0]["id"]
+
+    # 同任务重入：执行器重投 / 手工再跑一次同一个 job_uid
+    assert _run(db, run_job, job_uid).status == "succeeded"
+    assert len(_split_versions()) == 1, "同一任务重入不得产生第二个「样本分段」版本"
+    assert _split_versions()[0]["id"] == first_id

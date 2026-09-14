@@ -29,6 +29,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from threading import Lock
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, or_, select
 
 from app.models.analysis import AlignmentTask, FeatureExtraction, SignalIngest, SplitTask
@@ -572,6 +573,50 @@ def create_version(
     record.latest_version_id = version.id
     record.updated_at = datetime.now(timezone.utc)
     return version
+
+
+def reuse_or_create_version(
+    session: Session,
+    record: DataRecord,
+    *,
+    action: str,
+    note: str | None,
+    object_keys: list[str] | None,
+    operator: str,
+) -> tuple[DataVersion, bool]:
+    """分析产物版本：**同一个产物只生成一个版本**（T16.3 / R7）。返回 `(version, created)`。
+
+    幂等身份 = `(action, note, object_keys)`：`note` 与 `object_keys` 里都带着产物自身的标识
+    （分段任务 id / 特征产物的参数标签），所以"同一个任务重入、同一个请求重试"必然命中，
+    而"换一组参数重跑"是新产物、应当建新版本。
+
+    并发兜底：`data_versions` 的 `(record_id, action, request_key)` 唯一约束——插入撞约束时
+    只回滚到 **SAVEPOINT**（不能回滚整个事务，那样会把同一任务里已经落库的切片/特征行一起丢掉）。
+    """
+    keys = list(object_keys or [])
+    existing = find_duplicate_version(session, record.id, action, note, keys)
+    if existing is not None:
+        return existing, False
+    try:
+        with session.begin_nested():
+            version = create_version(
+                session,
+                record,
+                action,
+                note,
+                keys,
+                operator,
+                request_key=version_request_key(action, note, keys),
+            )
+        return version, True
+    except IntegrityError:
+        # 另一个 worker 抢先建好了同一个版本：复用它，并把"当前数据版本"指针指回它
+        # （`create_version` 在 savepoint 里对 record 的改动已被回滚）。
+        existing = find_duplicate_version(session, record.id, action, note, keys)
+        if existing is None:
+            raise
+        record.latest_version_id = existing.id
+        return existing, False
 
 
 def find_duplicate_version(

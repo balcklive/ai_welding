@@ -118,6 +118,10 @@ def retry_build_task(
     version = session.get(DatasetVersion, version_id)
     if version is None or version.dataset_id != dataset.id:
         return err(40402, "数据集版本不存在", status=404)
+    try:
+        svc.ensure_version_rebuildable(session, version)
+    except svc.VersionAlreadyBuilt as exc:
+        return err(40000, str(exc), status=400)
     job, created = svc.create_retry_build_task(session, dataset, version)
     write_audit(
         session,
@@ -250,7 +254,11 @@ def get_dataset_version(
     version = session.get(DatasetVersion, version_id)
     if version is None or version.dataset_id != dataset.id:
         return err(40402, "数据集版本不存在", status=404)
-    return ok(svc.version_payload(version))
+    payload = svc.version_payload(version)
+    # R4：历史版本（T16 之前构建）的 `dataset_items.annotations` 是 NULL，训练时只能现查当下标注
+    # ——不能宣称它已冻结。这里如实标出来，前端据此提示"该版本未冻结标注"。
+    payload["annotations_frozen"] = svc.annotations_frozen(session, version)
+    return ok(payload)
 
 
 @router.get("/datasets/{dataset_id}/versions/{version_id}/items")
@@ -320,6 +328,12 @@ def create_build_task(
     version = session.get(DatasetVersion, version_id)
     if version is None or version.dataset_id != dataset.id:
         return err(40402, "数据集版本不存在", status=404)
+    # R4：已构建成功的版本不能再原地重建（run_build 会清空旧成员，等于把已用于训练的版本
+    # 在背后换成另一份数据）。要换规则/换样本请新建数据集版本。
+    try:
+        svc.ensure_version_rebuildable(session, version)
+    except svc.VersionAlreadyBuilt as exc:
+        return err(40000, str(exc), status=400)
 
     source_type = _source_type(body.source)
     if source_type is None:

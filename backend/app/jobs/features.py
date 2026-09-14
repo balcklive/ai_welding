@@ -1,5 +1,6 @@
 """特征提取 Job handler：执行真实输入读取、特征计算、结果落库与产物文件（T16）。"""
 
+import hashlib
 import io
 import json
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from app.models.jobs import Job
 from app.services import features, signal_ingest
 from app.storage import get_storage
 from app.services.jobs import mark_succeeded
-from app.services.welds import create_version
+from app.services.welds import reuse_or_create_version
 
 
 @register_handler("feature_extraction")
@@ -93,7 +94,11 @@ def handle(job_id: int, session: Session) -> None:
 
     # T16.3：产物落 MinIO——改造前特征提取只落库、**不产文件**，所以"生成数据版本"无处可挂。
     # 写对象是尽力而为（与快照一致）：存储不可达不该让一次成功的提取变成失败任务。
-    artifact_key = f"processed/{record.weld_id}/features/{version_id}.json"
+    # 产物键带上**提取参数**的短标签（归一化 / 输出格式）：旧写法 `features/{version_id}.json` 会让
+    # "同一源版本换个参数重跑"互相覆盖产物文件，而版本幂等身份是按产物键区分的（R7）——那样两个
+    # 内容不同的版本会指向同一个文件。标签用短哈希，避免中文/斜杠进对象键。
+    params_tag = hashlib.sha1(f"{normalization}|{output_format}".encode("utf-8")).hexdigest()[:8]
+    artifact_key = f"processed/{record.weld_id}/features/{version_id}-{params_tag}.json"
     try:
         artifact = json.dumps(
             {
@@ -124,7 +129,10 @@ def handle(job_id: int, session: Session) -> None:
     version_row = None
     if result_status == "succeeded" and artifact_key:
         source_keys = list(version.object_keys or [])
-        version_row = create_version(
+        # T16.3/R7：**同一个源版本 + 同一组提取参数只生成一个「特征提取」版本**。
+        # 幂等身份 = (action, note, object_keys)：产物键里带了参数标签（见 artifact_key 的构造），
+        # 所以换归一化/输出格式重跑会得到新键 → 建新版本，而任务重入会复用。
+        version_row, created = reuse_or_create_version(
             session,
             record,
             action="特征提取",
@@ -132,6 +140,10 @@ def handle(job_id: int, session: Session) -> None:
             object_keys=[*source_keys, *[key for key in (artifact_key,) if key not in source_keys]],
             operator="算法任务",
         )
+        if not created:
+            logger.info(
+                "Feature extraction reused the existing 特征提取 version {}", version_row.version_no
+            )
     write_audit(session, (job.result or {}).get("user_id"), "extract", "feature_extraction", str(extraction.id), {"job_id": job.job_uid, "status": extraction.status})
     mark_succeeded(
         session,

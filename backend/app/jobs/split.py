@@ -18,7 +18,7 @@ from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 from app.services import media_probe, splitting
 from app.services.jobs import mark_succeeded
-from app.services.welds import create_version
+from app.services.welds import reuse_or_create_version
 from app.storage import get_storage
 
 
@@ -152,7 +152,10 @@ def handle(job_id: int, session: Session) -> None:
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
     storage.upload_stream(manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json")
     source_keys = list(version.object_keys or [])
-    create_version(
+    # T16.3/R7：**同一个分段任务只生成一个「样本分段」版本**。幂等身份含任务 id（note 与
+    # manifest 键里都带），所以"同一任务重入（执行器重试 / run_job 手工再跑）"复用已有版本，
+    # 而"换规则重新分段"是新任务、新产物，仍会建新版本。
+    segmentation_version, created = reuse_or_create_version(
         session,
         record,
         action="样本分段",
@@ -160,6 +163,10 @@ def handle(job_id: int, session: Session) -> None:
         object_keys=[*source_keys, *[key for key in (manifest_key,) if key not in source_keys]],
         operator="算法任务",
     )
+    if not created:
+        logger.info(
+            "Split task {} reused the existing 样本分段 version {}", task.id, segmentation_version.version_no
+        )
     result = {
         "sample_count": len(windows),
         "task_format": task.task_format,

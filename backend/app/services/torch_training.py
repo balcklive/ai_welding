@@ -16,6 +16,7 @@ import statistics
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
+from loguru import logger
 from sqlmodel import Session, select
 
 from app.core.config import settings
@@ -66,6 +67,15 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
     needs_live_annotations = any(item.annotations is None for item, _ in rows)
     by_sample: dict[int, list[Annotation]] = {}
     if needs_live_annotations:
+        # R4：**不静默**——历史版本（T16 之前构建）没有标注快照，只能现查当下标注，训练输入
+        # 因此不可复现。版本详情接口把该事实标成 `annotations_frozen=false`，这里再留一条日志，
+        # 便于排查"同一个版本两次训练结果不一样"。
+        logger.warning(
+            "Dataset version {} has members without a frozen annotation snapshot "
+            "(built before T16); falling back to the live annotations table — "
+            "the training input is NOT reproducible for this version.",
+            dataset_version_id,
+        )
         sample_ids = [sample.id for _item, sample in rows if sample.id is not None]
         annotations = session.exec(
             select(Annotation).where(Annotation.sample_id.in_(sample_ids)).order_by(Annotation.id)
