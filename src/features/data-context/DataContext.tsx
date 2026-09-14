@@ -16,6 +16,10 @@ import { usePagedWelds } from '../../hooks/usePagedWelds';
 
 export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, showContext, onChange, emphasis = false }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; showContext: boolean; onChange?: () => void; emphasis?: boolean }) {
   const [datasets, setDatasets] = useState<DatasetOption[]>([]);
+  // R8：候选拉取失败原先只 `console.warn` 就过去了——界面上看不出区别（选择器空着，像"确实没有
+  // 数据集"）。现在清空旧候选 + 给出错误与重试，不让网络故障伪装成没有数据。
+  const [datasetsError, setDatasetsError] = useState<unknown>(null);
+  const [datasetsReloadKey, setDatasetsReloadKey] = useState(0);
   const [row, setRow] = useState<WeldRow | null>(null);
   // T3.2：读取失败不再回退演示行，改为在上下文条上给出原因（不遮挡选择器）。
   const [rowError, setRowError] = useState<string | null>(null);
@@ -25,13 +29,19 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
   const welds = usePagedWelds(selectedDatasetId, weldQuery);
   useEffect(() => {
     let cancelled = false;
+    setDatasetsError(null);
     listDatasetOptions().then((list) => {
       if (cancelled) return;
       setDatasets(list);
       if (selectedDatasetId == null && list.length) setSelectedDatasetId(list[0].id);
-    }).catch((err) => console.warn('[selection-switcher] datasets failed', err));
+    }).catch((err) => {
+      if (cancelled) return;
+      console.warn('[selection-switcher] datasets failed', err);
+      setDatasets([]);
+      setDatasetsError(err);
+    });
     return () => { cancelled = true; };
-  }, [selectedDatasetId, setSelectedDatasetId]);
+  }, [selectedDatasetId, setSelectedDatasetId, datasetsReloadKey]);
   useEffect(() => { setWeldQuery(''); }, [selectedDatasetId]);
   useEffect(() => {
     if (!selectedDataId) { setRow(null); setRowError(null); return; }
@@ -50,6 +60,7 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
   }, [selectedDataId]);
   return <div id="data-context-switcher" className={`selection-switcher${emphasis ? ' needs-attention' : ''}`} role="region" aria-label="当前数据上下文">
     <div className="selection-switcher-title"><Database size={15} /><span>当前处理数据</span></div>
+    {datasetsError ? <span className="selection-context-error" role="alert">数据集候选加载失败 <button className="ghost-button" onClick={() => setDatasetsReloadKey((n) => n + 1)}>重试</button></span> : null}
     <label className="filter-field">数据集<select value={selectedDatasetId ?? ''} onChange={(event) => { const id = event.target.value ? Number(event.target.value) : null; setSelectedDatasetId(id); setSelectedDataId(null); }}><option value="">请选择数据集</option>{datasets.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
     <label className="filter-field">搜索样本<input className="inline-search" value={weldQuery} onChange={(event) => setWeldQuery(event.target.value)} placeholder="样本 ID / 名称" disabled={selectedDatasetId == null} /></label>
     <label className="filter-field">样本<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || welds.loading} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{welds.loading && !welds.items.length ? '数据加载中…' : welds.items.length ? '请选择一条样本' : '没有匹配的样本'}</option>{welds.items.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
