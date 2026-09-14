@@ -162,7 +162,9 @@ export function DatasetBuild() {
   const split = buildResult?.split;
   const total = split ? (split.train ?? 0) + (split.val ?? 0) + (split.test ?? 0) : 0;
   const slicePct = (v: number | undefined) => (total > 0 && v != null ? `${((v / total) * 100).toFixed(0)}%` : '0%');
-  const qualityPct = buildResult?.quality ? `${Math.max(0, Math.min(100, (1 - buildResult.quality.repeat_rate - buildResult.quality.empty_label_rate - buildResult.quality.dimension_missing_rate) * 100)).toFixed(1)}%` : null;
+  // T2.3：只读后端给的 effective_ratio（三个明细 rate 允许重叠，1 - 之和会算出负数）；
+  // T2.3 之前的版本没有该字段 → 显示 '—'。
+  const qualityPct = buildResult?.quality?.effective_ratio != null ? `${(buildResult.quality.effective_ratio * 100).toFixed(1)}%` : null;
   const sourceMeta: Record<string, { label: string; desc: string }> = {
     manual: { label: '全部切片', desc: '纳入数据集中的全部切片' },
     split_task: { label: '已切分切片', desc: '仅纳入已完成切分的切片' },
@@ -238,7 +240,7 @@ export function TrainingDataPreparation() {
   const split = previewResult?.split;
   const total = split ? (split.train ?? 0) + (split.val ?? 0) + (split.test ?? 0) : 0;
   const slicePct = (value: number | undefined) => total > 0 && value != null ? `${((value / total) * 100).toFixed(0)}%` : '0%';
-  const qualityPct = previewResult?.quality ? `${Math.max(0, Math.min(100, (1 - previewResult.quality.repeat_rate - previewResult.quality.empty_label_rate - previewResult.quality.dimension_missing_rate) * 100)).toFixed(1)}%` : null;
+  const qualityPct = previewResult?.quality?.effective_ratio != null ? `${(previewResult.quality.effective_ratio * 100).toFixed(1)}%` : null;
   const sourceMeta: Record<string, { label: string; desc: string }> = {
     manual: { label: '全部切片', desc: '纳入输入数据集中的全部有效样本' },
     split_task: { label: '已切分切片', desc: '仅纳入已完成切分的切片' },

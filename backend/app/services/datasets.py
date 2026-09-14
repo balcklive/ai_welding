@@ -67,9 +67,14 @@ INPUT_DIMENSIONS: list[str] = [
     "熔池视频",
 ]
 
-#: 各任务必需维度（照 App.tsx requiredByTask）。
+#: 各任务必需维度。**改动前先想清楚它同时驱动两处**：`get_dimensions` 的"当前任务必需"标记，
+#: 与 T2.3 有效切片占比的「必需字段缺失」扣分。
+#: 目标检测原写 `Current/Voltage/GasSpeed`（抄自已删除的前端 mock），但该任务的切分产物是**抽帧
+#: JPG**（`jobs/split.py`：目标检测→`{index}.jpg` + `.json`），天然没有时序字段 → 每个目标检测
+#: 数据集的有效切片占比都会被判成 0%（实测数据集 7 的 66 个切片）。2026-09-14 改为「焊缝照片」
+#: （目标检测的输入就是图像），实测该原因不再命中。
 REQUIRED_BY_TASK: dict[str, list[str]] = {
-    "目标检测": ["Current", "Voltage", "GasSpeed"],
+    "目标检测": ["焊缝照片"],
     "语义分割": ["熔池视频"],
     "多模态回归": ["Current", "Voltage"],
 }
@@ -113,6 +118,15 @@ class DatasetDeleteConflict(ValueError):
 # T11：单版本成员数软上限——超过只告警不拦截（误配切分规则会一次产出天量切片）。
 # 真正的"构建前要求用户确认"需要新的接口契约与前端弹窗，尚未实现（见 T11 文档）。
 MEMBER_WARN_THRESHOLD: int = 5000
+
+# T2.3：有效切片占比的扣分原因——键稳定、界面标签由后端给出（前端不拼文案）。
+# 一期就这 3 项（D9 已确认）；二期候选（标注未审核 / AI 预标注未人工确认 / 采样率不一致 /
+# 多模态时间戳未对齐 / 媒体文件缺失 / 样本时长越界）届时往这里加即可，前端自动多一行明细。
+DEDUCTION_LABELS: dict[str, str] = {
+    "repeat": "重复切片",
+    "empty_label": "空标注切片",
+    "missing_field": "必需字段缺失",
+}
 
 _VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
@@ -1135,43 +1149,80 @@ def _compute_quality(
     samples: list[Sample],
     record_ids: dict[int, int | None],
 ) -> dict:
-    """数据集质量：`{repeat_rate, empty_label_rate, dimension_missing_rate}`。
+    """数据集质量（T2.3 + T11）：逐切片失败集合 + 明细比例。
 
-    - repeat_rate：同 `(record_id, object_keys)` 重复出现占比（无产物的样本一律视为唯一，T11）；
-    - empty_label_rate：无标注样本占比；
-    - dimension_missing_rate：任务必需维度缺失占比（**维度级**，不是切片级，见 T2.3）。
+    输出两层，**分母都是切片数**（与"标注完成度"同口径，别与"样本数"混用）：
+
+    - `effective_ratio` + `deductions`：界面唯一要展示的口径。逐切片算失败原因集合，
+      按**去重并集**统计"未命中任何原因的切片占比"，故结果恒落在 0–100%。
+      各原因**允许重叠**（一条切片可以既重复又没标注），所以不能用 `1 - 各项之和` 反推。
+    - `repeat_rate` / `empty_label_rate` / `dimension_missing_rate`：明细比例。
+      **`dimension_missing_rate` 自 T2.3 起改为切片级**（缺任一必需字段的切片占比）；
+      此前是**维度级**（缺失维度数 / 必需维度数）——历史版本按原值返回，不重算。
+
+    空版本（`total == 0`）：`effective_ratio` 返回 `None`（界面显示"—"，不是 100%），
+    三个明细比例保持 0.0 以兼容既有读取方。
     """
     total = len(samples)
-    # T11：按**产物**判重——`(record_id, object_keys)`，且**无产物的样本视为唯一**（不参与判重）。
-    # 修复前用 `(record_id, frame_no)`：锚点样本 frame_no 为 NULL、分段样本 frame_no 是任务内序号，
-    # 两者都会塌成一个键（实测线上 8 个成员判出 6 个"重复"，repeat_rate 假报 0.75）。
-    seen: dict[tuple, int] = defaultdict(int)
+    if total == 0:
+        return {
+            "repeat_rate": 0.0,
+            "empty_label_rate": 0.0,
+            "dimension_missing_rate": 0.0,
+            "effective_ratio": None,
+            "deductions": {},
+        }
+
+    failures: dict[int, set[str]] = {s.id: set() for s in samples}
+
+    # ① 重复切片：按**产物**判重——`(record_id, object_keys)`，且**无产物的样本视为唯一**
+    # （T11）。修复前用 `(record_id, frame_no)`：锚点样本 frame_no 为 NULL、分段样本 frame_no
+    # 是任务内序号，两者都会塌成一个键（实测线上 8 个成员判出 6 个"重复"，假报 0.75）。
+    groups: dict[tuple, list[int]] = defaultdict(list)
     for s in samples:
         keys = tuple(sorted(str(key) for key in (s.object_keys or [])))
-        seen[(record_ids.get(s.id), keys) if keys else ("unique", s.id)] += 1
-    repeated = total - len(seen)
-    repeat_rate = round(repeated / total, 4) if total else 0.0
+        groups[(record_ids.get(s.id), keys) if keys else ("unique", s.id)].append(s.id)
+    for group in groups.values():
+        if len(group) > 1:
+            for sample_id in group:
+                failures[sample_id].add("repeat")
 
+    # ② 空标注切片
     annotated: set[int] = set()
-    if samples:
-        for sample_id in session.exec(
-            select(Annotation.sample_id).where(
-                Annotation.sample_id.in_([s.id for s in samples])
-            )
-        ).all():
-            annotated.add(sample_id)
-    empty = total - len(annotated)
-    empty_label_rate = round(empty / total, 4) if total else 0.0
+    for sample_id in session.exec(
+        select(Annotation.sample_id).where(
+            Annotation.sample_id.in_([s.id for s in samples])
+        )
+    ).all():
+        annotated.add(sample_id)
+    for s in samples:
+        if s.id not in annotated:
+            failures[s.id].add("empty_label")
 
+    # ③ 必需字段缺失：**逐切片**判定（该切片缺任一必需维度即命中）
     required = REQUIRED_BY_TASK.get(dataset.task, [])
-    dims = _dimension_availability_from_samples(samples)
-    missing = sum(1 for d in required if not dims.get(d))
-    dimension_missing_rate = round(missing / len(required), 4) if required else 0.0
+    if required:
+        for s in samples:
+            available = _dimension_availability_from_samples([s])
+            if any(not available.get(name) for name in required):
+                failures[s.id].add("missing_field")
 
+    deductions = {
+        key: {
+            "label": label,
+            "rate": round(sum(1 for s in samples if key in failures[s.id]) / total, 4),
+            "affected": sum(1 for s in samples if key in failures[s.id]),
+        }
+        for key, label in DEDUCTION_LABELS.items()
+    }
     return {
-        "repeat_rate": repeat_rate,
-        "empty_label_rate": empty_label_rate,
-        "dimension_missing_rate": dimension_missing_rate,
+        "repeat_rate": deductions["repeat"]["rate"],
+        "empty_label_rate": deductions["empty_label"]["rate"],
+        "dimension_missing_rate": deductions["missing_field"]["rate"],
+        "effective_ratio": round(
+            sum(1 for s in samples if not failures[s.id]) / total, 4
+        ),
+        "deductions": deductions,
     }
 
 

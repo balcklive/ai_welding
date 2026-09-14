@@ -46,7 +46,8 @@ test('record detail loads its actual weld and never substitutes a sample id', ()
   assert.match(recordDetail, /getWeld\(weldId\)/);
   assert.match(recordDetail, /登记编号/);
   assert.match(recordDetail, /当前版本/);
-  assert.match(recordDetail, /核验状态/);
+  // T2.2：成员详情的"核验状态"行与右侧徽标已删除——核验状态只在「数据核验」页展示。
+  assert.doesNotMatch(recordDetail, /核验状态/);
   assert.match(recordDetail, /所属数据集/);
   assert.match(recordDetail, /所属版本/);
   assert.match(recordDetail, /数据划分/);

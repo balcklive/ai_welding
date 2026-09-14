@@ -247,10 +247,32 @@ export interface FeatureExtractionHistoryItem {
   finished_at: string | null;
 }
 
+/** 扣分原因明细（T2.3）：`rate` 与 `affected` 都按**去重并集**算，各原因允许重叠。 */
+export interface QualityDeduction {
+  /** 界面标签，由后端给（前端不拼文案）。 */
+  label: string;
+  /** 命中该原因的切片占比（0–1）。 */
+  rate: number;
+  /** 命中该原因的切片数。 */
+  affected: number;
+}
+
+/**
+ * 数据集质量（T2.3）。
+ *
+ * `effective_ratio` 是界面唯一该展示的口径（未命中任何原因的切片占比）；三个 `*_rate` 是明细。
+ * 注意：
+ * - `dimension_missing_rate` 自 T2.3 起是**切片级**（缺任一必需字段的切片占比）；
+ * - `effective_ratio` / `deductions` 是 T2.3 才写入的快照字段，**历史版本没有这两个键** →
+ *   展示层必须按"缺值"处理（显示 `—`），不能用三个 rate 反推（各原因可重叠，`1 - 之和` 会算出负数）。
+ */
 export interface DatasetQuality {
   repeat_rate: number;
   empty_label_rate: number;
   dimension_missing_rate: number;
+  /** 有效切片占比（0–1）；空版本为 `null`；T2.3 之前的版本为 `undefined`。 */
+  effective_ratio?: number | null;
+  deductions?: Record<string, QualityDeduction>;
 }
 
 export interface DatasetSplit {

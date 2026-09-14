@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlmodel import Session, SQLModel, select
 
-from app.models.analysis import AnnotationTask, Sample, SplitTask
+from app.models.analysis import Annotation, AnnotationTask, Sample, SplitTask
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 from app.services.datasets import (
@@ -164,28 +164,45 @@ def test_only_latest_succeeded_split_slices_are_members(engine):
 
 
 def test_repeat_rate_counts_by_object_keys_and_ignores_empty_ones(engine):
-    """判重按产物：3 条无产物各自唯一，2 条产物完全相同算 1 条重复 → 1/5。"""
+    """判重按产物：3 条无产物各自唯一，2 条产物完全相同的**两条都计**重复 → 2/5。
+
+    口径（T2.3 起）：同一组重复切片里每条都计入 `repeat` 失败集合——产物相同的两条无法
+    判断哪条是"真的"，两条都不算有效切片；这也让 `repeat_rate` 与 `deductions.repeat.affected`
+    一致（affected=2 ↔ rate=0.4×5）。旧公式 `total - len(去重键)` 只计多余的那几条（当时是 0.2），
+    与 `affected` 对不上。
+    """
     with Session(engine) as session:
-        dataset, record, _version = _dataset_with_record(session, "判重口径")
+        # 任务用「时序分类」：REQUIRED_BY_TASK 里没有它 → 不触发 missing_field，
+        # 这样这条用例只考察判重口径（否则无产物样本还会因缺维度命中第三项原因）。
+        dataset, record, _version = _dataset_with_record(session, "判重口径", "时序分类")
+        samples: list[Sample] = []
         for _ in range(3):
-            session.add(
+            samples.append(
                 Sample(
                     frame_no=None,
                     meta={"record_id": record.id, "weld_id": record.weld_id},
                 )
             )
         for _ in range(2):
-            session.add(
+            samples.append(
                 Sample(
                     frame_no=5,
                     object_keys=["processed/x/same.csv"],
                     meta={"record_id": record.id, "weld_id": record.weld_id},
                 )
             )
+        session.add_all(samples)
+        session.flush()
+        # 全部标注上，隔离出"重复"这一项原因
+        for sample in samples:
+            session.add(Annotation(sample_id=sample.id, category="气孔"))
         session.commit()
 
-        samples = list(session.exec(select(Sample)).all())
         record_ids = {sample.id: _sample_record_id(session, sample) for sample in samples}
         quality = _compute_quality(session, dataset, samples, record_ids)
 
-        assert quality["repeat_rate"] == 0.2
+        assert quality["repeat_rate"] == 0.4
+        assert quality["deductions"]["repeat"]["affected"] == 2
+        assert quality["empty_label_rate"] == 0.0
+        # 3 条无产物各自唯一 → 3/5 有效
+        assert quality["effective_ratio"] == 0.6
