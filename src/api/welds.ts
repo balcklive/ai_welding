@@ -9,6 +9,7 @@ import { request } from './client';
 import type {
   DataRecord,
   DataVersion,
+  DatasetBuildTicket,
   DeleteImpact,
   Page,
   Registration,
@@ -62,14 +63,14 @@ export async function attachRawFiles(
   id: string,
   objectKeys: string[],
   storageBytes?: number,
-): Promise<DataVersion> {
+): Promise<DataVersion & { dataset_build?: DatasetBuildTicket }> {
   const body: { object_keys: string[]; storage_bytes?: number } = {
     object_keys: objectKeys,
   };
   if (storageBytes !== undefined) {
     body.storage_bytes = storageBytes;
   }
-  return request<DataVersion>(`/registrations/${id}/raw-files`, {
+  return request<DataVersion & { dataset_build?: DatasetBuildTicket }>(`/registrations/${id}/raw-files`, {
     method: 'POST',
     body,
   });

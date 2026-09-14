@@ -7,6 +7,7 @@
 import { request } from './client';
 import type {
   Dataset,
+  DatasetOption,
   DatasetItemRow,
   DatasetSource,
   DatasetVersion,
@@ -17,9 +18,14 @@ import type {
   ReadinessCheck,
 } from './types';
 
-/** 数据集列表（任务类型/样本数/完成度/版本/状态）。 */
-export async function listDatasets(): Promise<Dataset[]> {
-  return request<Dataset[]>('/datasets');
+/** 数据集列表（T9）：**服务端分页 + 关键字**，列表页用；选择器请用 `listDatasetOptions()`。 */
+export async function listDatasets(params: { q?: string; page?: number; page_size?: number } = {}): Promise<Page<Dataset>> {
+  return request<Page<Dataset>>('/datasets', { query: params });
+}
+
+/** 选择器专用的轻量全量列表（`?options=1`，D19）：不分页，只回下拉要的字段。 */
+export async function listDatasetOptions(): Promise<DatasetOption[]> {
+  return request<DatasetOption[]>('/datasets', { query: { options: 1 } });
 }
 
 /** 新建数据集（同名 → 409）。 */
@@ -29,6 +35,11 @@ export async function createDataset(body: {
   source?: DatasetSource;
 }): Promise<Dataset> {
   return request<Dataset>('/datasets', { method: 'POST', body });
+}
+
+/** 重试某个数据集版本的构建（T8）：绕过手工闸门，幂等（已有进行中任务则返回它）。 */
+export async function retryBuildTask(datasetId: string, versionId: string): Promise<{ job_id: string; created: boolean }> {
+  return request<{ job_id: string; created: boolean }>(`/datasets/${datasetId}/versions/${versionId}/build-tasks/retry`, { method: 'POST' });
 }
 
 /** 删除前的影响范围预检（T7）：与 `deleteDataset` 共用后端同一份引用规则。 */

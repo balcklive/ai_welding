@@ -53,9 +53,23 @@ class BuildTaskCreate(BaseModel):
 
 
 @router.get("/datasets")
-def list_datasets(session: Session = Depends(get_session)) -> dict:
-    """数据集列表（任务类型/样本数/完成度/版本/状态 + 当前版本快照字段）。"""
-    return ok(svc.list_datasets(session))
+def list_datasets(
+    options: int | None = None,
+    q: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    session: Session = Depends(get_session),
+) -> dict:
+    """数据集列表（T9）：默认**服务端分页 + 关键字**；`options=1` 回选择器专用的轻量全量列表（D19）。
+
+    `q` 匹配名称 / 编号；`page_size` 钳制在 1–100。
+    """
+    if options:
+        return ok(svc.dataset_options(session))
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    items, total = svc.list_datasets(session, q=q, page=page, page_size=page_size)
+    return ok(paginate(items, total, page, page_size))
 
 
 @router.post("/datasets")
@@ -84,6 +98,37 @@ def create_dataset(
     session.commit()
     session.refresh(dataset)
     return ok(svc.dataset_payload(dataset))
+
+
+@router.post("/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry")
+def retry_build_task(
+    dataset_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """重试某个数据集版本的构建（T8）。
+
+    **不走手工闸门**（`status != 可训练` 那一条）：自动构建本就不经闸门，首次自动构建失败后若只能用
+    手工接口重试就会被挡住。幂等：该版本已有 pending/running 的构建任务时返回它（`created=false`）。
+    """
+    dataset = svc.get_dataset_by_identifier(session, dataset_id)
+    if dataset is None:
+        return err(40401, "数据集不存在", status=404)
+    version = session.get(DatasetVersion, version_id)
+    if version is None or version.dataset_id != dataset.id:
+        return err(40402, "数据集版本不存在", status=404)
+    job, created = svc.create_retry_build_task(session, dataset, version)
+    write_audit(
+        session,
+        current_user.id,
+        "create",
+        "dataset_build",
+        job.job_uid,
+        {"dataset_id": dataset.id, "dataset_version_id": version.id, "retry": True},
+    )
+    session.commit()
+    return ok({"job_id": job.job_uid, "created": created})
 
 
 @router.get("/datasets/{dataset_id}/delete-impact")

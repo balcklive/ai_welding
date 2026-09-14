@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { CheckCircle2, ClipboardCheck, FileCheck2, Upload } from 'lucide-react';
-import { listDatasets } from '../../api/datasets';
+import { listDatasetOptions } from '../../api/datasets';
 import { listOptionGroups } from '../../api/settings';
 import { attachRawFiles, createRegistration, listWelds } from '../../api/welds';
 import { presignUpload, putFileDirect } from '../../api/files';
-import type { Dataset, Registration, RegistrationForm } from '../../api/types';
+import type { DatasetOption, Registration, RegistrationForm } from '../../api/types';
 import type { Route } from '../../app/navigation';
 import { toWeldRow } from '../datasets/weldRows';
 import type { WeldRow } from '../datasets/weldRows';
@@ -14,6 +14,7 @@ import { ErrorState } from '../../shared/components/ErrorState';
 import { PageIntro } from '../../shared/components/PageIntro';
 import { StatusPill } from '../../shared/components/StatusPill';
 import { TERMS } from '../../shared/lib/terms';
+import { useJob } from '../../hooks/useJob';
 
 type UploadZoneKey = 'csv' | 'image' | 'video' | 'audio';
 
@@ -132,7 +133,7 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
   // 初始为空 + 加载中：mock 行仅在接口失败时兜底，不得在加载期闪现
   const [recentRows, setRecentRows] = useState<WeldRow[]>([]);
   const [recentLoading, setRecentLoading] = useState(true);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   // T4.1：所属数据集继承自上下文并锁定；无上下文时先走"选择数据集"步骤（pendingDatasetId → 确认后锁定）。
   const [lockedDatasetId, setLockedDatasetId] = useState<number | null>(inheritedDatasetId ?? null);
   const [pendingDatasetId, setPendingDatasetId] = useState<number | null>(null);
@@ -146,6 +147,10 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
   const [showDefaults, setShowDefaults] = useState(false);
   // T4.3：登记结果（成功后不再卡死在表单里，给出三个出口）。
   const [result, setResult] = useState<{ registration_no: string; weld_id: string; id: number | string } | null>(null);
+  // T8：挂载响应会带出自动构建任务（`dataset_build`）——登记完即可看到数据集版本构建状态，
+  // 刷新后也能在数据集页面由 `build_status` 恢复（上下文不入 URL，故登记页本身不持久化它）。
+  const [buildJobId, setBuildJobId] = useState<string | null>(null);
+  const { status: buildStatus } = useJob(buildJobId);
   // 下拉候选 = 字典启用项；当前值若已被停用/改名，仍补进候选，保证老数据可正常回显与提交。
   const withCurrent = (values: string[], current?: string | null) => (current && !values.includes(current) ? [current, ...values] : values);
   // 各上传区的 file input 引用（ref 回调写进同一对象）。
@@ -207,7 +212,7 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
   useEffect(() => {
     let cancelled = false;
     setDatasetsError(null);
-    listDatasets().then((datasetList) => {
+    listDatasetOptions().then((datasetList) => {
       if (cancelled) return;
       setDatasets(datasetList);
     }).catch((err) => {
@@ -295,7 +300,8 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
         }
       }
       try {
-        await attachRawFiles(String(reg.id), keys);
+        const attached = keys.length ? await attachRawFiles(String(reg.id), keys) : null;
+        if (attached?.dataset_build?.job_id) setBuildJobId(attached.dataset_build.job_id);
       } catch (err) {
         console.warn('[registration] attachRawFiles failed', err);
         throw new Error('文件已上传但关联失败，请重新提交');
@@ -322,6 +328,7 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
     setRegError(null);
     setMissingHint(null);
     setResult(null);
+    setBuildJobId(null);
     regRef.current = null;
     applyDefaults({ ...loadLastValues(), machine: loadLastValues().machine || optionValues.machine[0], weld_method: loadLastValues().weld_method || optionValues.weld_method[0] });
   };
@@ -394,7 +401,7 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
       {result && <section className="panel registration-result">
         <CheckCircle2 size={34} className="accent-text" />
         <h2>登记成功 {result.registration_no}</h2>
-        <p>{form.weld_name || '样本'} 已归档到「{lockedDataset?.name ?? TERMS.dataset}」。文件挂载后会自动触发导入，可在数据列表里看到进度。</p>
+        <p>{form.weld_name || '样本'} 已归档到「{lockedDataset?.name ?? TERMS.dataset}」。文件挂载后会自动触发导入与数据集版本构建。</p>{buildJobId && <p className="registration-build" role="status">数据集版本构建：{buildStatus === 'succeeded' ? '已完成' : buildStatus === 'failed' ? '构建失败，可在数据集页面点「重新构建」' : '构建中…'}</p>}
         <div className="registration-result-actions">
           <button className="outline-button" onClick={() => openWithContext('data-center/datasets')}>查看这条数据</button>
           <button className="primary-button" onClick={startNext}>继续登记下一条</button>

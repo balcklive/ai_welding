@@ -13,7 +13,9 @@ const routesData = app.slice(app.indexOf('const routesRequiringData'), app.index
 
 test('analysis select is dataset-first: dataset dropdown, then welds scoped by dataset_id', () => {
   assert.match(select, /function AnalysisSelect\(/);
-  assert.match(select, /listDatasets\(\)/);
+  // T9/D19：选择器走轻量全量接口（不分页），不再用会被分页截断的列表接口。
+  assert.match(select, /listDatasetOptions\(\)/);
+  assert.doesNotMatch(select, /listDatasets\(/);
   assert.match(select, /selection-dataset-bar/);
   assert.match(select, /所属数据集/);
   assert.match(select, /listWelds\(\{ dataset_id: selectedDatasetId/);

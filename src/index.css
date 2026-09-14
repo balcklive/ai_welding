@@ -602,3 +602,7 @@ button { border: 0; cursor: pointer; }
 /* T5 守卫：页面需要数据上下文但当前没选时，顶部选择器置为强调态；点"在本页选择数据"时闪一下。 */
 .selection-switcher.needs-attention { border-color:#e8c67e; background:#fffaf0; box-shadow:0 0 0 3px rgba(240,201,106,.18); }
 .selection-switcher.field-flash { animation:field-flash 1s ease; }
+
+/* T8：构建中的数据集版本——不可进入（切片清单还没生成），行只给状态不给动作。 */
+.dataset-version.building { opacity:.72; cursor:progress; }
+.dataset-version.building:hover { border-color:#edf2f1; }

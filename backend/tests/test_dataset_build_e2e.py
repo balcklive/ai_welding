@@ -6,13 +6,16 @@
     → 信号导入（signal_ingest job）→ 分段 POST …/split-tasks（split job）
     → 构建（dataset_build job）→ 读回 GET /datasets/{id}/versions/{vid}[/items] 断言
 
-覆盖 T11 修掉的两件事（都是线上实测到的）：
+覆盖（每条都对应一次真实缺陷或线上实测）：
 
-1. **标注锚点样本不得成为数据集版本成员**——线上数据集 1 的 8 个成员里 7 个是
+1. **标注锚点样本不得成为数据集版本成员**（T11）——线上数据集 1 的 8 个成员里 7 个是
    `signal-anchor`/`video-anchor` 锚点，且 `(record_id, frame_no)` 判重把 `frame_no` 为 NULL
    的锚点全塌成一个键，把 `repeat_rate` 假报成 0.75；
-2. **只收最近一次成功分段任务的切片**（D16-A 前置）——旧任务的切片留在库里但不进新版本，
-   且不得与基础样本混编。
+2. **只收最近一次成功分段任务的切片**（T11 / D16-A 前置）——旧任务的切片留在库里但不进新版本；
+3. **failed 分段不产生成员**；
+4. **删除预检与真删一致**（T7）；
+5. **登记写 `20K`、CSV 无时间列时靠登记的采样率兜底**（`_parse_fs` 修复）；
+6. **挂载响应带出构建任务、版本列表能读出构建状态、重试幂等且不过手工闸门、乱序构建不动指针**（T8）。
 
 隔离手段：内存 SQLite（StaticPool，请求 session 与 Job session 共用同一连接）+ 假 Storage
 （内存 dict，不连 MinIO）。执行器 session 通过 monkeypatch `app.jobs.executor.SessionLocal` 指到测试引擎。
@@ -33,7 +36,7 @@ from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.main import app
 from app.models import User
-from app.models.datasets import DatasetBuildTask, DatasetVersion
+from app.models.datasets import Dataset, DatasetBuildTask, DatasetVersion
 from app.models.jobs import Job
 from app.storage.client import StorageClient
 
@@ -211,7 +214,7 @@ def _latest_dataset_version(db, dataset_id: int) -> DatasetVersion:
 
 
 def _build_job_uid(db, dataset_version_id: int) -> str:
-    """构建任务只能从库里找——`POST …/raw-files` 的响应不含 job_id（T8 待补 `build_job_id`）。"""
+    """按数据集版本取构建任务的 job_uid（T8 起挂载响应已带 `dataset_build.job_id`，这里走库更直接）。"""
     task = db.exec(
         select(DatasetBuildTask).where(
             DatasetBuildTask.dataset_version_id == dataset_version_id
@@ -436,3 +439,100 @@ def test_delete_impact_matches_actual_delete(api, db, storage, run_job):
     empty_impact = _ok(api.get(f"{API}/datasets/{empty_id}/delete-impact"))
     assert empty_impact["can_delete"] is True and empty_impact["blocking"] == []
     assert api.delete(f"{API}/datasets/{empty_id}").json()["code"] == 0
+
+
+# ── 场景 6：异步构建的状态出口（T8） ─────────────────────────────────
+
+
+def test_attach_exposes_build_ticket_and_version_build_status(api, db, storage, run_job):
+    """挂载响应必须带出自动构建任务；版本列表必须能读出构建状态（否则前端无从轮询/恢复）。"""
+    dataset_id = _create_dataset(api, "E2E 构建状态")
+    record = _register(api, dataset_id, "E2E 构建状态样本")
+    storage.put("raw/e2e-status.bin", b"s" * 8)
+
+    attached = _attach(api, record["id"], ["raw/e2e-status.bin"])
+    ticket = attached.get("dataset_build")
+    assert ticket is not None, "挂载响应应带出自动构建任务（dataset_build）"
+    assert ticket["job_id"].startswith("job_")
+    assert ticket["dataset_version_id"] == _latest_dataset_version(db, dataset_id).id
+
+    # 构建前：状态是 pending（前端据此显示"构建中"并禁用查看切片）
+    before = _ok(api.get(f"{API}/datasets/{dataset_id}/versions"))
+    row = next(item for item in before if item["id"] == ticket["dataset_version_id"])
+    assert row["build_status"] == "pending", row
+    assert row["build_job_id"] == ticket["job_id"]
+
+    assert _run(db, run_job, ticket["job_id"]).status == "succeeded"
+    after = _ok(api.get(f"{API}/datasets/{dataset_id}/versions"))
+    row = next(item for item in after if item["id"] == ticket["dataset_version_id"])
+    assert row["build_status"] == "succeeded", row
+
+
+def test_build_retry_is_idempotent_and_bypasses_manual_gate(api, db, storage, run_job):
+    """重试端点：不走手工闸门（数据集还是"标注中"也能重试）、已有进行中任务时返回它。"""
+    dataset_id = _create_dataset(api, "E2E 构建重试")
+    version_id = _ok(api.post(f"{API}/datasets/{dataset_id}/versions", json={}))["id"]
+    # 手工建的空版本没有构建任务 → build_status 为空
+    manual_row = next(item for item in _ok(api.get(f"{API}/datasets/{dataset_id}/versions")) if item["id"] == version_id)
+    assert manual_row["build_status"] is None, manual_row
+
+    first = _ok(api.post(f"{API}/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry"))
+    assert first["created"] is True
+    second = _ok(api.post(f"{API}/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry"))
+    assert second["created"] is False and second["job_id"] == first["job_id"], (first, second)
+
+    # 这个数据集一条登记数据都没有 → 构建会失败（"没有可用于构建数据集的真实样本"），
+    # 但**任务确实被创建并执行了**（证明重试没被"可训练"闸门挡住）。
+    assert _run(db, run_job, first["job_id"]).status == "failed"
+
+
+def test_out_of_order_build_does_not_move_the_current_pointer(api, db, storage, run_job):
+    """乱序完成的旧构建不得把 current_version_id 指回旧版本（T8 指针守卫）。"""
+    dataset_id = _create_dataset(api, "E2E 指针守卫")
+    record = _register(api, dataset_id, "E2E 指针守卫样本")
+    storage.put("raw/e2e-old.bin", b"o" * 8)
+    storage.put("raw/e2e-new.bin", b"n" * 8)
+
+    _attach(api, record["id"], ["raw/e2e-old.bin"])
+    old_version = _latest_dataset_version(db, dataset_id)
+    old_job = _build_job_uid(db, old_version.id)
+    _attach(api, record["id"], ["raw/e2e-new.bin"])
+    new_version = _latest_dataset_version(db, dataset_id)
+    assert new_version.id > old_version.id
+
+    # 先跑新版本，再跑旧版本：旧任务完成后不能把指针拽回去
+    assert _run(db, run_job, _build_job_uid(db, new_version.id)).status == "succeeded"
+    assert _run(db, run_job, old_job).status == "succeeded"
+    db.expire_all()
+
+    assert db.get(Dataset, dataset_id).current_version_id == new_version.id
+    # 旧版本自己的统计仍然落库（只是不动 dataset 指针）
+    assert db.get(DatasetVersion, old_version.id).item_count == 1
+
+
+# ── 场景 7：数据集列表的分页 / 关键字 / 选择器轻量接口（T9） ───────────
+
+
+def test_dataset_list_pagination_search_and_options(api, db):
+    """`GET /datasets` 默认分页 + `q` 过滤；`options=1` 回不分页的轻量列表（D19）。"""
+    ids = [_create_dataset(api, f"E2E 分页-{index}") for index in range(3)]
+
+    first = _ok(api.get(f"{API}/datasets?page=1&page_size=2"))
+    assert set(first.keys()) == {"items", "total", "page", "page_size"}, first
+    assert first["total"] == 3 and len(first["items"]) == 2, first
+    second = _ok(api.get(f"{API}/datasets?page=2&page_size=2"))
+    assert len(second["items"]) == 1
+    # page_size 被钳制到 ≤100
+    assert _ok(api.get(f"{API}/datasets?page_size=9999"))["page_size"] == 100
+
+    hit = _ok(api.get(f"{API}/datasets?q=E2E 分页-1"))
+    assert hit["total"] == 1 and hit["items"][0]["name"] == "E2E 分页-1", hit
+    assert _ok(api.get(f"{API}/datasets?q=不存在的名字"))["total"] == 0
+
+    options = _ok(api.get(f"{API}/datasets?options=1"))
+    assert isinstance(options, list) and len(options) >= 3
+    assert set(options[0]) == {
+        "id", "dataset_no", "name", "task", "status", "sample_count", "weld_count",
+        "progress", "current_version_id", "version", "split",
+    }, options[0]
+    assert all(item["id"] in ids or item["name"].startswith("E2E 分页") for item in options)

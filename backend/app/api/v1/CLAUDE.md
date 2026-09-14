@@ -118,6 +118,10 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `GET /datasets/{dataset_id}/versions/{version_id}/items`（按样本粒度分页；`q` 过滤
     weld_id/weld_name/registration_no，`quality` 精确，`split` 仅 train/val/test；
     服务端按 `sample_id` 稳定排序，SQL 侧过滤/计数/offset/limit，40401/40402/40000 对齐）；**Task 2–4 前端**以 `listDatasetVersionItems(datasetId, versionId, {q,quality,split,page,page_size})` 消费该端点，数据管理成员列表不得改走全局 `/welds`。
+  - `GET /datasets`（**T9**）：默认服务端分页 `{items,total,page,page_size}` + `q`；`?options=1` 回
+    选择器专用的轻量全量数组（D19）。
+  - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks/retry`（**T8**）：重试构建，
+    绕过手工闸门、幂等（已有进行中任务返回它，`created=false`）。
   - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks`（**异步**，body `{source}` =
     DatasetSource 字典或类型字符串；类型白名单校验 → 40000；同事务建 pending Job +
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；

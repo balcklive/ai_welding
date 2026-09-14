@@ -6,7 +6,7 @@ import {
   ScanLine, SlidersHorizontal, Target, Terminal, Upload,
 } from 'lucide-react';
 import {
-  createBuildTask, createDatasetVersion, getDatasetVersion, getReadiness, listDatasets,
+  createBuildTask, createDatasetVersion, getDatasetVersion, getReadiness, listDatasetOptions,
 } from '../../api/datasets';
 import { presignUpload, uploadFile } from '../../api/files';
 import {
@@ -14,7 +14,7 @@ import {
   getModel, getTrainingLogs, listModels, updateModelVersionStatus,
 } from '../../api/models';
 import type {
-  Dataset, DatasetQuality, DatasetSplit, InferenceResult, Model, ModelSummary,
+  DatasetOption, DatasetQuality, DatasetSplit, InferenceResult, Model, ModelSummary,
   ModelVersion, TestResult, TrainingResult,
 } from '../../api/types';
 import { useJob } from '../../hooks/useJob';
@@ -133,7 +133,7 @@ export function InferencePanel() {
 }
 
 export function DatasetBuild() {
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   const [datasetId, setDatasetId] = useState<number | null>(null);
   const [source, setSource] = useState<'manual' | 'split_task' | 'annotation_task'>('manual');
   const [buildJobId, setBuildJobId] = useState<string | null>(null);
@@ -142,7 +142,7 @@ export function DatasetBuild() {
   const { status: buildStatus, progress, result: buildResult } = useJob<{ item_count: number; split: Partial<DatasetSplit>; quality: DatasetQuality | null; snapshot_id: string | null }>(buildJobId);
   useEffect(() => {
     let cancelled = false;
-    listDatasets().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[dataset-build] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
+    listDatasetOptions().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[dataset-build] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
   const dataset = datasets.find((d) => d.id === datasetId) ?? null;
@@ -183,7 +183,7 @@ export function TrainingDataPreparation() {
     quality: DatasetQuality | null;
     snapshot_id: string | null;
   };
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   const [datasetId, setDatasetId] = useState<number | null>(null);
   const [source, setSource] = useState<'manual' | 'split_task' | 'annotation_task'>('manual');
   const [buildJobId, setBuildJobId] = useState<string | null>(null);
@@ -193,7 +193,7 @@ export function TrainingDataPreparation() {
   const { status: buildStatus, progress, result: buildResult } = useJob<BuildResult>(buildJobId);
   useEffect(() => {
     let cancelled = false;
-    listDatasets().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[training-data] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
+    listDatasetOptions().then((list) => { if (cancelled) return; setDatasets(list); setDatasetId((prev) => prev ?? list[0]?.id ?? null); }).catch((err) => console.warn('[training-data] listDatasets failed', err)).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
   const dataset = datasets.find((item) => item.id === datasetId) ?? null;
@@ -267,13 +267,13 @@ export function TrainingDataPreparation() {
 
 export function ModelTestLive() {
   const [models, setModels] = useState<Model[]>([]);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   const [modelVersionId, setModelVersionId] = useState<number | null>(null);
   const [datasetVersionId, setDatasetVersionId] = useState<number | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
   const { status, result } = useJob<TestResult>(jobId);
-  useEffect(() => { Promise.all([listModels(), listDatasets()]).then(([modelRes, datasetRes]) => { setModels(modelRes.models); setDatasets(datasetRes); }).catch(() => {}); }, []);
+  useEffect(() => { Promise.all([listModels(), listDatasetOptions()]).then(([modelRes, datasetRes]) => { setModels(modelRes.models); setDatasets(datasetRes); }).catch(() => {}); }, []);
   const run = () => { if (modelVersionId == null || datasetVersionId == null) return; setTestError(null); createTestTask({ model_version_id: modelVersionId, dataset_version_id: datasetVersionId, tasks: ['异常分类'] }).then((res) => setJobId(res.job_id)).catch((err) => setTestError(err instanceof Error ? err.message : '测试任务创建失败，请检查模型版本和独立测试数据集版本后重试')); };
   const pct = (v: number | undefined) => v == null ? '—' : `${(v * 100).toFixed(1)}%`;
   const metrics = result?.metrics;
@@ -296,7 +296,7 @@ function lossToPath(values: number[], width = 600, height = 250): string {
 }
 export function Training() {
   const [isTraining, setIsTraining] = useState(false);
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   const [datasetReadiness, setDatasetReadiness] = useState<Record<number, string>>({});
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>([]);
   const [models, setModels] = useState<Model[]>([]);
@@ -313,7 +313,7 @@ export function Training() {
   const [config] = useState({ epochs: 50, batch_size: 16, learning_rate: 0.001, val_ratio: 0.2 });
   useEffect(() => {
     let cancelled = false;
-    listDatasets().then((list) => {
+    listDatasetOptions().then((list) => {
       if (cancelled) return;
       setDatasets(list);
       Promise.all(list.map(async (dataset) => {

@@ -349,6 +349,7 @@ def attach_raw_files(
             seen_csv_keys.add(key)
             csv_keys.append(key)
 
+    auto_build: dict | None = None
     for attempt in range(3):
         version = svc.get_v10_version(session, record.id)
         if version is None:
@@ -460,9 +461,19 @@ def attach_raw_files(
             if new_object_keys:
                 dataset = session.get(Dataset, record.dataset_id)
                 if dataset is not None:
-                    dataset_svc.create_auto_build_task(session, dataset)
+                    auto_version, auto_job = dataset_svc.create_auto_build_task(session, dataset)
+                    auto_build = {
+                        "dataset_version_id": auto_version.id,
+                        "version_no": auto_version.version_no,
+                        "job_id": auto_job.job_uid,
+                    }
             session.commit()
-            return ok(svc.version_payload(version))
+            payload = svc.version_payload(version)
+            # T8：挂载响应带出自动构建任务——否则前端拿不到 job_id，既没法轮询、刷新后也无从恢复
+            # （数据版本自身的构建状态由 `GET /datasets/{id}/versions` 的 build_status 提供）。
+            if auto_build is not None:
+                payload["dataset_build"] = auto_build
+            return ok(payload)
         except RuntimeError as exc:
             session.rollback()
             return err(40900, str(exc), status=409)

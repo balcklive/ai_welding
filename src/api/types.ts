@@ -292,6 +292,26 @@ export interface DatasetSplit {
   test: number;
 }
 
+/**
+ * 选择器专用的轻量数据集（`GET /datasets?options=1`，D19/T9）。
+ *
+ * 只含下拉/默认值要用的字段（无 quality / 时间戳等重字段）。**列表页不要用它**——
+ * 列表走 `listDatasets({page,page_size,q})` 的分页接口。
+ */
+export interface DatasetOption {
+  id: number;
+  dataset_no: string;
+  name: string;
+  task: string;
+  status: string;
+  sample_count: number;
+  weld_count: number;
+  progress: number | null;
+  current_version_id: number | null;
+  version: string | null;
+  split: Partial<DatasetSplit> | null;
+}
+
 export interface Dataset {
   /** 已登记样本数，与数据集版本中的切片数区分。 */
   weld_count?: number;
@@ -304,6 +324,10 @@ export interface Dataset {
   status: string;
   current_version_id: number | null;
   version: string | null;
+  /** 当前版本的构建状态（T8）：pending/running/succeeded/failed；`null` = 未构建。 */
+  build_status?: JobStatus | null;
+  /** 当前版本的构建任务 job_uid（T8）。 */
+  build_job_id?: string | null;
   /** 当前版本划分；未构建/无当前版本时为 `null`，已建版本但未构建时为 `{}`。 */
   split: Partial<DatasetSplit> | null;
   quality: DatasetQuality | null;
@@ -311,10 +335,21 @@ export interface Dataset {
   updated_at: string | null;
 }
 
+/** 挂载原始文件后自动创建的构建任务（T8：`POST …/raw-files` 响应的 `dataset_build`）。 */
+export interface DatasetBuildTicket {
+  dataset_version_id: number;
+  version_no: string;
+  job_id: string;
+}
+
 export interface DatasetVersion {
   id: number;
   dataset_id: number;
   version_no: string;
+  /** 该版本最新一次构建任务的状态（T8）；`null`/`undefined` = 从未构建（手工建的空版本）。 */
+  build_status?: JobStatus | null;
+  /** 该版本最新一次构建任务的 job_uid（T8），供轮询与"重新构建"。 */
+  build_job_id?: string | null;
   /** 数据集版本划分；后端恒输出该键，未构建版本为 `{}`（train/val/test 缺省）。 */
   split: Partial<DatasetSplit>;
   item_count: number;

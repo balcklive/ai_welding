@@ -168,10 +168,68 @@ def get_dataset_by_identifier(session: Session, identifier: str) -> Dataset | No
 # ── 数据集 CRUD ──────────────────────────────────────────────────────
 
 
-def list_datasets(session: Session) -> list[dict]:
-    """数据集列表：批量预查当前版本，避免逐条 N+1。"""
+def dataset_options(session: Session) -> list[dict]:
+    """选择器专用轻量列表（D19 / T9）：**不分页**，只回选择器要的字段。
+
+    为什么不给选择器也上分页：`listDatasets` 有 10 个调用点，其中 9 个是"下拉候选"——
+    分页后每个选择器都要自己写翻页/搜索，且"默认取第一个"的语义会变成"取第一页第一个"。
+    数据集是**容器**（数量随组织结构增长，不随数据条数增长），全量列出来是安全的；
+    真正会涨的是样本/切片，那些走服务端分页。
+    """
     datasets = session.exec(
         select(Dataset).order_by(Dataset.created_at.desc(), Dataset.id.desc())
+    ).all()
+    ids = [d.current_version_id for d in datasets if d.current_version_id is not None]
+    versions: dict[int, DatasetVersion] = {}
+    if ids:
+        for v in session.exec(
+            select(DatasetVersion).where(DatasetVersion.id.in_(ids))
+        ).all():
+            versions[v.id] = v
+    weld_counts = dict(
+        session.exec(
+            select(DataRecord.dataset_id, func.count(DataRecord.id))
+            .where(DataRecord.dataset_id.is_not(None))
+            .group_by(DataRecord.dataset_id)
+        ).all()
+    )
+    return [
+        {
+            "id": d.id,
+            "dataset_no": d.dataset_no,
+            "name": d.name,
+            "task": d.task,
+            "status": d.status,
+            "sample_count": d.sample_count,
+            "weld_count": weld_counts.get(d.id, 0),
+            "progress": float(d.progress) if d.progress is not None else None,
+            "current_version_id": d.current_version_id,
+            "version": versions[d.current_version_id].version_no if d.current_version_id in versions else None,
+            "split": versions[d.current_version_id].split if d.current_version_id in versions else None,
+        }
+        for d in datasets
+    ]
+
+
+def list_datasets(
+    session: Session, *, q: str | None = None, page: int = 1, page_size: int = 20
+) -> tuple[list[dict], int]:
+    """数据集列表（T9：服务端分页 + 关键字）：返回 `(items, total)`。
+
+    `q` 对名称 / 编号做包含匹配；分页参数由路由钳制（1 ≤ page_size ≤ 100）。
+    批量预查当前版本与登记数，避免逐条 N+1。
+    """
+    conditions = []
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        conditions.append(or_(Dataset.name.like(like), Dataset.dataset_no.like(like)))
+    total = int(session.exec(select(func.count(Dataset.id)).where(*conditions)).one())
+    datasets = session.exec(
+        select(Dataset)
+        .where(*conditions)
+        .order_by(Dataset.created_at.desc(), Dataset.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     ).all()
     ids = [d.current_version_id for d in datasets if d.current_version_id is not None]
     versions: dict[int, DatasetVersion] = {}
@@ -187,10 +245,17 @@ def list_datasets(session: Session) -> list[dict]:
             .group_by(DataRecord.dataset_id)
         ).all()
     )
-    return [
-        dataset_payload(d, versions.get(d.current_version_id), weld_count=int(record_counts.get(d.id, 0)))
+    builds = build_status_for_versions(session, list(versions.keys()))
+    items = [
+        dataset_payload(
+            d,
+            versions.get(d.current_version_id),
+            weld_count=int(record_counts.get(d.id, 0)),
+            build=builds.get(d.current_version_id),
+        )
         for d in datasets
     ]
+    return items, total
 
 
 def create_dataset(
@@ -411,8 +476,9 @@ def dataset_payload(
     *,
     label_distribution: dict[str, int] | None = None,
     weld_count: int | None = None,
+    build: dict | None = None,
 ) -> dict:
-    """数据集 → JSON（列表/详情共用）。"""
+    """数据集 → JSON（列表/详情共用）；`build` 是当前版本的构建状态（T8，缺省 = 未构建）。"""
     return {
         "id": dataset.id,
         "dataset_no": dataset.dataset_no,
@@ -424,6 +490,8 @@ def dataset_payload(
         "status": dataset.status,
         "current_version_id": dataset.current_version_id,
         "version": current_version.version_no if current_version else None,
+        "build_status": (build or {}).get("build_status"),
+        "build_job_id": (build or {}).get("build_job_id"),
         "split": current_version.split if current_version else None,
         "quality": current_version.quality if current_version else None,
         "label_distribution": label_distribution or {},
@@ -609,14 +677,15 @@ def _check_passed(name: str, state: dict) -> bool:
 
 
 def list_versions(session: Session, dataset: Dataset) -> list[dict]:
-    return [
-        version_payload(v)
-        for v in session.exec(
-            select(DatasetVersion)
-            .where(DatasetVersion.dataset_id == dataset.id)
-            .order_by(DatasetVersion.created_at, DatasetVersion.id)
-        ).all()
-    ]
+    versions = session.exec(
+        select(DatasetVersion)
+        .where(DatasetVersion.dataset_id == dataset.id)
+        .order_by(DatasetVersion.created_at, DatasetVersion.id)
+    ).all()
+    builds = build_status_for_versions(
+        session, [v.id for v in versions if v.id is not None]
+    )
+    return [version_payload(v, builds.get(v.id)) for v in versions]
 
 
 def create_version(
@@ -663,6 +732,40 @@ def create_auto_build_task(session: Session, dataset: Dataset) -> tuple[DatasetV
     return version, job
 
 
+def create_retry_build_task(
+    session: Session, dataset: Dataset, version: DatasetVersion
+) -> tuple[Job, bool]:
+    """重试某个数据集版本的构建（T8）。返回 `(job, created)`。
+
+    **必须绕过手工闸门**：手工接口 `POST …/build-tasks` 有 `status != 可训练 → 400` 的闸门，而
+    自动构建走服务层直建任务、本就不经闸门——于是"首次自动构建失败后用现有接口重试"会被挡住。
+    这里按自动构建的来源（`dataset_records`）重建任务，并且**幂等**：该版本已有 pending/running
+    的构建任务时直接返回它，不重复建。
+    """
+    existing = session.exec(
+        select(DatasetBuildTask, Job)
+        .join(Job, Job.id == DatasetBuildTask.job_id)
+        .where(
+            DatasetBuildTask.dataset_version_id == version.id,
+            Job.status.in_(("pending", "running")),
+        )
+        .order_by(DatasetBuildTask.id.desc())
+    ).first()
+    if existing is not None:
+        return existing[1], False
+    job = create_job(
+        session,
+        type="dataset_build",
+        result={"source": {"type": "dataset_records", "dataset_id": dataset.id}},
+    )
+    session.add(
+        DatasetBuildTask(
+            job_id=job.id, dataset_version_id=version.id, source="dataset_records"
+        )
+    )
+    return job, True
+
+
 def next_dataset_version_no(session: Session, dataset_id: int) -> str:
     """`v1.<n>`：现有最大次版本 + 1（空版本集 → v1.1）。"""
     rows = session.exec(
@@ -678,7 +781,36 @@ def next_dataset_version_no(session: Session, dataset_id: int) -> str:
     return f"v1.{max_minor + 1}"
 
 
-def version_payload(version: DatasetVersion) -> dict:
+def build_status_for_versions(
+    session: Session, version_ids: list[int]
+) -> dict[int, dict]:
+    """各数据集版本的**构建状态**（T8）：取该版本**最新一次**构建任务的状态。
+
+    - 无构建任务（手工 `POST /versions` 建的空版本）→ 不返回该键，前端按"未构建"展示。
+    - 一个版本可以有多条构建任务（失败后重试），故按 `DatasetBuildTask.id` 倒序，首条为准。
+    - 一次批量查询覆盖全部版本，避免版本列表逐条 N+1。
+    """
+    if not version_ids:
+        return {}
+    rows = session.exec(
+        select(DatasetBuildTask, Job)
+        .join(Job, Job.id == DatasetBuildTask.job_id)
+        .where(DatasetBuildTask.dataset_version_id.in_(version_ids))
+        .order_by(DatasetBuildTask.id.desc())
+    ).all()
+    latest: dict[int, dict] = {}
+    for task, job in rows:
+        if task.dataset_version_id in latest:
+            continue  # 倒序遍历，首条即最新
+        latest[task.dataset_version_id] = {
+            "build_status": job.status,
+            "build_job_id": job.job_uid,
+        }
+    return latest
+
+
+def version_payload(version: DatasetVersion, build: dict | None = None) -> dict:
+    """数据集版本 → JSON；`build` 来自 `build_status_for_versions`（缺省 = 未构建）。"""
     return {
         "id": version.id,
         "dataset_id": version.dataset_id,
@@ -688,6 +820,8 @@ def version_payload(version: DatasetVersion) -> dict:
         "snapshot_id": version.snapshot_id,
         "quality": version.quality,
         "created_at": _iso_utc(version.created_at),
+        "build_status": (build or {}).get("build_status"),
+        "build_job_id": (build or {}).get("build_job_id"),
     }
 
 
@@ -1035,9 +1169,10 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
         raise ValueError("没有可用于构建数据集的真实样本，请先完成样本分段或标注")
 
     # 按焊缝（record_id）分组，避免同焊缝样本跨分片泄漏。
+    resolver = _RecordResolver(session)
     record_ids: dict[int, int | None] = {}
     for s in samples:
-        record_ids[s.id] = _sample_record_id(session, s)
+        record_ids[s.id] = resolver.resolve(s)
     # T11：无主样本在分组里会**每条自成一个"焊缝"组**，防泄漏划分对它无能为力
     # （同一焊缝的样本可能同时进 train 与 test）。来源白名单已挡住锚点样本，这条告警用来
     # 发现新的无主样本，而不是静默按孤儿处理。
@@ -1093,10 +1228,22 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     version.snapshot_id = snapshot_id
     session.add(version)
 
-    dataset.current_version_id = version.id
-    dataset.sample_count = len(item_rows)
-    dataset.status = "可训练" if len(item_rows) > 0 else "标注中"
-    dataset.progress = Decimal(str(round((1 - quality["empty_label_rate"]) * 100, 2)))
+    # T8 指针守卫：只在"这次构建出的是更新的版本"时才推进 current_version_id 与统计字段。
+    # 没有守卫时，并发/乱序完成的旧任务会把指针指回旧版本，并顺带用旧值覆盖
+    # sample_count / status / progress（executor 单线程时不会并发，上多 worker 就会）。
+    previous_id = dataset.current_version_id
+    if previous_id is None or version.id > previous_id:
+        dataset.current_version_id = version.id
+        dataset.sample_count = len(item_rows)
+        dataset.status = "可训练" if len(item_rows) > 0 else "标注中"
+        dataset.progress = Decimal(str(round((1 - quality["empty_label_rate"]) * 100, 2)))
+    else:
+        logger.info(
+            "Dataset build for version {} finished after a newer version is current ({}); "
+            "keeping the newer pointer",
+            version.id,
+            previous_id,
+        )
     dataset.updated_at = datetime.now(timezone.utc)
     session.add(dataset)
 
@@ -1157,6 +1304,74 @@ def _gather_samples(
     return []
 
 
+class _RecordResolver:
+    """批量解析样本归属（T9 性能）。
+
+    原先 `_sample_record_id` 每遇到一个样本就要查若干次（`SplitTask`→`DataVersion`→`DataRecord`），
+    几万切片时就是几万次 DB 往返——这是构建最慢的一段。这里改成**一次性预载 4 张映射表 +
+    内存解析**，语义与 `_sample_record_id` 逐字一致（含"meta.record_id > meta.weld_id >
+    split_task→version > annotation_task→split_task→version"的优先级）。
+
+    预载的 4 张表都是小行（id + 外键），几万行量级完全放得下；换来的是构建路径上**零**逐条查询。
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._records_by_weld_id = {
+            record.weld_id: record for record in session.exec(select(DataRecord)).all()
+        }
+        self._records_by_id = {
+            record.id: record
+            for record in self._records_by_weld_id.values()
+            if record.id is not None
+        }
+        self._versions = {
+            version.id: version.record_id
+            for version in session.exec(select(DataVersion)).all()
+            if version.id is not None
+        }
+        self._splits = {
+            split.id: split.version_id
+            for split in session.exec(select(SplitTask)).all()
+            if split.id is not None
+        }
+        self._annotation_splits = {
+            task.id: task.split_task_id
+            for task in session.exec(select(AnnotationTask)).all()
+            if task.id is not None
+        }
+
+    def resolve(self, sample: Sample) -> int | None:
+        """样本 → 所属登记记录 id（无法归属时 None）。"""
+        meta = sample.meta or {}
+        rid = meta.get("record_id")
+        if rid is not None:
+            try:
+                return int(rid)
+            except (TypeError, ValueError):
+                pass
+        wid = meta.get("weld_id")
+        if wid:
+            record = self._records_by_weld_id.get(str(wid))
+            if record is not None:
+                return record.id
+        if sample.split_task_id is not None:
+            version_id = self._splits.get(sample.split_task_id)
+            if version_id is not None:
+                return self._versions.get(version_id)
+        if sample.annotation_task_id is not None:
+            split_id = self._annotation_splits.get(sample.annotation_task_id)
+            if split_id is not None:
+                version_id = self._splits.get(split_id)
+                if version_id is not None:
+                    return self._versions.get(version_id)
+        return None
+
+    def record_of(self, sample: Sample) -> DataRecord | None:
+        """样本 → 所属登记记录对象（供按登记字段筛选）。"""
+        record_id = self.resolve(sample)
+        return self._records_by_id.get(record_id) if record_id is not None else None
+
+
 def _is_annotation_anchor(sample: Sample) -> bool:
     """标注工作台的锚点样本（T11）——不是切片，不得成为数据集版本成员。
 
@@ -1205,11 +1420,12 @@ def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sam
         return []
 
     record_ids = {record.id for record in records if record.id is not None}
+    resolver = _RecordResolver(session)
     by_record: dict[int, list[Sample]] = defaultdict(list)
     for sample in session.exec(select(Sample)).all():
         if _is_annotation_anchor(sample):
             continue
-        record_id = _sample_record_id(session, sample)
+        record_id = resolver.resolve(sample)
         if record_id is not None and record_id in record_ids:
             by_record[record_id].append(sample)
 
@@ -1250,8 +1466,9 @@ def _samples_for_dataset_records(session: Session, dataset: Dataset) -> list[Sam
 def _filter_samples(session: Session, filters: dict) -> list[Sample]:
     """按登记字段筛选样本（samples→所属焊缝 record 属性，前缀匹配 source）。"""
     out: list[Sample] = []
+    resolver = _RecordResolver(session)
     for sample in session.exec(select(Sample)).all():
-        record = _sample_record(session, sample)
+        record = resolver.record_of(sample)
         if record is not None and _record_matches(record, filters):
             out.append(sample)
     return out

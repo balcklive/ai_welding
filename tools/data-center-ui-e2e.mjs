@@ -132,7 +132,7 @@ await ctx.route(API, (route) => {
     { key: 'source', label: '数据来源', description: '', color: null, free_text: true, items: [] },
     { key: 'product', label: '产品信息', description: '', color: null, free_text: true, items: [] },
   ] }));
-  if (method === 'POST' && /\/registrations\/[^/]+\/raw-files/.test(url)) return route.fulfill(envelope({ id: 4242, version_no: 'v1.0', object_keys: ['raw/e2e-signal.csv'] }));
+  if (method === 'POST' && /\/registrations\/[^/]+\/raw-files/.test(url)) return route.fulfill(envelope({ id: 4242, version_no: 'v1.0', object_keys: ['raw/e2e-signal.csv'], dataset_build: { dataset_version_id: 4244, version_no: 'v1.3', job_id: 'job_e2e_building' } }));
   if (method === 'POST' && /\/registrations$/.test(url)) return route.fulfill(envelope({ id: 1, weld_id: 'WLD-E2E-0001', registration_no: 'REG-E2E-00001' }));
   if (/\/files\/presign-upload/.test(url)) return route.fulfill(envelope({ object_key: 'raw/e2e-signal.csv', upload_url: 'https://fake.local/put' }));
   if (/\/datasets\/DS-E2E\/dimensions/.test(url)) return route.fulfill(envelope(DIMENSIONS));
@@ -144,10 +144,20 @@ await ctx.route(API, (route) => {
     page_size: 20,
   }));
   if (/\/datasets\/DS-E2E\/versions\/4242/.test(url)) return route.fulfill(envelope(VERSION));
-  if (/\/datasets\/DS-E2E\/versions/.test(url)) return route.fulfill(envelope([VERSION]));
+  // T8：三条版本分别处于 构建中 / 构建失败 / 已完成，用于断言版本行的状态与动作
+  if (/\/datasets\/DS-E2E\/versions/.test(url)) return route.fulfill(envelope([
+    VERSION,
+    { ...VERSION, id: 4243, version_no: 'v1.2', build_status: 'failed', build_job_id: 'job_e2e_failed' },
+    { ...VERSION, id: 4244, version_no: 'v1.3', build_status: 'pending', build_job_id: 'job_e2e_building' },
+  ]));
+  if (/\/jobs\/job_e2e/.test(url)) return route.fulfill(envelope({ id: 'job_e2e_building', type: 'dataset_build', status: 'running', progress: 40, result: null, error: null, created_at: null, finished_at: null }));
   if (/\/datasets\/DS-E2E\/lineage/.test(url)) return route.fulfill(envelope([{ type: 'records', label: '原始样本数据', count: 2, items: [] }]));
   if (/\/datasets\/DS-E2E/.test(url)) return route.fulfill(envelope(DATASET));
-  if (/\/datasets/.test(url)) return route.fulfill(envelope([DATASET]));
+  // T9：`?options=1` 是不分页的轻量数组；不带 options 的列表接口回分页对象。
+  // 这里顺便用 `q` 验证"搜索真的走了服务端"：不匹配的关键词回空页。
+  if (/\/datasets\?.*options=1/.test(url)) return route.fulfill(envelope([{ id: DATASET.id, dataset_no: DATASET.dataset_no, name: DATASET.name, task: DATASET.task, status: DATASET.status, sample_count: DATASET.sample_count, weld_count: DATASET.weld_count, progress: DATASET.progress, current_version_id: DATASET.current_version_id, version: DATASET.version, split: DATASET.split }]));
+  if (/\/datasets\?/.test(url) && /q=zzz/.test(url)) return route.fulfill(envelope({ items: [], total: 0, page: 1, page_size: 20 }));
+  if (/\/datasets(\?|$)/.test(url)) return route.fulfill(envelope({ items: [DATASET], total: 1, page: 1, page_size: 20 }));
   // 单条样本详情要先于列表规则匹配：否则详情会拿到分页对象，`record.modalities.join` 直接崩。
   if (/\/welds\/WLD-E2E-0001/.test(url)) return route.fulfill(envelope(RECORD));
   if (/\/welds/.test(url)) return route.fulfill(envelope({ items: [RECORD], total: 1, page: 1, page_size: 20 }));
@@ -170,6 +180,13 @@ try {
   await page.waitForSelector('.dataset-list-row', { timeout: 45_000 });
   const listText = await page.locator('.dataset-list-row').first().innerText();
   check('列表行样本数取 weld_count（2，不是切片数 13）', listText.includes('2') && !listText.includes('13'), true);
+  // T9：列表搜索走服务端（关键词不匹配 → 服务端回空页）+ 分页器存在
+  check('列表有分页器', await page.locator('.pagination').count() > 0, true);
+  await page.locator('.dataset-rule .inline-search input').fill('zzz');
+  await page.waitForTimeout(800);
+  check('搜索走服务端（无匹配时回空态）', await page.locator('.dataset-empty-state').count() > 0, true);
+  await page.locator('.dataset-rule .inline-search input').fill('');
+  await page.waitForSelector('.dataset-list-row', { timeout: 30_000 });
   await page.locator('.dataset-list-row').first().click();
   await page.waitForSelector('.dataset-detail-grid', { timeout: 30_000 });
 
@@ -228,6 +245,21 @@ try {
   await page.getByRole('button', { name: /查看当前数据集版本/ }).click();
   await page.waitForSelector('.dataset-records-table', { timeout: 30_000 });
   check('成员页面包屑含「数据集版本 v1.1」', (await crumbText()).includes('数据集版本 v1.1'), true);
+  // T8：版本列表状态——构建中给状态不给动作、构建失败给「重新构建」
+  await page.getByRole('button', { name: '返回概览' }).click();
+  await page.waitForSelector('.dataset-version-list', { timeout: 30_000 });
+  // 概览是重新挂载的：版本行要等接口回来（容器先于行出现）
+  await waitForStep(page, '.dataset-version:nth-child(3)', '版本行');
+  const versionRows = await page.locator('.dataset-version').allInnerTexts();
+  check('版本行显示「构建中」', versionRows.some((row) => row.includes('构建中')), true);
+  check('版本行显示「构建失败」+ 重新构建', versionRows.some((row) => row.includes('构建失败') && row.includes('重新构建')), true);
+  const buildingRow = page.locator('.dataset-version.building').first();
+  check('构建中的版本行标记为不可进入', await buildingRow.count(), 1);
+  await clickStep(buildingRow, '构建中的版本行');
+  await page.waitForTimeout(600);
+  check('点构建中的版本行不进入切片（仍在概览）', (await page.locator('.dataset-detail-grid').count()), 1);
+  await page.getByRole('button', { name: /查看当前数据集版本/ }).click();
+  await page.waitForSelector('.dataset-records-table', { timeout: 30_000 });
   check('上下文条用统一 class（.context-bar）', await page.locator('.context-bar').count(), 1);
 
   // T5 核对项（自包含场景，重新进入以免依赖上面的视图状态）：
@@ -295,6 +327,8 @@ try {
   const exits = await page.locator('.registration-result-actions button').allInnerTexts();
   check('结果卡给出三个出口', exits.join('/'), '查看这条数据/继续登记下一条/去数据核验');
   check('结果卡显示登记编号', (await page.locator('.registration-result h2').innerText()).includes('REG-E2E-00001'), true);
+  await page.waitForTimeout(800);
+  check('结果卡显示数据集版本构建状态（T8）', (await page.locator('.registration-result').innerText()).includes('构建中'), true);
   await clickStep(page.getByRole('button', { name: '继续登记下一条' }), '继续登记下一条');
   await waitForStep(page, '.locked-dataset', '继续登记后的表单');
   check('继续登记保留数据集上下文且清空样本名称', await page.locator('input[placeholder="输入样本名称（焊缝 / 批次）"]').inputValue(), '');

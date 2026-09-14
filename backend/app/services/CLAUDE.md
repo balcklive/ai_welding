@@ -199,6 +199,17 @@
     写着"样本 1 仍可删"）。数据集阻塞项：仍有登记样本、版本被训练/测试引用；样本阻塞项：已进分段任务、
     已被数据集版本成员引用、已进标注任务（后两条是改造前漏掉的路径，会留下孤儿 `Sample`）。
     `services/welds.py::delete_record` 也改用它（跨域 import，无循环）。
+  - **异步构建状态（T8，2026-09-14）**：`build_status_for_versions(session, version_ids)` 批量取
+    各版本**最新一次**构建任务的状态（`{build_status, build_job_id}`，无任务则不返回该键 = 未构建），
+    `version_payload(version, build)` 与 `dataset_payload(..., build=)` 都带上它；`create_retry_build_task`
+    重建构建任务（**绕过手工闸门**——自动构建本就不经闸门，否则首次失败后无法重试；已有 pending/running
+    则返回它）。`run_build` 末尾有**指针守卫**：只有 `current_version_id is None or version.id > current_version_id`
+    才推进指针与 `sample_count/status/progress`，否则乱序完成的旧任务会把指针拽回去并覆盖统计。
+  - **列表分页与构建性能（T9，2026-09-14）**：`list_datasets(session, q, page, page_size) -> (items, total)`
+    服务端分页 + 名称/编号包含匹配；`dataset_options(session)` 是选择器专用的**轻量全量**列表
+    （D19：数据集是容器、数量随组织结构增长，分页只会让 9 个选择器各自写翻页）。构建路径的归属解析
+    改用 `_RecordResolver`——**一次性预载** weld_id/version/split/annotation 四张映射表后内存解析，
+    取代原先每条样本若干次 `session.get`（几万切片时是几万次往返，实测这是构建最慢的一段）。
   - `get_lineage` = 4 层节点：原始焊缝 / 标注任务 / 数据集版本 / 模型训练。
   - 解析辅助 `_sample_record_id`：样本 → 所属焊缝（meta.record_id > meta.weld_id > split_task/
     annotation_task→version→record），按焊缝分组划分的依据。
