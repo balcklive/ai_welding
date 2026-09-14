@@ -11,6 +11,7 @@ import type {
   DataVersion,
   DatasetBuildTicket,
   DeleteImpact,
+  IngestStatus,
   Page,
   Registration,
   RegistrationForm,
@@ -79,6 +80,23 @@ export async function attachRawFiles(
 /** 登记信息详情。 */
 export async function getRegistration(id: string): Promise<Registration> {
   return request<Registration>(`/registrations/${id}`);
+}
+
+/**
+ * 后端错误码 `40901`「CSV 已存在导入任务」（T4.4）：
+ * 挂载重试时撞上它说明**上一次挂载其实成功了、只是响应丢了**——前端要按"已挂载成功"继续，
+ * 不能把重试当失败卡住（用中文文案匹配太脆，所以走独立错误码）。
+ */
+export const CSV_INGEST_CONFLICT_CODE = 40901;
+
+/** 登记链路状态（T4.4）：等待上传文件 / 导入中 / 导入失败 / 可分析——由后端从已有数据推导。 */
+export async function getIngestStatus(id: string): Promise<IngestStatus> {
+  return request<IngestStatus>(`/registrations/${id}/ingest-status`);
+}
+
+/** 重新导入失败的 CSV（T4.4）：后端清掉 failed 行与其 Job 后重新入队，不必删库。 */
+export async function reimportSignals(id: string): Promise<IngestStatus> {
+  return request<IngestStatus>(`/registrations/${id}/reimport`, { method: 'POST' });
 }
 
 /** 版本链（v1.0~v1.3 + 操作人/时间/动作）。 */

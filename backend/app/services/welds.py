@@ -75,12 +75,108 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "weld_method",
     "material",
     "thickness",
-    "current_voltage",
+    # D7：写入只写新列；`current_voltage` 从白名单移除（旧列仅保留供回滚/回显）
+    "current_a",
+    "voltage_v",
     "sample_rate",
     "wire_feed_speed",
     "welding_speed",
     "dataset_id",
 )
+
+
+#: T4.2 量程（字段名 → 中文名 / 下限 / 上限 / 是否容忍 `mm` 单位后缀）。
+#: 这三个字段在表里仍是 `VARCHAR(32)`（不做迁移），但**写入时归一化成裸数字**，新数据可直接排序比较；
+#: 历史值展示时原样显示。
+NUMBER_RANGES: dict[str, tuple[str, Decimal, Decimal, bool]] = {
+    # 存量实测是 `6mm`，剥单位后必须是 0.1–200
+    "thickness": ("板材厚度", Decimal("0.1"), Decimal("200"), True),
+    "wire_feed_speed": ("送丝速度", Decimal("0"), Decimal("50"), False),
+    "welding_speed": ("焊接速度", Decimal("0"), Decimal("5000"), False),
+}
+
+
+def normalize_number(field: str, value: str) -> str:
+    """T4.2 的"以字符串存的数字"字段（厚度 / 送丝速度 / 焊接速度）→ 裸数字字符串。
+
+    越界或解析不出直接 `ValueError`（请求体的 Pydantic 校验器会把它变成 422 字段级错误）。
+    """
+    label, low, high, allow_mm = NUMBER_RANGES[field]
+    pattern = r"^\s*(\d+(?:\.\d+)?)\s*(?:mm|MM|毫米)?\s*$" if allow_mm else r"^\s*(\d+(?:\.\d+)?)\s*$"
+    match = re.match(pattern, str(value or ""))
+    if not match:
+        raise ValueError(f"{label}需为数字（{low:g}–{high:g}）")
+    number = Decimal(match.group(1))
+    if number < low or number > high:
+        raise ValueError(f"{label}需在 {low:g}–{high:g} 之间")
+    return str(number)
+
+
+def _normalized_or_none(field: str, value: str | None) -> str | None:
+    return None if value is None else normalize_number(field, value)
+
+
+def normalize_fields(data: dict) -> dict:
+    """T4.2 的**归一化入口**（新建 / 编辑共用）：把厚度、送丝速度、焊接速度落库前统一成裸数字。
+
+    量程校验在请求体里已做（Pydantic → 422 字段级错误），这里只负责改写入形态，顺带兜住
+    服务层的直接调用方（脚本 / 测试）。
+    """
+    normalized = dict(data)
+    for field in NUMBER_RANGES:
+        if normalized.get(field):
+            normalized[field] = normalize_number(field, normalized[field])
+    return normalized
+
+
+def parse_current_voltage(value: str | None) -> tuple[Decimal | None, Decimal | None]:
+    """`current_voltage`（`180 A / 22 V`、`180A/22V`、`180/22`、`180`）→ `(current_a, voltage_v)`。
+
+    与迁移 `0017` 的回填同一套规则：D7 之后写入只写新列，但**旧客户端的兼容请求**与**历史数据**
+    仍会用这个函数解析一次。
+    """
+    if not value:
+        return None, None
+    match = _CURRENT_VOLTAGE_PATTERN.match(str(value))
+    if not match:
+        return None, None
+    current = Decimal(match.group(1))
+    voltage = Decimal(match.group(2)) if match.group(2) else None
+    return current, voltage
+
+
+_CURRENT_VOLTAGE_PATTERN = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*[aA]?\s*(?:/\s*(\d+(?:\.\d+)?)\s*[vV]?\s*)?$"
+)
+
+
+def _resolve_current_voltage(data: dict) -> tuple[Decimal | None, Decimal | None]:
+    """写入用的 `(current_a, voltage_v)`：新列优先；只给旧列（兼容请求）时解析一次。"""
+    if data.get("current_a") is not None or data.get("voltage_v") is not None:
+        return data.get("current_a"), data.get("voltage_v")
+    return parse_current_voltage(data.get("current_voltage"))
+
+
+def format_current_voltage(current_a: Decimal | float | None, voltage_v: Decimal | float | None) -> str | None:
+    """`(current_a, voltage_v)` → 旧列 `current_voltage` 的字符串形态（`180 A / 22 V`）。
+
+    `parse_current_voltage` 的逆运算，供**旧客户端**读取过渡期使用；迁移 `0017.downgrade` 的反填
+    用的是同一套拼法（那里刻意留了独立副本，迁移不 import 应用代码）。
+    """
+    def _fmt(value) -> str | None:
+        if value is None:
+            return None
+        number = float(value)
+        return str(int(number)) if number.is_integer() else str(number)
+
+    current, voltage = _fmt(current_a), _fmt(voltage_v)
+    if current is None and voltage is None:
+        return None
+    if current is None:
+        return f"? A / {voltage} V"
+    if voltage is None:
+        return f"{current} A"
+    return f"{current} A / {voltage} V"
 
 
 class WeldDeleteConflict(ValueError):
@@ -190,8 +286,24 @@ def next_version_no(session: Session, record_id: int) -> str:
 # ── 登记 ─────────────────────────────────────────────────────────────
 
 
+def _canonical_number(value) -> str | None:
+    """数字字段的规范写法（`180` 与 `180.0` 必须得到同一个幂等键——R6）。"""
+    if value is None or value == "":
+        return None
+    try:
+        return str(Decimal(str(value)).normalize())
+    except InvalidOperation:
+        return str(value)
+
+
 def registration_request_key(data: dict, operator: str) -> str:
-    """登记自然幂等键：同 operator + 同表单载荷视为同一次提交。"""
+    """登记自然幂等键：同 operator + 同表单载荷视为同一次提交。
+
+    载荷里**不再包含旧列** `current_voltage`（D7：写入只写新列），电流电压取**解析后的新值**再按
+    规范数字比对——这样 `180` / `180.0` / `180A/22V` 三种写法会得到同一个键（否则同值不同表述会
+    重复登记，`current_voltage` 还可能因缺项而让两次不同的提交撞成一个键）。
+    """
+    current_a, voltage_v = _resolve_current_voltage(data)
     payload = {
         "source": (data.get("source") or "").strip(),
         "collected_at": _iso_utc(_as_utc(data.get("collected_at"))),
@@ -200,11 +312,12 @@ def registration_request_key(data: dict, operator: str) -> str:
         "machine": data.get("machine"),
         "weld_method": data.get("weld_method"),
         "material": data.get("material"),
-        "thickness": data.get("thickness"),
-        "current_voltage": data.get("current_voltage"),
+        "thickness": _canonical_number(data.get("thickness")),
+        "current_a": _canonical_number(current_a),
+        "voltage_v": _canonical_number(voltage_v),
         "sample_rate": data.get("sample_rate"),
-        "wire_feed_speed": data.get("wire_feed_speed"),
-        "welding_speed": data.get("welding_speed"),
+        "wire_feed_speed": _canonical_number(data.get("wire_feed_speed")),
+        "welding_speed": _canonical_number(data.get("welding_speed")),
         "operator": operator,
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -314,6 +427,11 @@ def create_registration(
     now = datetime.now(timezone.utc)
     collected_at = _as_utc(data.get("collected_at"))
     day = _seq_date(collected_at)
+    # D7：**写入只写新列**（旧列在过渡期只读，回滚靠 `0017.downgrade` 反向回填）。请求只给旧字段
+    # （旧客户端/历史脚本）时按 `180 A / 22 V` 解析一次；厚度/速度剥单位归一化成裸数字——量程已在
+    # 请求体里校验过（R6 的"统一入口"），这里只落库形态。
+    current_a, voltage_v = _resolve_current_voltage(data)
+    normalized_thickness = _normalized_or_none("thickness", data.get("thickness"))
 
     record = DataRecord(
         weld_id=next_weld_id(session, day),
@@ -324,8 +442,11 @@ def create_registration(
         machine=data.get("machine"),
         weld_method=data.get("weld_method"),
         material=data.get("material"),
-        thickness=data.get("thickness"),
-        current_voltage=data.get("current_voltage"),
+        thickness=normalized_thickness,
+        # 旧列在过渡期只读（不双写：两列不一致时"谁是权威"没有答案）
+        current_voltage=None,
+        current_a=current_a,
+        voltage_v=voltage_v,
         sample_rate=data.get("sample_rate"),
         wire_feed_speed=data.get("wire_feed_speed"),
         welding_speed=data.get("welding_speed"),
@@ -358,7 +479,16 @@ def create_registration(
 
 
 def update_registration(session: Session, record: DataRecord, data: dict) -> DataRecord:
-    """PATCH 登记可编辑字段（白名单内；None 跳过，保留原值）。调用方 commit。"""
+    """PATCH 登记可编辑字段（白名单内；None 跳过，保留原值）。调用方 commit。
+
+    归一化（`normalize_fields`）与旧列兼容解析（`_resolve_current_voltage`）与新建**走同一套**；
+    `current_voltage` 不在白名单里，只会经由兼容解析写进新列，不会回写旧列。量程校验由请求体
+    （`RegistrationUpdate`）负责——这里的兼容路径同样过它，只是解析动作在服务层再做一次。
+    """
+    data = normalize_fields(data)
+    if data.get("current_voltage") and data.get("current_a") is None and data.get("voltage_v") is None:
+        parsed_current, parsed_voltage = parse_current_voltage(data["current_voltage"])
+        data = {**data, "current_a": parsed_current, "voltage_v": parsed_voltage}
     for field in EDITABLE_FIELDS:
         if field not in data or data[field] is None:
             continue
@@ -784,6 +914,22 @@ def _valid_key(key: str) -> bool:
     return bool(re.fullmatch(r"[\w./\-]+", key))
 
 
+def _record_current_voltage(record: DataRecord | None) -> tuple[float | None, float | None]:
+    """登记的电流 / 电压（T4b）：**新列优先，旧列解析回退**。"""
+    if record is None:
+        return None, None
+    if record.current_a is not None or record.voltage_v is not None:
+        return (
+            float(record.current_a) if record.current_a is not None else None,
+            float(record.voltage_v) if record.voltage_v is not None else None,
+        )
+    parsed_current, parsed_voltage = parse_current_voltage(record.current_voltage)
+    return (
+        float(parsed_current) if parsed_current is not None else None,
+        float(parsed_voltage) if parsed_voltage is not None else None,
+    )
+
+
 def _evaluate_rules(keys: list[str], record: DataRecord | None) -> list[dict]:
     """15 项规则确定性评估：返回 `[{status, message}]`，与 `VALIDATION_RULES` 顺序一致。
 
@@ -841,15 +987,26 @@ def _evaluate_rules(keys: list[str], record: DataRecord | None) -> list[dict]:
     else:
         rules.append(failed("未关联文件，缺少起收弧事件信息"))
 
-    if has_ts:
-        rules.append(passed("电流范围合理"))
+    # T4b/D7：这两条规则原来看的是"有没有时序文件"（名不副实——只要传了 CSV 就算通过）。
+    # 现在改读**登记值**：新列优先，只有旧列（历史数据）时解析一次，两列都空才算"缺少数据"。
+    current_a, voltage_v = _record_current_voltage(record)
+    if current_a is not None:
+        rules.append(
+            passed(f"电流范围合理（{current_a:g} A）")
+            if 1 <= current_a <= 2000
+            else failed(f"电流超出合理范围（{current_a:g} A，应为 1–2000 A）")
+        )
     elif has_files:
         rules.append(warning("缺少电流数据，无法核验范围"))
     else:
         rules.append(failed("未关联文件，缺少电流数据"))
 
-    if has_ts:
-        rules.append(passed("电压范围合理"))
+    if voltage_v is not None:
+        rules.append(
+            passed(f"电压范围合理（{voltage_v:g} V）")
+            if 1 <= voltage_v <= 200
+            else failed(f"电压超出合理范围（{voltage_v:g} V，应为 1–200 V）")
+        )
     elif has_files:
         rules.append(warning("缺少电压数据，无法核验范围"))
     else:
@@ -926,7 +1083,11 @@ def _record_dict(record: DataRecord, latest: DataVersion | None) -> dict:
         "weld_method": record.weld_method,
         "material": record.material,
         "thickness": record.thickness,
-        "current_voltage": record.current_voltage,
+        # 过渡期双出口：新列是权威；旧列给**旧客户端**用（历史行原样输出，新登记的行按新列拼回来，
+        # 否则老前端在"写入只写新列"之后会看到空白）。拼法与迁移 `0017.downgrade` 的反填一致。
+        "current_voltage": record.current_voltage or format_current_voltage(record.current_a, record.voltage_v),
+        "current_a": float(record.current_a) if record.current_a is not None else None,
+        "voltage_v": float(record.voltage_v) if record.voltage_v is not None else None,
         "sample_rate": record.sample_rate,
         "wire_feed_speed": record.wire_feed_speed,
         "welding_speed": record.welding_speed,

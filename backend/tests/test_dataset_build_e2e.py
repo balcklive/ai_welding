@@ -163,6 +163,12 @@ def api(db, request):
     app.dependency_overrides[get_current_user] = lambda: User(
         id=1, username="e2e", password_hash="x", display_name="E2E", role="admin"
     )
+    # T4.2：焊机型号 / 焊接方法必须落在系统设置字典里（生产由 `seed_reference_data` 出厂初始化），
+    # 测试库同样要有一个字典，否则登记会被 400 挡掉。
+    from app.core.seed import seed_reference_data
+
+    seed_reference_data(db)
+    db.commit()
     yield client
     app.dependency_overrides.pop(get_session, None)
     app.dependency_overrides.pop(get_current_user, None)
@@ -190,11 +196,14 @@ def _register(api, dataset_id: int, weld_name: str, sample_rate: str = "2 kHz") 
                 "source": "E2E 产线",
                 "collected_at": "2026-09-01T10:00:00",
                 "weld_name": weld_name,
-                "machine": "E2E 焊机",
+                # T4.2：这两个字段必须命中系统设置字典（见 `api` fixture 的 seed）
+                "machine": "Fronius CMT",
                 "weld_method": "MAG焊",
                 "material": "Q235",
                 "thickness": "6mm",
-                "current_voltage": "180A/22V",
+                # T4b/D7：登记体改为拆分后的新字段（量程校验：电流 1–2000A、电压 1–200V）
+                "current_a": 180,
+                "voltage_v": 22,
                 "sample_rate": sample_rate,
             },
         )
@@ -762,3 +771,90 @@ def test_partial_feature_extraction_writes_no_version(api, db, storage, run_job,
 
     versions = _ok(api.get(f"{API}/welds/{record['weld_id']}/versions"))
     assert not any(v["action"] == "特征提取" for v in versions), [v["action"] for v in versions]
+
+
+# ── 场景：登记链路的可恢复状态（T4.4 / R2）────────────────────────────
+
+
+def test_ingest_status_walks_upload_import_ready(api, db, storage, run_job):
+    """待上传 → 导入中 → 可分析：状态全部由后端从已有数据推导，刷新/换设备看到的都一样。"""
+    dataset_id = _create_dataset(api, "E2E 状态数据集", "时序分类")
+    record = _register(api, dataset_id, "E2E 状态样本")
+
+    # 登记刚建好：v1.0 还没有文件
+    state = _ok(api.get(f"{API}/registrations/{record['id']}/ingest-status"))
+    assert state["status"] == "awaiting_upload", state
+    assert state["uploaded_files"] == 0
+
+    # 挂载 CSV（挂载会自动建 signal_ingest 任务，但执行器还没跑）→ 导入中
+    storage.put("raw/e2e-status.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-status.csv"])
+    state = _ok(api.get(f"{API}/registrations/{record['id']}/ingest-status"))
+    assert state["status"] == "importing", state
+    assert state["csv_total"] == 1
+
+    # 执行导入 → 可分析
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+    state = _ok(api.get(f"{API}/registrations/{record['id']}/ingest-status"))
+    assert state["status"] == "ready", state
+    assert state["csv_failed"] == []
+
+
+def test_attach_existing_csv_returns_dedicated_conflict_code(api, db, storage):
+    """重复挂载同一个 CSV → 409 且带**独立错误码** 40901。
+
+    前端据此判定"上一次挂载其实成功了、只是响应丢了"，继续进导入态而不是卡在失败
+    （按中文文案匹配太脆，所以走错误码）。
+    """
+    dataset_id = _create_dataset(api, "E2E 重复挂载", "时序分类")
+    record = _register(api, dataset_id, "E2E 重复挂载样本")
+    storage.put("raw/e2e-dup.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-dup.csv"])
+
+    second = api.post(
+        f"{API}/registrations/{record['id']}/raw-files",
+        json={"object_keys": ["raw/e2e-dup.csv"], "storage_bytes": 4096},
+    )
+    assert second.status_code == 409, second.json()
+    assert second.json()["code"] == 40901, second.json()
+
+
+def test_reimport_requeues_failed_ingest(api, db, storage, run_job):
+    """导入失败 → 状态 failed 且给出失败文件 → 「重新导入」清掉 failed 行重新入队 → 可分析。
+
+    这是线上踩过的坑：`signal_ingests` 对 (version_id, source_object_key) 唯一，失败行也会被
+    挂载接口的 409 拦掉，于是那个文件**永远卡住**（旧代码解析不了、新代码能解析也一样）。
+    """
+    dataset_id = _create_dataset(api, "E2E 重新导入", "时序分类")
+    record = _register(api, dataset_id, "E2E 重新导入样本")
+    # 内容不是合法时序：导入必然失败（第一次执行器跑出来的就是 failed 行）
+    storage.put("raw/e2e-bad.csv", b"not,a,signal\n\x00\x01\x02")
+    _attach(api, record["id"], ["raw/e2e-bad.csv"])
+    failed = _run(db, run_job, _latest_job_uid(db, "signal_ingest"))
+    assert failed.status == "failed", failed.result
+
+    state = _ok(api.get(f"{API}/registrations/{record['id']}/ingest-status"))
+    assert state["status"] == "failed", state
+    assert [item["source_object_key"] for item in state["csv_failed"]] == ["raw/e2e-bad.csv"]
+
+    # 换成能被解析的内容（模拟"旧代码失败的导入，新代码能解析"），再点重新导入
+    storage.put("raw/e2e-bad.csv", synthetic_signal_csv())
+    state = _ok(api.post(f"{API}/registrations/{record['id']}/reimport"))
+    assert state["status"] == "importing", state
+    assert state["csv_failed"] == []
+
+    # 重新入队的是**新**任务（旧 job 与其 failed 行已清掉）
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+    assert _ok(api.get(f"{API}/registrations/{record['id']}/ingest-status"))["status"] == "ready"
+
+
+def test_reimport_without_failed_rows_is_rejected(api, db, storage, run_job):
+    """没有失败文件时不该清库：明确 400，别让用户以为"点了就好"。"""
+    dataset_id = _create_dataset(api, "E2E 无失败", "时序分类")
+    record = _register(api, dataset_id, "E2E 无失败样本")
+    storage.put("raw/e2e-ok.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-ok.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    response = api.post(f"{API}/registrations/{record['id']}/reimport")
+    assert response.status_code == 400, response.json()

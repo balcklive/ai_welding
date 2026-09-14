@@ -44,7 +44,11 @@ class DataRecord(SQLModel, table=True):
     weld_method: str | None = Field(default=None, max_length=32)
     material: str | None = Field(default=None, max_length=64)
     thickness: str | None = Field(default=None, max_length=32)
+    #: 旧列（D7 起拆分为下面两列）：过渡期保留——读取时新列为 NULL 才回落解析它，回滚也靠它。
     current_voltage: str | None = Field(default=None, max_length=32)
+    #: D7：电流（A）/ 电压（V）拆列。迁移 `0017` 从 `current_voltage` 解析回填。
+    current_a: Decimal | None = Field(default=None, sa_column=Column(Numeric(8, 2)))
+    voltage_v: Decimal | None = Field(default=None, sa_column=Column(Numeric(8, 2)))
     sample_rate: str | None = Field(default=None, max_length=32)
     # 单值工艺参数（可登记表单录入；标准 CSV 导入后按稳态中位数自动回填）。
     wire_feed_speed: str | None = Field(default=None, max_length=32)

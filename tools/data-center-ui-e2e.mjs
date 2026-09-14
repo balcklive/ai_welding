@@ -117,6 +117,21 @@ const clickStep = async (locator, label) => {
   }
 };
 
+//: 登记提交的真实请求体（T4b：断言拆列后的新字段与类型，而不是只看界面渲染）
+let registrationBody = null;
+//: 是否点过「重新导入」（T4.4）
+let reimported = false;
+
+/** 登记链路状态的桩（T4.4）：默认回 `failed`，好断言"失败时可重新导入"这条路。 */
+const INGEST_STATE = (status, failedKeys) => ({
+  registration_no: 'REG-E2E-00001',
+  weld_id: 'WLD-E2E-0001',
+  status,
+  uploaded_files: 1,
+  csv_total: 1,
+  csv_failed: failedKeys.map((key) => ({ source_object_key: key, message: '信号列不完整' })),
+});
+
 const browser = await chromium.launch();
 const ctx = await browser.newContext();
 await ctx.addInitScript(() => localStorage.setItem('token', 'data-center-ui-e2e'));
@@ -133,8 +148,14 @@ await ctx.route(API, (route) => {
     { key: 'product', label: '产品信息', description: '', color: null, free_text: true, items: [] },
   ] }));
   if (method === 'POST' && /\/registrations\/[^/]+\/raw-files/.test(url)) return route.fulfill(envelope({ id: 4242, version_no: 'v1.0', object_keys: ['raw/e2e-signal.csv'], dataset_build: { dataset_version_id: 4244, version_no: 'v1.3', job_id: 'job_e2e_building' } }));
-  if (method === 'POST' && /\/registrations$/.test(url)) return route.fulfill(envelope({ id: 1, weld_id: 'WLD-E2E-0001', registration_no: 'REG-E2E-00001' }));
+  if (method === 'POST' && /\/registrations$/.test(url)) {
+    registrationBody = route.request().postDataJSON();
+    return route.fulfill(envelope({ id: 1, weld_id: 'WLD-E2E-0001', registration_no: 'REG-E2E-00001' }));
+  }
   if (/\/files\/presign-upload/.test(url)) return route.fulfill(envelope({ object_key: 'raw/e2e-signal.csv', upload_url: 'https://fake.local/put' }));
+  // T4.4：登记链路状态——第一次 `importing`（结果卡显示"导入中…"），点重新导入后回 `ready`
+  if (/\/registrations\/[^/]+\/reimport/.test(url)) { reimported = true; return route.fulfill(envelope(INGEST_STATE('ready', []))); }
+  if (/\/registrations\/[^/]+\/ingest-status/.test(url)) return route.fulfill(envelope(reimported ? INGEST_STATE('ready', []) : INGEST_STATE('failed', ['raw/e2e-signal.csv'])));
   if (/\/datasets\/DS-E2E\/dimensions/.test(url)) return route.fulfill(envelope(DIMENSIONS));
   // 成员表要有行才会渲染表格（空成员时是空态）——这里给 1 条，好断言表头契约。
   if (/\/datasets\/DS-E2E\/versions\/4242\/items/.test(url)) return route.fulfill(envelope({
@@ -166,6 +187,14 @@ await ctx.route(API, (route) => {
   if (/\/jobs\/job_align_e2e/.test(url)) return route.fulfill(envelope({ id: 'job_align_e2e', type: 'alignment', status: 'succeeded', progress: 100, result: { events: { arc: 0.2, weld_segment: [0, 83], tail: 82.9 }, event_source: 'real', tracks: [{ channel: 'video', modality: 'video', availability: 'available', aligned: true, metadata: { fps: 25, duration: 83 } }], assets: [] }, error: null, created_at: null, finished_at: null }));
   // 单条样本详情要先于列表规则匹配：否则详情会拿到分页对象，`record.modalities.join` 直接崩。
   if (/\/welds\/WLD-E2E-0001/.test(url)) return route.fulfill(envelope(RECORD));
+  // R5：选择器的 `/welds` 是**服务端分页**的——25 条样本分两页，第 51 条之后也必须选得到。
+  // 第 1 页塞进 RECORD（顶部选择器的既有断言要用它），其余用合成行补齐。
+  if (/\/welds\?/.test(url)) {
+    const page = Number(new URL(url).searchParams.get('page') ?? 1);
+    const synth = (i) => ({ ...RECORD, weld_id: `WLD-E2E-${1000 + i}`, weld_name: `合成样本 ${i}`, latest_version_id: null, latest_version: null });
+    const items = page === 1 ? [RECORD, ...Array.from({ length: 19 }, (_, i) => synth(i))] : Array.from({ length: 5 }, (_, i) => synth(19 + i));
+    return route.fulfill(envelope({ items, total: 25, page, page_size: 20 }));
+  }
   if (/\/welds/.test(url)) return route.fulfill(envelope({ items: [RECORD], total: 1, page: 1, page_size: 20 }));
   return route.fulfill(envelope([]));
 });
@@ -325,16 +354,34 @@ try {
   // 填完必填项 → 提交 → 必须先弹"默认值确认"
   await page.locator('input[placeholder="例如：产线相机 · 03号"]').fill('E2E 产线');
   await page.locator('input[placeholder="输入样本名称（焊缝 / 批次）"]').fill('E2E 样本');
+  // T4b/R1：电流与电压是**两个独立输入框**（各自带单位），不再是"180 A / 22 V"一格
+  check('电流与电压是拆开的两个输入框', await page.locator('input[placeholder="例如：180"]').count() + await page.locator('input[placeholder="例如：22"]').count(), 2);
+  await page.locator('input[placeholder="例如：Q235B"]').fill('Q235');
+  await page.locator('input[placeholder="例如：6"]').fill('6');
+  await page.locator('input[placeholder="例如：180"]').fill('180');
+  await page.locator('input[placeholder="例如：22"]').fill('22');
   await clickStep(page.locator('.form-panel .full-button'), '登记数据');
   await waitForStep(page, '.app-dialog', '默认值汇总确认弹窗');
   check('提交前弹出默认值确认（列出仍是默认值的字段）', (await page.locator('.dialog-items li').count()) > 0, true);
   await clickStep(page.getByRole('button', { name: '确认无误，提交' }), '确认无误，提交');
+  // T4b：提交载荷必须是拆列后的新字段（数字）——旧字段不再出现
+  check('登记载荷带 current_a = 180（数字）', registrationBody?.current_a, 180);
+  check('登记载荷带 voltage_v = 22（数字）', registrationBody?.voltage_v, 22);
+  check('登记载荷厚度剥掉单位', registrationBody?.thickness, '6');
+  check('登记载荷不再带旧的 current_voltage', 'current_voltage' in (registrationBody ?? {}), false);
   await waitForStep(page, '.registration-result', '登记结果卡');
   const exits = await page.locator('.registration-result-actions button').allInnerTexts();
   check('结果卡给出三个出口', exits.join('/'), '查看这条数据/继续登记下一条/去数据核验');
   check('结果卡显示登记编号', (await page.locator('.registration-result h2').innerText()).includes('REG-E2E-00001'), true);
   await page.waitForTimeout(800);
   check('结果卡显示数据集版本构建状态（T8）', (await page.locator('.registration-result').innerText()).includes('构建中'), true);
+  // T4.4：结果卡给出**信号导入**状态（与"登记成功"是两件事），失败时能重新导入
+  check('结果卡显示信号导入状态', (await page.locator('.registration-result').innerText()).includes('导入失败'), true);
+  check('导入失败时列出失败文件与原因', (await page.locator('.registration-result').innerText()).includes('raw/e2e-signal.csv'), true);
+  await clickStep(page.getByRole('button', { name: '重新导入' }), '重新导入');
+  await page.waitForTimeout(600);
+  check('点「重新导入」调用了后端 reimport 接口', reimported, true);
+  check('重新导入后状态回到可分析', (await page.locator('.registration-result').innerText()).includes('可分析'), true);
   await clickStep(page.getByRole('button', { name: '继续登记下一条' }), '继续登记下一条');
   await waitForStep(page, '.locked-dataset', '继续登记后的表单');
   check('继续登记保留数据集上下文且清空样本名称', await page.locator('input[placeholder="输入样本名称（焊缝 / 批次）"]').inputValue(), '');

@@ -57,6 +57,22 @@ export interface DataVersion {
   created_at: string | null;
 }
 
+/**
+ * 登记链路状态（T4.4）：由后端从已有数据推导（不新增表），刷新/换设备后看到的是同一个真相。
+ * 「登记成功」≠「导入完成」——`ready` 才代表核验/分析能读到真实信号。
+ */
+export interface IngestStatus {
+  registration_no: string;
+  weld_id: string;
+  status: 'awaiting_upload' | 'importing' | 'failed' | 'ready';
+  /** 已挂到 v1.0 的对象键数量（0 = 还没上传过文件）。 */
+  uploaded_files: number;
+  /** 本次登记的 CSV 导入任务总数（0 = 没有 CSV 需要导入，此时 `ready` 即"可分析"）。 */
+  csv_total: number;
+  /** 导入失败的 CSV 与原因（`reimportSignals` 的输入）。 */
+  csv_failed: { source_object_key: string; message?: string | null }[];
+}
+
 export interface DataRecord {
   id: number;
   weld_id: string;
@@ -68,7 +84,11 @@ export interface DataRecord {
   weld_method: string | null;
   material: string | null;
   thickness: string | null;
+  /** D7 之前的老列（`180 A / 22 V`）：过渡期仍返回，供历史数据回显；写入只写下面两列。 */
   current_voltage: string | null;
+  /** D7：电流（A）/ 电压（V）拆列（迁移 0017 从 `current_voltage` 解析回填）。 */
+  current_a?: number | null;
+  voltage_v?: number | null;
   sample_rate: string | null;
   /** 单值工艺参数：送丝速度 / 焊接速度（登记可填；标准 CSV 导入后按稳态中位数回填）。 */
   wire_feed_speed: string | null;
@@ -356,6 +376,12 @@ export interface DatasetVersion {
   snapshot_id: string | null;
   quality: DatasetQuality | null;
   created_at: string | null;
+  /**
+   * 该版本的标注是否已冻结（T16.1 / R4）：`true` = 成员行带构建时的标注快照，训练输入不随
+   * 以后改标注而变；`false` = 历史版本（T16 之前构建），训练只能现查当前标注；`null` = 空版本。
+   * 只在**版本详情**接口返回（列表不查，避免逐版本多一次查询）。
+   */
+  annotations_frozen?: boolean | null;
 }
 
 export interface DatasetItem {
@@ -691,6 +717,10 @@ export interface RegistrationForm {
   weld_method?: string | null;
   material?: string | null;
   thickness?: string | null;
+  /** D7：电流（A）/ 电压（V）——表单里是字符串，提交时转成数字（后端量程 1–2000 / 1–200）。 */
+  current_a?: number | string | null;
+  voltage_v?: number | string | null;
+  /** 旧字段：后端仅作兼容解析，前端不再使用（保留以免历史调用点类型报错）。 */
   current_voltage?: string | null;
   sample_rate?: string | null;
   wire_feed_speed?: string | null;

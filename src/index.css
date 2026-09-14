@@ -599,6 +599,17 @@ button { border: 0; cursor: pointer; }
 .registration-result p { margin:0; color:#8ba2a2; font-size:11px; }
 .registration-result-actions { display:flex; justify-content:center; gap:10px; flex-wrap:wrap; }
 
+/* T4.4：登记链路状态（导入 / 构建）与失败恢复——「登记成功」不等于「导入完成」。 */
+.registration-states { display:grid; gap:8px; justify-items:center; }
+.registration-state { display:flex; align-items:center; gap:8px; }
+.registration-state strong { color:#4d7a76; font-size:11px; }
+.registration-state-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:center; }
+.registration-error { display:grid; gap:8px; margin-top:12px; padding:12px 14px; color:#9a4a44; background:#fdf3f2; border:1px solid #f0d3d0; border-radius:8px; font-size:11px; }
+.registration-error-hint { color:#8ba2a2; font-size:10px; }
+.registration-error-actions { display:flex; gap:8px; flex-wrap:wrap; }
+/* fieldset 只承担「提交期间禁用表单」的语义，不参与布局（否则会打断 .form-grid 的栅格）。 */
+.form-fieldset { display:contents; border:0; margin:0; padding:0; min-width:0; }
+
 /* T5 守卫：页面需要数据上下文但当前没选时，顶部选择器置为强调态；点"在本页选择数据"时闪一下。 */
 .selection-switcher.needs-attention { border-color:#e8c67e; background:#fffaf0; box-shadow:0 0 0 3px rgba(240,201,106,.18); }
 .selection-switcher.field-flash { animation:field-flash 1s ease; }

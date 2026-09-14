@@ -115,7 +115,17 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _validation_error(
         request: Request, exc: RequestValidationError
     ) -> object:
-        return err(42200, "参数校验失败", detail=exc.errors(), status=422)
+        # `exc.errors()` 的 `ctx` 里带着原始异常对象（自定义校验器抛 `ValueError` 时是 `ValueError`
+        # 实例），直接序列化会 500。只留前端真正消费的 `loc` / `msg`（T3.1 的错误态只用这两项）。
+        detail = [
+            {
+                "loc": list(item.get("loc", [])),
+                "msg": str(item.get("msg", "")),
+                "type": str(item.get("type", "")),
+            }
+            for item in exc.errors()
+        ]
+        return err(42200, "参数校验失败", detail=detail, status=422)
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException) -> object:
