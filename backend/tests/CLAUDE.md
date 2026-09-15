@@ -63,6 +63,7 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
   `annotations.category` 引用 → 软删 `mode=deactivated` 且历史值保留）；
   `label_category` 落在 `label_categories` 表（不搬家）+ `GET /label-categories` 带 `active` +
   **AI 预标注只抽启用类别**；写操作非管理员 403（40300）、未登录读 401（40100）。
+- `test_dashboard_transition.py`（**2026-09-15 / S2**，内存 SQLite 直接调 `services.dashboard`）：总览「过渡类型」映射回归——已知焊法（MAG焊=短路过渡 / 埋弧焊=脉冲过渡）按映射归位；登记页放开自定义输入后，映射表外的焊法（如「激光-电弧复合焊」）统一计入 `UNKNOWN_TRANSITION = "未分类"`，**不再被静默算成「脉冲过渡」**（旧兜底会给出看起来正常、实则错误的结论），且原始焊法仍出现在 `welding_types`（不丢原文）。
 
 ## 坑/限制
 

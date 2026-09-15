@@ -23,7 +23,11 @@ type UploadZoneKey = 'csv' | 'image' | 'video' | 'audio';
 // T3.2/T3.3：`FALLBACK_OPTIONS` 已删除——可选项字典（系统设置）是唯一来源，
 // 拉取失败就走错误态 + 重试并禁止提交，不再用硬编码值顶替（顶替会写入现场不存在的型号）。
 
-//: 数据来源 / 产品信息的候选值走 <datalist>（保留自由填写），id 需全局唯一。
+//: 候选值走 <datalist> 的字段（保留自由填写），id 需全局唯一。
+//: S2：焊机型号 / 焊接方法也从「严格下拉」改为「下拉候选 + 可自定义输入」——
+//: 预置清单不足时不再卡住现场录入；新值原样入库，界面给「新值」提示引导补进候选。
+const MACHINE_LIST_ID = 'registration-machine-options';
+const WELD_METHOD_LIST_ID = 'registration-weld-method-options';
 const SOURCE_LIST_ID = 'registration-source-options';
 const PRODUCT_LIST_ID = 'registration-product-options';
 
@@ -175,6 +179,8 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
   const [reimporting, setReimporting] = useState(false);
   // 下拉候选 = 字典启用项；当前值若已被停用/改名，仍补进候选，保证老数据可正常回显与提交。
   const withCurrent = (values: string[], current?: string | null) => (current && !values.includes(current) ? [current, ...values] : values);
+  // S2：候选之外的**自定义值**——照原样提交，但要显式提示"这是新值"，避免用户以为填错了。
+  const isCustomValue = (values: string[], current?: string | null) => !!current?.trim() && !values.includes(current);
   // 各上传区的 file input 引用（ref 回调写进同一对象）。
   const fileRefs = useRef<Partial<Record<UploadZoneKey, HTMLInputElement | null>>>({});
   // 部分失败重试时复用已生成的登记，避免重复登记：登记成功即记入 regRef。
@@ -531,13 +537,13 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
         </div>
         <div className="form-section-title"><span>采集与工艺参数</span><i /></div>
         <div className="form-grid">
-          <label>焊机型号{defaultValues.machine && <em className="default-mark">默认</em>}<select value={form.machine ?? ''} onChange={setField('machine')}><option value="">请选择焊机型号</option>{withCurrent(optionValues.machine, form.machine).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-          <label>焊接方法{defaultValues.weld_method && <em className="default-mark">默认</em>}<select value={form.weld_method ?? ''} onChange={setField('weld_method')}><option value="">请选择焊接方法</option>{withCurrent(optionValues.weld_method, form.weld_method).map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
-          <label>板材材质{defaultValues.material && <em className="default-mark">默认</em>}<input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label>
-          <label className={flash.thickness ? 'field-flash' : undefined}>板材厚度（mm）<span className="required-mark"> *</span>{defaultValues.thickness && <em className="default-mark">默认</em>}<input inputMode="decimal" placeholder="例如：6" value={String(form.thickness ?? '')} onChange={setField('thickness')} /></label>
-          <label className={flash.current_a ? 'field-flash' : undefined}>电流（A）<span className="required-mark"> *</span>{defaultValues.current_a && <em className="default-mark">默认</em>}<input inputMode="decimal" placeholder="例如：180" value={String(form.current_a ?? '')} onChange={setField('current_a')} /></label>
-          <label className={flash.voltage_v ? 'field-flash' : undefined}>电压（V）<span className="required-mark"> *</span>{defaultValues.voltage_v && <em className="default-mark">默认</em>}<input inputMode="decimal" placeholder="例如：22" value={String(form.voltage_v ?? '')} onChange={setField('voltage_v')} /></label>
-          <label className={flash.sample_rate ? 'field-flash' : undefined}>采样频率<span className="required-mark"> *</span>{defaultValues.sample_rate && <em className="default-mark">默认</em>}<input placeholder="10 kHz" value={String(form.sample_rate ?? '')} onChange={setField('sample_rate')} /></label>
+          <label className={flash.machine ? 'field-flash' : undefined}><span>焊机型号<span className="required-mark"> *</span>{defaultValues.machine && <em className="default-mark">默认</em>}</span><input list={MACHINE_LIST_ID} placeholder="选择或填写焊机型号" value={form.machine ?? ''} onChange={setField('machine')} /><datalist id={MACHINE_LIST_ID}>{withCurrent(optionValues.machine, form.machine).map((value) => <option key={value} value={value} />)}</datalist>{isCustomValue(optionValues.machine, form.machine) && <small className="custom-value-hint">新值：不在候选中，将按填写内容原样保存（可在「系统设置 → 数据厂家 / 焊机型号」补充为候选）</small>}</label>
+          <label className={flash.weld_method ? 'field-flash' : undefined}><span>焊接方法<span className="required-mark"> *</span>{defaultValues.weld_method && <em className="default-mark">默认</em>}</span><input list={WELD_METHOD_LIST_ID} placeholder="选择或填写焊接方法" value={form.weld_method ?? ''} onChange={setField('weld_method')} /><datalist id={WELD_METHOD_LIST_ID}>{withCurrent(optionValues.weld_method, form.weld_method).map((value) => <option key={value} value={value} />)}</datalist>{isCustomValue(optionValues.weld_method, form.weld_method) && <small className="custom-value-hint">新值：不在候选中，将按填写内容原样保存（可在「系统设置 → 焊接方法」补充为候选；总览只映射已知方法的过渡类型）</small>}</label>
+          <label className={flash.material ? 'field-flash' : undefined}><span>板材材质<span className="required-mark"> *</span>{defaultValues.material && <em className="default-mark">默认</em>}</span><input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label>
+          <label className={flash.thickness ? 'field-flash' : undefined}><span>板材厚度（mm）<span className="required-mark"> *</span>{defaultValues.thickness && <em className="default-mark">默认</em>}</span><input inputMode="decimal" placeholder="例如：6" value={String(form.thickness ?? '')} onChange={setField('thickness')} /></label>
+          <label className={flash.current_a ? 'field-flash' : undefined}><span>电流（A）<span className="required-mark"> *</span>{defaultValues.current_a && <em className="default-mark">默认</em>}</span><input inputMode="decimal" placeholder="例如：180" value={String(form.current_a ?? '')} onChange={setField('current_a')} /></label>
+          <label className={flash.voltage_v ? 'field-flash' : undefined}><span>电压（V）<span className="required-mark"> *</span>{defaultValues.voltage_v && <em className="default-mark">默认</em>}</span><input inputMode="decimal" placeholder="例如：22" value={String(form.voltage_v ?? '')} onChange={setField('voltage_v')} /></label>
+          <label className={flash.sample_rate ? 'field-flash' : undefined}><span>采样频率<span className="required-mark"> *</span>{defaultValues.sample_rate && <em className="default-mark">默认</em>}</span><input placeholder="10 kHz" value={String(form.sample_rate ?? '')} onChange={setField('sample_rate')} /></label>
           <label>送丝速度（m/min）<input inputMode="decimal" placeholder="例如：15.8" value={String(form.wire_feed_speed ?? '')} onChange={setField('wire_feed_speed')} /></label>
           <label>焊接速度（mm/min）<input inputMode="decimal" placeholder="例如：70.0" value={String(form.welding_speed ?? '')} onChange={setField('welding_speed')} /></label>
         </div>

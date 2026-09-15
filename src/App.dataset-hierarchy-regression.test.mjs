@@ -20,6 +20,15 @@ test('dataset browser keeps list, overview, records, and record detail as separa
   assert.match(workspace, /view === 'list'[\s\S]*dataset-table[\s\S]*<\/>\}\{view === 'overview' && dataset && <DatasetDetail/);
 });
 
+test('dataset list numbers every row continuously across pages (S1)', () => {
+  // S1（2026-09-15）：列表每行前置序号，且是**跨页连续**的全局序号（与「共 N 条」同口径），
+  // 不是每页从 1 重来——否则第 2 页的"第 3 行"和搜索前的"第 3 行"指向不同数据集。
+  assert.match(workspace, /rows\.map\(\(item, index\) =>/);
+  assert.match(workspace, /dataset-row-index">\{\(listPage - 1\) \* LIST_PAGE_SIZE \+ index \+ 1\}/);
+  // 序号列排在最前（图标之前）。
+  assert.match(workspace, /dataset-row-index[\s\S]{0,120}dataset-row-icon/);
+});
+
 test('real dataset selection replaces the version id and no-current-version has no fallback', () => {
   assert.match(workspace, /setSelectedVersionId\(selected\?\.currentVersionId \?\? null\)/);
   assert.doesNotMatch(workspace, /setSelectedVersionId\(\(prev\) => prev \?\?/);

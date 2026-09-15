@@ -254,12 +254,17 @@
 
 | group_key | 展示名 | 消费方 | 录入页交互 |
 |---|---|---|---|
-| `machine` | 数据厂家 / 焊机型号 | 数据登记「焊机型号」；总览厂商比重/词云按该值首个词统计 | 下拉（严格候选） |
-| `weld_method` | 焊接方法 | 数据登记「焊接方法」；总览熔滴过渡类型映射 | 下拉（严格候选） |
+| `machine` | 数据厂家 / 焊机型号 | 数据登记「焊机型号」；总览厂商比重/词云按该值首个词统计 | 输入框 + `<datalist>` 候选（保留自由填写，`free_text=true`） |
+| `weld_method` | 焊接方法 | 数据登记「焊接方法」；总览熔滴过渡类型映射（**映射表外的值计入「未分类」**） | 输入框 + `<datalist>` 候选（保留自由填写，`free_text=true`） |
 | `source` | 数据来源 | 数据登记「数据来源」 | 输入框 + `<datalist>` 候选（保留自由填写） |
 | `product` | 产品 / 项目信息 | 数据登记「关联产品信息」 | 输入框 + `<datalist>` 候选（保留自由填写） |
 | `dataset_task` | 数据集任务类型 | 新建数据集「任务类型」下拉；决定必需输入维度与适配检查项 | 下拉（严格候选） |
 | `label_category` | 标注缺陷类别 | 数据标注页标签调色板、AI 预标注抽样 | 标签调色板（仅启用项） |
+
+> **录入页交互口径（2026-09-15 / S2）**：`free_text=true` 的组（`machine`/`weld_method`/`source`/`product`）
+> 在登记页是 **`<input list>` + `<datalist>`**——候选只作提示，预置项不足时可直接填新值；新值**原样入库**
+> （后端 `machine`/`weld_method` 只校验 1–64 / 1–32 长度，不校验候选），界面给「新值」提示并引导补进字典。
+> `free_text=false` 的组（`dataset_task`/`label_category`）仍是严格候选。
 
 > **§3.8 删除语义（软删优先）**：`DELETE` 先查该值是否被业务列引用
 > （`data_records.machine/weld_method/source/product`、`datasets.task`、`annotations.category`）。

@@ -12,6 +12,9 @@
  *   - 字段完备性（T2.1）：字段面板存在（维度名用中文）；「模型适配检查」面板与"可训练"结论已消失
  *   - 核验状态（T2.2）：成员表不再有「核验状态」列，也没有该筛选下拉；成员详情没有该行
  *   - S5：全部样本表的送丝/焊接速度是两列，各带单位
+ *   - S1（2026-09-15）：数据集列表每行前置「跨页连续」序号（第 2 页接着 21，不是每页从 1 重来）
+ *   - S2（2026-09-15）：登记页焊机型号/焊接方法是「输入框 + datalist 候选」，候选外的值
+ *     给出「新值」提示并原样进提交载荷（不再是只能选字典项的严格下拉）
  *
  * 用法（需先起前端 dev server，后端不必起）：
  *   npm run dev -- --port 5199 --strictPort
@@ -142,8 +145,8 @@ await ctx.route(API, (route) => {
   const method = route.request().method();
   // 登记页（T4a）：可选项字典 + 提交链路（POST /registrations → 预签名 → 挂载）
   if (/\/settings\/options/.test(url)) return route.fulfill(envelope({ groups: [
-    { key: 'machine', label: '焊机型号', description: '', color: null, free_text: false, items: [{ id: 1, value: 'E2E 焊机', color: null, active: true, sort_order: 10 }] },
-    { key: 'weld_method', label: '焊接方法', description: '', color: null, free_text: false, items: [{ id: 2, value: 'MAG焊', color: null, active: true, sort_order: 10 }] },
+    { key: 'machine', label: '焊机型号', description: '', color: null, free_text: true, items: [{ id: 1, value: 'E2E 焊机', color: null, active: true, sort_order: 10 }] },
+    { key: 'weld_method', label: '焊接方法', description: '', color: null, free_text: true, items: [{ id: 2, value: 'MAG焊', color: null, active: true, sort_order: 10 }] },
     { key: 'source', label: '数据来源', description: '', color: null, free_text: true, items: [] },
     { key: 'product', label: '产品信息', description: '', color: null, free_text: true, items: [] },
   ] }));
@@ -178,7 +181,14 @@ await ctx.route(API, (route) => {
   // 这里顺便用 `q` 验证"搜索真的走了服务端"：不匹配的关键词回空页。
   if (/\/datasets\?.*options=1/.test(url)) return route.fulfill(envelope([{ id: DATASET.id, dataset_no: DATASET.dataset_no, name: DATASET.name, task: DATASET.task, status: DATASET.status, sample_count: DATASET.sample_count, weld_count: DATASET.weld_count, progress: DATASET.progress, current_version_id: DATASET.current_version_id, version: DATASET.version, split: DATASET.split }]));
   if (/\/datasets\?/.test(url) && /q=zzz/.test(url)) return route.fulfill(envelope({ items: [], total: 0, page: 1, page_size: 20 }));
-  if (/\/datasets(\?|$)/.test(url)) return route.fulfill(envelope({ items: [DATASET], total: 1, page: 1, page_size: 20 }));
+  // S1：分页桩给 21 条（2 页），用于断言列表序号是**跨页连续**的全局序号。
+  if (/\/datasets(\?|$)/.test(url)) {
+    const page = Number(new URL(url).searchParams.get('page') ?? 1);
+    const items = page === 2
+      ? [{ ...DATASET, id: 9002, dataset_no: 'DS-E2E-2', name: 'E2E 数据集 2', weld_count: 1, current_version_id: null, version: null }]
+      : [DATASET];
+    return route.fulfill(envelope({ items, total: 21, page, page_size: 20 }));
+  }
   // 切分页（T10）：版本链 / 信号 / 最近一次对齐任务（视频轨道带 25 fps）
   if (/\/welds\/WLD-E2E-0001\/versions\/4242\/alignment-tasks\/latest/.test(url)) return route.fulfill(envelope({ id: 'job_align_e2e', type: 'alignment', status: 'succeeded', progress: 100, result: { events: { weld_segment: [0, 83] }, event_source: 'real', tracks: [{ channel: 'video', modality: 'video', availability: 'available', aligned: true, metadata: { fps: 25 } }], assets: [] }, error: null, created_at: null, finished_at: null }));
   if (/\/welds\/WLD-E2E-0001\/versions\/4242\/split-preview/.test(url)) return route.fulfill(envelope({ input: { version_id: 4242, duration: 83, sample_rate: 10000, source: 'real', video_fps: 25 }, events: { weld_segment: [0, 83] }, summary: { sample_count: 207, effective_start: 0, effective_end: 83, window_seconds: 0.4, stride_seconds: 0.4, window_frames: 10, stride_frames: 10, window_samples: 4000 }, windows: [] }));
@@ -217,6 +227,11 @@ try {
   check('列表行样本数取 weld_count（2，不是切片数 13）', listText.includes('2') && !listText.includes('13'), true);
   // T9：列表搜索走服务端（关键词不匹配 → 服务端回空页）+ 分页器存在
   check('列表有分页器', await page.locator('.pagination').count() > 0, true);
+  // S1：序号是全局序号（跨页连续），不是每页从 1 重来——否则第 2 页的「第 3 行」与搜索前的「第 3 行」指向不同数据集
+  check('S1：列表首行序号为 1', await page.locator('.dataset-row-index').first().innerText(), '1');
+  await clickStep(page.locator('.pagination button').last(), '分页器下一页');
+  await page.waitForFunction(() => document.querySelector('.dataset-row-index')?.textContent === '21', null, { timeout: 20_000 }).catch(() => {});
+  check('S1：第 2 页首行序号接着 21（跨页连续）', await page.locator('.dataset-row-index').first().innerText(), '21');
   await page.locator('.dataset-rule .inline-search input').fill('zzz');
   await page.waitForTimeout(800);
   check('搜索走服务端（无匹配时回空态）', await page.locator('.dataset-empty-state').count() > 0, true);
@@ -345,6 +360,16 @@ try {
 
   // 默认值（字典首项）必须带"默认"标记
   check('默认值字段带「默认」标记', await page.locator('.default-mark').count() > 0, true);
+  // S2：焊机型号/焊接方法是「下拉候选 + 可自定义输入」——候选外的值必须能直接填、能提交，
+  //    且显式标注「新值」（否则用户以为填错了、或以为被字典挡住了）。
+  check('S2：焊机型号是输入框 + datalist（不再是严格下拉）', await page.locator('input[list="registration-machine-options"]').count(), 1);
+  check('S2：焊接方法是输入框 + datalist（不再是严格下拉）', await page.locator('input[list="registration-weld-method-options"]').count(), 1);
+  check('S2：字典候选项不显示「新值」提示', await page.locator('.custom-value-hint').count(), 0);
+  await page.locator('input[list="registration-weld-method-options"]').fill('激光-电弧复合焊');
+  check('S2：候选外的值给出「新值」提示', (await page.locator('.custom-value-hint').first().innerText()).includes('新值'), true);
+  await page.locator('input[list="registration-weld-method-options"]').fill('MAG焊');
+  check('S2：填回候选值后提示消失', await page.locator('.custom-value-hint').count(), 0);
+  await page.locator('input[list="registration-weld-method-options"]').fill('激光-电弧复合焊');
   // 锚定一个带时间列的 CSV：采样率应从文件推导出来（T4.2.1 来源 2）
   const csv = ['time,Current,Voltage,GasSpeed,WireSpeed'];
   for (let i = 0; i < 400; i += 1) csv.push(`${(i / 2000).toFixed(4)},180,22,15,8`);
@@ -368,6 +393,7 @@ try {
   check('登记载荷带 current_a = 180（数字）', registrationBody?.current_a, 180);
   check('登记载荷带 voltage_v = 22（数字）', registrationBody?.voltage_v, 22);
   check('登记载荷厚度剥掉单位', registrationBody?.thickness, '6');
+  check('S2：自定义焊接方法原样进提交载荷', registrationBody?.weld_method, '激光-电弧复合焊');
   check('登记载荷不再带旧的 current_voltage', 'current_voltage' in (registrationBody ?? {}), false);
   await waitForStep(page, '.registration-result', '登记结果卡');
   const exits = await page.locator('.registration-result-actions button').allInnerTexts();

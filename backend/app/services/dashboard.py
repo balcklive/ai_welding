@@ -33,6 +33,10 @@ TRANSITION_BY_WELD_METHOD = {
     "CMT": "CMT",
 }
 
+#: 映射表里没有的焊接方法（S2 起登记页允许自定义输入）统一计入「未分类」——
+#: 改造前兜底是「脉冲过渡」，会把现场新方法**静默算成脉冲过渡**，等于给总览一个错误结论。
+UNKNOWN_TRANSITION = "未分类"
+
 
 def get_stats(session: Session) -> dict:
     """统计卡四项，数值从表聚合。
@@ -119,7 +123,7 @@ def get_distributions(session: Session) -> dict:
 
     transition: dict[str, int] = {}
     for method, count in weld_method_counts.items():
-        t = TRANSITION_BY_WELD_METHOD.get(method, "脉冲过渡")
+        t = TRANSITION_BY_WELD_METHOD.get(method, UNKNOWN_TRANSITION)
         transition[t] = transition.get(t, 0) + count
     transition_types = [
         {"name": name, "value": count}

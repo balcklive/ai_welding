@@ -26,7 +26,10 @@
   形状对齐总览页消费常量（manufacturers/transitionTypes/weldingTypes/
   defectTypes/wordCloud），**tone/颜色由前端映射，后端不输出**。模块级常量
   `DEFECT_VOCAB`（统计口径缺陷词表：气孔/焊瘤/未焊透/焊穿/咬边/夹渣，§3.2 与标注
-  "标签类别"是两套词表勿混用）、`TRANSITION_BY_WELD_METHOD`（weld_method→过渡类型映射）。
+  "标签类别"是两套词表勿混用）、`TRANSITION_BY_WELD_METHOD`（weld_method→过渡类型映射）
+  与 `UNKNOWN_TRANSITION = "未分类"`（**2026-09-15 / S2**：登记页放开自定义输入后，
+  映射表外的焊法统一计入「未分类」——旧兜底是「脉冲过渡」，会把现场新方法静默算成
+  脉冲过渡，给总览一个错误结论；回归见 `backend/tests/test_dashboard_transition.py`）。
   **计数一律用单条 group_by 查询**
   （`_defect_counts` 按 category、`_weld_method_counts` 按 weld_method）汇总后查 dict，
   词表缺失默认 0，**避免 per-词条 N+1 查询**（评审发现并已修复）。

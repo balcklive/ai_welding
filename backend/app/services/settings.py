@@ -37,21 +37,22 @@ from app.models.settings import OptionItem
 
 #: 选项组定义（顺序即前端设置页展示顺序）。
 #: `color` = 该项是否支持颜色（仅标注类别需要）；`free_text` = 录入页是否允许手工填写
-#: 非候选值（数据来源/产品信息保留自由输入，下拉只做候选提示）。
+#: 非候选值——**默认项不足时能自定义输入**（S2，2026-09-15 起 machine/weld_method 也放开），
+#: 这类组的下拉只做候选提示，不是强约束。
 OPTION_GROUPS: tuple[dict, ...] = (
     {
         "key": "machine",
         "label": "数据厂家 / 焊机型号",
-        "description": "数据登记页「焊机型号」下拉的可选项；数据总览的厂商比重与词云按该值首个词统计。",
+        "description": "数据登记页「焊机型号」下拉的可选项；录入时仍可手工填写未列出的型号。数据总览的厂商比重与词云按该值首个词统计，新值建议事后补进这里，避免同一厂家多种写法。",
         "color": False,
-        "free_text": False,
+        "free_text": True,
     },
     {
         "key": "weld_method",
         "label": "焊接方法",
-        "description": "数据登记页「焊接方法」下拉的可选项；数据总览按此映射熔滴过渡类型。",
+        "description": "数据登记页「焊接方法」下拉的可选项；录入时仍可手工填写未列出的方法。数据总览只对这里列出的方法映射熔滴过渡类型，其它值统一计入「未分类」。",
         "color": False,
-        "free_text": False,
+        "free_text": True,
     },
     {
         "key": "source",

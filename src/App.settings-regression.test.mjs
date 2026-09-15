@@ -39,6 +39,17 @@ test('registration page reads options from the dictionary (no hardcoded fallback
   // 数据来源/产品信息保留自由填写：候选走 datalist。
   assert.match(registration, /<datalist id=\{SOURCE_LIST_ID\}>/);
   assert.match(registration, /<datalist id=\{PRODUCT_LIST_ID\}>/);
+  // S2（2026-09-15）：焊机型号/焊接方法也从「严格下拉」改为「下拉候选 + 可自定义输入」——
+  // 默认项不足时必须能直接填新值，新值要给出提示并引导补进字典。
+  assert.match(registration, /const MACHINE_LIST_ID = 'registration-machine-options'/);
+  assert.match(registration, /const WELD_METHOD_LIST_ID = 'registration-weld-method-options'/);
+  assert.match(registration, /<datalist id=\{MACHINE_LIST_ID\}>/);
+  assert.match(registration, /<datalist id=\{WELD_METHOD_LIST_ID\}>/);
+  assert.doesNotMatch(registration, /<select value=\{form\.machine/);
+  assert.doesNotMatch(registration, /<select value=\{form\.weld_method/);
+  assert.match(registration, /isCustomValue\(optionValues\.machine, form\.machine\)/);
+  assert.match(registration, /isCustomValue\(optionValues\.weld_method, form\.weld_method\)/);
+  assert.match(registration, /custom-value-hint/);
 });
 
 test('dataset creation takes task type from the dictionary', () => {
