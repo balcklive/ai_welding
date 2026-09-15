@@ -17,6 +17,7 @@
 
 ## 关键规则/坑
 
+- **时间轴/起收弧事件只来自接口（2026-09-15 修复）**：`getSignals` 成功且 `source==='real'` 时记 `signalDuration`（`data.duration`）与 `signalEvents`（`data.events`），`timelineDur = signalDuration ?? dur`；`ExploreWaveform`/`PhasePlot` 的游标映射、`explore-axis` 刻度（`timeTicks`，`.explore-axis` 是 `space-between`，**刻度必须等距**）、波形异常色带（吃 `result.anomalies`）、下方 `event-track` 起弧/稳态/收弧全部按真实值渲染。修复前这些一律用 `chartData` 的演示常量（`dur=5.42` / `anomalA`/`anomalB` / 写死的 `00:00.42 / 00:00.78-00:04.28 / 00:04.86`）——18s 的真实信号被画成固定 0–5s、且 KPI「有效焊接段」是真实值，两处自相矛盾。**`chartData.dur` 现在只在无真实信号（空波形）时兜底，勿再喂给正常渲染路径**。回归 `src/App.analysis-timeline-regression.test.mjs`。
 - **通道 id `cur/vol/gas/wir` 前后端一致**；后端不输出颜色 → `chanColor` 按 id 映射（`chartData.chanColorOf` 对扩展通道/未知通道按顺序/哈希稳定取色）。**2026-09**：时域波形 `getSignals` 不再写死 `channels` 过滤 → 后端返回该焊缝全部分量（核心 4 + 焊接速度/六轴/熔池扩展）；默认勾选核心 4，新增通道可在 toggle 中叠加查看。
 - `getSignals` 返回 `values` 已由 api 层抽稀 ≤512，`toPath` 按 `values.length` 归一化横轴（**勿按 mock 的 `SAMPLES`**）。
 - 六种图表都吃后端数组（`freqs/psd`、`magnitude`、`bands+approx`、`bands`、`current+voltage`、`bins+counts+kde`），未取到 API 时用 `values` 走原内部计算兜底（SVG 结构不动）；`DwtChart`/`WaveletDecomp` 有 API 时标签用后端 `band.name`。

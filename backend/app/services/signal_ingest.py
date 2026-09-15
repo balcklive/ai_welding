@@ -358,10 +358,28 @@ def validate_signal(
 
 # ── 启发式 events / anomalies ─────────────────────────────────────────
 
+#: 焊接段合并容差（s）。短路过渡 MAG 的电流纹波让平滑电流每隔几十毫秒短暂跌破阈值，
+#: active 掩码被 ≤5ms 的空隙切碎——实测真实 CSV（6.7s）被切成 212 段、最长仅 0.095s，
+#: 取"最长连续段"当焊接段必然失准（页面显示有效焊接段 0.13s）。故先合并间隔小于该值的
+#: 相邻段再取最长。ponytail: 固定 100ms——真正分开的两条焊缝间隔是秒级，够用；
+#: 真出现 100ms 量级的多道焊缝再改成按数据自适应。
+_MERGE_GAP_S: float = 0.1
+
 
 def _rolling_mean(x: np.ndarray, w: int) -> np.ndarray:
     kernel = np.ones(w) / w
     return np.convolve(x, kernel, mode="same")
+
+
+def _merge_runs(runs: list[tuple[int, int]], gap: int) -> list[tuple[int, int]]:
+    """合并间隔 ≤ `gap`（采样点）的相邻段，返回仍按起点升序的段列表。"""
+    merged: list[tuple[int, int]] = []
+    for start, end in runs:
+        if merged and start - merged[-1][1] <= gap:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def detect_events(
@@ -410,7 +428,7 @@ def detect_events(
                 i += 1
         return runs
 
-    runs = _runs(active)
+    runs = _merge_runs(_runs(active), round(fs * _MERGE_GAP_S))
     # events
     arc_t = float(t[runs[0][0]]) if runs else 0.0
     weld_run = max(runs, key=lambda r: r[1] - r[0], default=None)

@@ -7,18 +7,24 @@ import { getAnalysisMode, getAnalysisResult, getSignals } from '../../api/analys
 import { getWeld } from '../../api/welds';
 import type {
   AnalysisResult, DataRecord, DwtData, PddData, PhaseData, PsdData,
-  SignalChannel, SignalData, SignalQuery, StftData, WaveletBand, WaveletData,
+  SignalChannel, SignalData, SignalQuery, StftData, WaveletBand, WaveletData, WeldAnomaly,
 } from '../../api/types';
 import { PageIntro } from '../../shared/components/PageIntro';
 import { Toolbar } from '../../shared/components/Toolbar';
 import {
-  CH, CW, AXIS_L, PLOT_W, PLOT_H, dur, seg, anomalA, anomalB, isAnom,
+  CH, CW, AXIS_L, PLOT_W, PLOT_H, dur,
   clamp, chanColor, toChan, emptyChannels, fmt, buildPath, toPath,
 } from './signals/chartData';
 import type { Chan } from './signals/chartData';
 
 export type SplitPreviewSample = { index: number; start: number; end: number };
 const emptyPhaseValues: number[] = [];
+
+/** 时间轴刻度：等距分段（`.explore-axis` 用 space-between 定位，非等距会标错位置）。 */
+function timeTicks(total: number, count = 5): number[] {
+  return Array.from({ length: count + 1 }, (_, i) => Number(((total * i) / count).toFixed(2)));
+}
+const axisLabel = (second: number) => `${second}s`;
 
 /** 按时间窗口从当前信号中取出样本缩略图数据。信号接口返回的点已抽稀，适合做小卡片预览。 */
 function sliceSignalWindow(channel: SignalChannel | undefined, start: number, end: number, duration: number): number[] {
@@ -48,7 +54,7 @@ export function SampleWaveThumb({ sample, signals, duration }: { sample: SplitPr
 }
 
 
-function PhasePlot({ cursor, onCursor, data, loading }: { cursor: number; onCursor: (s: number) => void; data?: PhaseData; loading?: boolean }) {
+function PhasePlot({ cursor, onCursor, data, loading, dur: totalDur, anomalies }: { cursor: number; onCursor: (s: number) => void; data?: PhaseData; loading?: boolean; dur: number; anomalies: WeldAnomaly[] }) {
   const w = 520; const h = 300; const pad = 42; const pw = w - pad * 2; const ph = h - pad * 2;
   const domain = (values: number[], fallback: { lo: number; hi: number }, minimumSpan: number) => {
     let min = Infinity; let max = -Infinity;
@@ -73,11 +79,11 @@ function PhasePlot({ cursor, onCursor, data, loading }: { cursor: number; onCurs
   const step = Math.max(1, Math.ceil(n / 1800));
   const points = Array.from({ length: Math.ceil(n / step) }, (_, bucket) => {
     const i = Math.min(bucket * step, n - 1);
-    const ts = (i / Math.max(n - 1, 1)) * dur;
-    return { x: toX(rawCurrent[i]), y: toY(rawVoltage[i]), ts, i, anom: isAnom(ts) };
+    const ts = (i / Math.max(n - 1, 1)) * totalDur;
+    return { x: toX(rawCurrent[i]), y: toY(rawVoltage[i]), ts, i, anom: anomalies.some((a) => ts >= a.start && ts <= a.end) };
   }).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
   const path = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
-  const cursorIdx = Math.min(Math.max(points.length - 1, 0), Math.max(0, Math.round((cursor / dur) * (points.length - 1))));
+  const cursorIdx = Math.min(Math.max(points.length - 1, 0), Math.max(0, Math.round((cursor / totalDur) * (points.length - 1))));
   const cp = points[cursorIdx];
   const x = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -85,7 +91,7 @@ function PhasePlot({ cursor, onCursor, data, loading }: { cursor: number; onCurs
     const c = cxLo + ((relX - pad) / pw) * (cxHi - cxLo);
     let best = 0; let bd = Infinity;
     for (let i = 0; i < n; i++) { const d = Math.abs(rawCurrent[i] - c); if (d < bd) { bd = d; best = i; } }
-    onCursor((best / Math.max(n - 1, 1)) * dur);
+    onCursor((best / Math.max(n - 1, 1)) * totalDur);
   };
   const zoomAt = (factor: number, focalX = (cxLo + cxHi) / 2, focalY = (cvLo + cvHi) / 2) => {
     const nextXSpan = Math.max((fullX.hi - fullX.lo) * 0.08, Math.min(fullX.hi - fullX.lo, (cxHi - cxLo) * factor));
@@ -170,23 +176,22 @@ function PddChart({ chanId, channels, data }: { chanId: string; channels: Chan[]
   </svg>;
 }
 
-function ExploreWaveform({ active, cursor, onCursor, channels: chanList }: { active: Set<string>; cursor: number; onCursor: (s: number) => void; channels: Chan[] }) {
+function ExploreWaveform({ active, cursor, onCursor, channels: chanList, dur: totalDur, anomalies }: { active: Set<string>; cursor: number; onCursor: (s: number) => void; channels: Chan[]; dur: number; anomalies: WeldAnomaly[] }) {
   const x = (e: React.MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const rel = (e.clientX - rect.left) / rect.width;
-    onCursor(clamp(rel * dur, 0, dur));
+    onCursor(clamp(rel * totalDur, 0, totalDur));
   };
-  const cursorX = AXIS_L + (cursor / dur) * PLOT_W;
+  const cursorX = AXIS_L + (cursor / totalDur) * PLOT_W;
   const visible = chanList.filter((c) => active.has(c.id));
   return <div className="explore-waveform">
     <svg viewBox={`0 0 ${CH} ${CW}`} className="explore-waveform-svg" preserveAspectRatio="none" onMouseMove={x} onClick={x} onMouseLeave={() => {}}>
       {[0, 0.25, 0.5, 0.75, 1].map((p) => <line key={p} x1={AXIS_L} y1={PLOT_H * p} x2={CH} y2={PLOT_H * p} stroke="#edf2f2" />)}
-      <rect x={AXIS_L + seg(anomalA[0], anomalA[1]) * PLOT_W} y1={0} y={0} width={(anomalA[1] - anomalA[0]) / dur * PLOT_W} height={PLOT_H} fill="#e88d6c" opacity="0.13" />
-      <rect x={AXIS_L + seg(anomalB[0], anomalB[1]) * PLOT_W} width={(anomalB[1] - anomalB[0]) / dur * PLOT_W} height={PLOT_H} fill="#e88d6c" opacity="0.13" />
+      {anomalies.map((a) => <rect key={`${a.start}-${a.end}`} x={AXIS_L + (a.start / totalDur) * PLOT_W} y={0} width={Math.max(0, (a.end - a.start) / totalDur) * PLOT_W} height={PLOT_H} fill="#e88d6c" opacity="0.13" />)}
       {visible.map((c) => <path key={c.id} d={toPath(c.values, c.lo, c.hi)} fill="none" stroke={c.color} strokeWidth={c.id === 'cur' ? 2 : 1.6} opacity={0.9} />)}
       <line x1={cursorX} y1={0} x2={cursorX} y2={PLOT_H} stroke="#d16f69" strokeWidth="1.5" strokeDasharray="4 3" />
     </svg>
-    <div className="explore-axis"><span>0s</span><span>1s</span><span>2s</span><span>3s</span><span>4s</span><span>5s</span></div>
+    <div className="explore-axis">{timeTicks(totalDur).map((s) => <span key={s}>{axisLabel(s)}</span>)}</div>
   </div>;
 }
 
@@ -413,6 +418,8 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
   const [signalError, setSignalError] = useState<string | null>(null);
   const [record, setRecord] = useState<DataRecord | null>(null);
   const [weldDuration, setWeldDuration] = useState<number | null>(null);
+  const [signalDuration, setSignalDuration] = useState<number | null>(null);
+  const [signalEvents, setSignalEvents] = useState<SignalData['events'] | null>(null);
   const [versionId, setVersionId] = useState<number | null>(null);
   const [psdData, setPsdData] = useState<PsdData | null>(null);
   const [stftData, setStftData] = useState<StftData | null>(null);
@@ -440,11 +447,13 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     setSignalError(null);
     setSignalSource(null);
     setWeldDuration(null);
+    setSignalDuration(null);
+    setSignalEvents(null);
     setChannels(emptyChannels);
     // 不传 channels 过滤：后端返回该焊缝全部分量通道（核心 4 + 扩展），默认仅勾选核心 4。
     const opts: SignalQuery = { max_points: 2048 };
     if (filterOn) { opts.filter_type = filterType; opts.cutoff = cutoff; if (filterType === '带通') opts.cutoff2 = cutoff2; }
-    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
+    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setSignalDuration(data.duration > 0 ? data.duration : null); setSignalEvents(data.events); setCursor((c) => clamp(c, 0, data.duration > 0 ? data.duration : dur)); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
     return () => { cancelled = true; };
   }, [dataId, versionId, filterOn, filterType, cutoff, cutoff2]);
   // 主视图 mode（PSD/STFT/DWT/小波分解）：仅真实信号可进入生产分析
@@ -498,6 +507,8 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     return () => { cancelled = true; };
   }, [dataId, versionId, signalSource]);
   const anomalies = (result?.anomalies ?? []).map((a) => ({ range: [a.start, a.end] as [number, number], type: a.type, sev: (a.type.includes('电弧') ? 'orange' : 'red') as 'orange' | 'red' }));
+  // 生产时间轴只来自真实输入；没有真实信号时保持演示坐标（此时波形本就是空的）
+  const timelineDur = signalDuration ?? dur;
   const filterChanObj = channels.find((c) => c.id === filterChan) ?? channels[0];
   // 信号已由后端按滤波参数计算（getSignals 带 filter 时返回滤波后值），此处直接用
   const filteredValues = filterChanObj.values;
@@ -517,8 +528,8 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
       </div>
       <div className="channel-toggles">{channels.map((c) => <button key={c.id} className={`channel-toggle ${active.has(c.id) ? 'on' : ''}`} onClick={() => toggle(c.id)}><i style={{ background: c.color }} />{c.name}<small>{c.unit}</small><span className="toggle-check">{active.has(c.id) ? <Check size={12} /> : null}</span></button>)}</div>
       <div className="explore-legend">{channels.filter((c) => active.has(c.id)).map((c) => <span key={c.id}><i style={{ background: c.color }} />{c.name} ({c.unit})</span>)}{signalsLoading && <span className="explore-legend-empty" role="status">信号加载中…</span>}{!signalsLoading && active.size === 0 && <span className="explore-legend-empty">请至少开启一个通道</span>}<span className="explore-legend-anom"><i className="legend-orange" />异常区段</span><span className="explore-legend-cursor"><i className="result-dot red" />时间游标 {fmt(cursor)}</span></div>
-      {mode === '时域' && <><ExploreWaveform active={active} cursor={cursor} onCursor={setCursor} channels={channels} />{filterOn && <div className="filter-compare"><span className="fc-label">滤波后 {filterChanObj.name}（{filterType} · {cutoff.toFixed(2)}）</span><svg viewBox={`0 0 ${CH} 70`} className="filter-compare-svg" preserveAspectRatio="none"><path d={toPath(filterChanObj.values, filterChanObj.lo, filterChanObj.hi)} fill="none" stroke={filterChanObj.color} strokeWidth="1.8" opacity="0.7" /></svg></div>}
-      <div className="event-track"><span>起弧 <b>00:00.42</b></span><i /><span>稳态焊接 <b>00:00.78 - 00:04.28</b></span><i /><span>收弧 <b>00:04.86</b></span></div>
+      {mode === '时域' && <><ExploreWaveform active={active} cursor={cursor} onCursor={setCursor} channels={channels} dur={timelineDur} anomalies={result?.anomalies ?? []} />{filterOn && <div className="filter-compare"><span className="fc-label">滤波后 {filterChanObj.name}（{filterType} · {cutoff.toFixed(2)}）</span><svg viewBox={`0 0 ${CH} 70`} className="filter-compare-svg" preserveAspectRatio="none"><path d={toPath(filterChanObj.values, filterChanObj.lo, filterChanObj.hi)} fill="none" stroke={filterChanObj.color} strokeWidth="1.8" opacity="0.7" /></svg></div>}
+      <div className="event-track"><span>起弧 <b>{signalEvents ? fmt(signalEvents.arc) : '—'}</b></span><i /><span>稳态焊接 <b>{signalEvents ? `${fmt(signalEvents.weld_segment[0])} - ${fmt(signalEvents.weld_segment[1])}` : '—'}</b></span><i /><span>收弧 <b>{signalEvents ? fmt(signalEvents.tail) : '—'}</b></span></div>
       <div className="anomaly-summary"><div className="anomaly-summary-head"><AlertTriangle size={14} /><span>已检出异常区段 {anomalies.length} 个 · 点击可定位</span></div>{anomalies.map((a, i) => <button key={i} className={`anomaly-chip ${a.sev}`} onClick={() => setCursor((a.range[0] + a.range[1]) / 2)}><i /><strong>{a.type}</strong><small>{fmt(a.range[0])} – {fmt(a.range[1])}</small><span>定位 <ArrowUpRight size={12} /></span></button>)}</div>
       <div className="signal-cards">{channels.map((c) => <div key={c.id} className={active.has(c.id) ? '' : 'dim'}><Waves size={16} /><span>{c.name}波形<strong>{c.mean}</strong></span></div>)}</div></>}
       {mode === 'PSD' && <div className="spectrum-view">{analysisLoading && <p className="dataset-empty-state" role="status">PSD 正在计算…</p>}{analysisError && <p className="dataset-empty-state" role="alert">{analysisError}</p>}<div className="spectrum-head"><span><FilterIcon size={14} />功率谱密度 · Welch 法</span><small>目标通道：{filterChanObj.name}（{filterOn ? `已滤波 ${filterType}` : '原始信号'}）</small></div><PsdChart values={filteredValues} color={filterChanObj.color} lo={filterChanObj.lo} hi={filterChanObj.hi} freqs={psdData?.freqs} psd={psdData?.psd} /><div className="spectrum-note"><BarChart3 size={13} /><span>主峰集中在低频段（短路过渡频率），异常区段在 2-5 kHz 存在次峰。</span></div></div>}
@@ -529,7 +540,7 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     <aside className="explore-aside">
       <section className="panel explore-phase-panel">
         <div className="panel-heading"><div><h2>UI 相图</h2><p>电流–电压轨迹，颜色越亮越接近当前时刻</p></div><span className="explore-hint">悬停联动</span></div>
-        <PhasePlot cursor={cursor} onCursor={setCursor} data={phaseData ?? undefined} loading={phaseLoading} />
+        <PhasePlot cursor={cursor} onCursor={setCursor} data={phaseData ?? undefined} loading={phaseLoading} dur={timelineDur} anomalies={result?.anomalies ?? []} />
         <div className="phase-legend"><span><i className="legend-blue" />稳态轨迹</span><span><i className="legend-orange" />异常发散</span><span><i className="result-dot red" />游标 {fmt(cursor)}</span></div>
       </section>
       <section className="panel explore-pdd-panel">

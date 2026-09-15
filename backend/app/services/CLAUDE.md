@@ -316,6 +316,10 @@
     信号幅度成正比，量程派生会让低幅信号误判焊接段失活；主用电流缺则电压；5ms 滚动均值 + active
     runs → arc/weld_segment/tail；焊接段**内部**（剔除边界过渡区）100ms 滚动 std 超 1.8×中位数 →
     异常段，spike 率高→飞溅倾向否则电弧不稳，合并近邻取前 5）。确定性：同文件结果可复现。
+    **坑（2026-09-15 修复）**：`_runs(active)` 的结果必须先过 `_merge_runs(..., round(fs*_MERGE_GAP_S))`
+    再取最长段。短路过渡 MAG 的电流纹波会让平滑电流每隔几十毫秒短暂跌破阈值，active 掩码被
+    ≤5ms 的空隙切碎——实测真实 CSV（16.2s / fs≈2064）被切成 265 段、最长仅 0.142s，直接取最长段
+    会让「有效焊接段」显示 0.13s（前端页面现象）。容差 `_MERGE_GAP_S = 0.1`（s）。
   - `to_parquet_bytes(...)` / `bundle_from_parquet(data, ingest, weld_id)`：列 schema
     `t,cur,vol,gas,wir` + 文件级元数据（weld_id/sample_rate/duration/channel_ids/...）；
     还原时 `np.array(copy=True)` 保证数组**可写**（pandas/parquet 读回是只读视图，pywt.dwt 会炸）。
