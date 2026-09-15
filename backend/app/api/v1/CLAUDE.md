@@ -94,8 +94,13 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     min-max 池化抽稀 + 每通道附 `times[]`（秒，非均匀，前端按 [t,v] 画点）；`start/end`(秒) 时间窗
     切片（缩放增量取细节；不成对或 start>=end → 400）。不传参数返回全分辨率（兼容旧调用方），
     返回 `{duration, sample_rate, channels:[{id,name,unit,values[],times?,lo,hi,mean}], events, anomalies, source}`；
+    **滤波口径（2026-09-15）**：`cutoff/cutoff2` 是**相对奈奎斯特 fs/2 的归一化频率**
+    （Hz = cutoff × fs/2；真实数据 fs 常见 5k/20k，故 0.3 = 750/3000 Hz，**不是** 300 Hz）；
+    带 `filter_type` 时返回的 `lo/hi/mean` 按**滤波后**序列重算（`_series_range`，滤波改均值/幅度，
+    沿用核心通道原始量程会把高通信号画成贴边直线）；
   - `GET …/analysis/{mode}`：mode ∈ psd|stft|dwt|wavelet|phase|pdd，query `channel`（默认 cur）+
-    滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；
+    滤波参数联动；phase 需 cur+vol；未知 mode/通道 → 400；**pdd 带滤波时直方图量程取滤波后序列
+    min/max**（否则去均值信号全挤进首 bin）；
   - `GET …/analysis/result`：确定性模拟结果 `{stability, segments, anomalies}`（源自信号事件/异常，**Task 4 修复：非管理员按焊缝 stable owner(user_id) 做 ownership ACL**）。
   - `POST /features/extract`（**Task 12**）：body `{weld_id, version_id, normalization(默认无), format(默认JSON)}`
     同步真实提取三类特征（`app.services.features`：ts 8×4 + vision 8 + audio 6）→ `unify` 拼
@@ -106,7 +111,8 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - 信号由 `app.services.signals` 确定性生成（seed = crc32(weld_id)）、DSP 由 `app.services.dsp`
     真实计算（scipy/pywt，非罐头数字）。
   - 坑：`/analysis/result` 是具体路径，必须在 `/analysis/{mode}` 之前注册（FastAPI 按顺序匹配）；
-    `cutoff/cutoff2` 为 0~1 归一化频率（相对奈奎斯特）；错误码 40401/40402/40000。
+    `cutoff/cutoff2` 为 0~1 归一化频率（相对奈奎斯特，**前端滑杆按 Hz 呈现时必须乘 fs/2**）；
+    错误码 40401/40402/40000。
 - `datasets.py`：**Task 15 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.5，业务逻辑在
   `app.services.datasets`：

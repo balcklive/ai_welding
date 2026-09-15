@@ -16,6 +16,7 @@
 - `App.buffer-regression.test.mjs`：Node 内置测试；静态断言 `Alignment` 切分页暴露 `bufferSeconds` 可编辑输入，且 `createSplitTask` 不再把 `keep_event_buffer` 硬编码为 `0.2`。
 - `vite-base-regression.test.mjs`：Node 内置测试；静态断言生产构建使用根路径 `/`，避免部署在 FastAPI 根挂载点时生成错误的 `/ai_welding/assets/` 资源路径。
 - `App.routing-regression.test.mjs`（阶段一 2026-09-14）：Node 内置测试；**直接 import `app/route-url.ts` 跑真实换算断言**（`routeToHash`↔`parseHashRoute` 往返一致、容忍书写差异、非法输入回落 `null`、`Route` 联合类型与 `ROUTE_SEGMENTS` 一一对应），再静态断言 `App.tsx` 的 `pushState`/`replaceState`/`popstate`/`hashchange` 装配与「同路由不新增历史条目」。全部回归测试跑法：`npm test`（= `node --test "src/*.test.mjs"`）。
+- `App.analysis-filter-regression.test.mjs`（2026-09-15）：Node 内置测试；静态断言起收弧识别页的截止频率**不再把归一化频率 ×1000 当 Hz**（改用 `data.sample_rate` 换算）、三种滤波类型都写出通带阈值、带通在前端就保证 `cutoff < cutoff2`、且滤波只作用于目标通道并同时画出原始/滤波后波形。
 
 坑/限制：
 - **可选项字典化（2026-09 系统设置）**：数据登记/数据集录入的可选项不再硬编码在页面里——焊机型号、焊接方法、数据来源、产品/项目信息、数据集任务类型、标注缺陷类别统一由「系统设置」页（`features/settings`，路由 `settings`，侧边栏底部入口）维护，读写走 `src/api/settings`（契约 §3.8）。新增录入下拉/候选值时**先接字典组**，不要再往组件里写死选项数组；页面侧保留「接口失败回落出厂值」的兜底（见各 feature 的 CLAUDE.md），但**初始值必须为空**（沿用 mock 闪烁全局禁令）。

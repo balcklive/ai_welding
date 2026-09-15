@@ -207,6 +207,84 @@ function modeLabel(mode: string) {
 const filterTypes = ['低通', '高通', '带通'] as const;
 type FilterType = typeof filterTypes[number];
 
+/** 截止频率滑杆下限（Hz）：低到足以覆盖去漂移/去工频场景。 */
+const MIN_FILTER_HZ = 1;
+
+/**
+ * 归一化频率（相对奈奎斯特频率 fs/2）→ Hz。采样率未知时返回 null（**不编造**数值）。
+ * 后端 `cutoff/cutoff2` 一律是相对奈奎斯特的归一化频率，Hz = cutoff × fs/2。
+ */
+function hzFromRatio(ratio: number, sampleRate: number | null | undefined): number | null {
+  const fs = Number(sampleRate);
+  return Number.isFinite(fs) && fs > 0 ? ratio * (fs / 2) : null;
+}
+
+/** Hz → 归一化频率（相对奈奎斯特）；采样率未知时返回 null。 */
+function ratioFromHz(hz: number, sampleRate: number | null | undefined): number | null {
+  const fs = Number(sampleRate);
+  return Number.isFinite(fs) && fs > 0 ? hz / (fs / 2) : null;
+}
+
+/** Hz 展示：≥100 取整、<100 保留一位小数（12.5 Hz 这类值需要小数）。 */
+function fmtHz(hz: number | null): string {
+  if (hz == null || !Number.isFinite(hz)) return '—';
+  return hz >= 100 ? `${Math.round(hz)} Hz` : `${Math.round(hz * 10) / 10} Hz`;
+}
+
+/** 滤波通带说明（含具体阈值）：低通保留 0–f、高通保留 f–奈奎斯特、带通保留 f1–f2。 */
+function passbandText(type: FilterType, hz1: number | null, hz2: number | null, nyquist: number | null): string {
+  if (hz1 == null) return `${type}：采样率未知，无法换算 Hz`;
+  if (type === '低通') return `低通：保留 0 – ${fmtHz(hz1)} 的分量，高于 ${fmtHz(hz1)} 的能量被衰减`;
+  if (type === '高通') return `高通：保留 ${fmtHz(hz1)} – ${fmtHz(nyquist)} 的分量，低于 ${fmtHz(hz1)} 的能量被衰减`;
+  if (hz2 == null) return `带通：上限频率待定`;
+  return `带通：只保留 ${fmtHz(hz1)} – ${fmtHz(hz2)} 的分量，带外能量被衰减`;
+}
+
+/** 对数刻度：滑杆位置 [0,1] ↔ Hz，低频段同样能精细调节。 */
+function hzToPos(hz: number, minHz: number, maxHz: number): number {
+  return clamp(Math.log(Math.max(hz, minHz) / minHz) / Math.log(maxHz / minHz), 0, 1);
+}
+function posToHz(pos: number, minHz: number, maxHz: number): number {
+  return minHz * Math.pow(maxHz / minHz, clamp(pos, 0, 1));
+}
+
+/** 截止频率滑杆：内部仍是归一化频率，呈现与输入一律按 Hz（2026-09-15 修复「0.30 显示成 300 Hz」）。 */
+function HzRange({ label, hz, minHz, maxHz, disabled, onChange }: {
+  label: string; hz: number | null; minHz: number; maxHz: number; disabled?: boolean; onChange: (hz: number) => void;
+}) {
+  const hi = Math.max(maxHz, minHz * 1.01);
+  const pos = hz == null ? 0.5 : hzToPos(hz, minHz, hi);
+  return <div className="preprocess-field">
+    <label>{label}</label>
+    <div className="pp-slider">
+      <input type="range" min="0" max="1" step="0.002" value={pos} disabled={disabled} aria-label={`${label}（Hz）`} onChange={(e) => onChange(Math.round(posToHz(parseFloat(e.target.value), minHz, hi) * 10) / 10)} />
+      <span>{fmtHz(hz)}</span>
+    </div>
+  </div>;
+}
+
+/** 序列自身量程（±5% pad）——滤波会改均值/幅度，必须按滤波后数据缩放才画得准。 */
+function valueRange(values: number[], fallback: { lo: number; hi: number }): { lo: number; hi: number } {
+  let min = Infinity; let max = -Infinity;
+  for (const v of values) if (Number.isFinite(v)) { min = Math.min(min, v); max = Math.max(max, v); }
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return fallback;
+  if (max - min < 1e-9) return { lo: min - 0.5, hi: max + 0.5 };
+  const pad = (max - min) * 0.05;
+  return { lo: min - pad, hi: max + pad };
+}
+
+/** 滤波前后对比条：上=原始、下=滤波后，各自按自身量程缩放（量程写进图注，避免「看着变平了」的误判）。 */
+function FilterCompare({ raw, filtered, summary, error }: { raw: Chan; filtered: Chan | null; summary: string; error?: string | null }) {
+  const rawRange = valueRange(raw.values, { lo: raw.lo, hi: raw.hi });
+  const filtRange = filtered ? valueRange(filtered.values, { lo: filtered.lo, hi: filtered.hi }) : null;
+  return <div className="filter-compare">
+    <span className="fc-label">滤波前后对比 · {raw.name} · {summary}</span>
+    <div className="fc-row"><span className="fc-tag">原始</span><svg className="filter-compare-svg" viewBox={`0 0 ${CH} 70`} preserveAspectRatio="none"><path d={buildPath(raw.values, rawRange.lo, rawRange.hi, CH, 70)} fill="none" stroke="#9fb0b0" strokeWidth="1.4" opacity="0.85" /></svg></div>
+    <div className="fc-row"><span className="fc-tag">滤波后</span>{filtered && filtRange ? <svg className="filter-compare-svg" viewBox={`0 0 ${CH} 70`} preserveAspectRatio="none"><path d={buildPath(filtered.values, filtRange.lo, filtRange.hi, CH, 70)} fill="none" stroke={raw.color} strokeWidth="1.6" opacity="0.9" /></svg> : <span className="fc-pending" role={error ? 'alert' : 'status'}>{error ? '滤波后波形不可用（见上方提示）' : '滤波后波形计算中…'}</span>}</div>
+    <span className="fc-legend">原始量程 {rawRange.lo.toFixed(1)} – {rawRange.hi.toFixed(1)} {raw.unit}{filtRange ? ` ／ 滤波后量程 ${filtRange.lo.toFixed(1)} – ${filtRange.hi.toFixed(1)} ${raw.unit}` : ''}</span>
+  </div>;
+}
+
 function PsdChart({ values, color, freqs, psd }: { values: number[]; color: string; lo: number; hi: number; freqs?: number[]; psd?: number[] }) {
   const hasApi = !!freqs && !!psd && freqs.length > 0 && psd.length > 0;
   const N = values.length;
@@ -408,9 +486,15 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
   const [pddChan, setPddChan] = useState('cur');
   const [filterOn, setFilterOn] = useState(false);
   const [filterType, setFilterType] = useState<FilterType>('低通');
+  // cutoff/cutoff2 是**相对奈奎斯特（fs/2）的归一化频率**（后端契约），控件上一律按 Hz 呈现
   const [cutoff, setCutoff] = useState(0.3);
   const [cutoff2, setCutoff2] = useState(0.6);
   const [filterChan, setFilterChan] = useState('cur');
+  //: 采样率来自 signals 接口（真实数据 5k/20k 不等），Hz 换算的唯一依据
+  const [sampleRate, setSampleRate] = useState<number | null>(null);
+  //: 滤波后的目标通道（只请求目标通道，主波形保持原始信号，便于滤波前后对比）
+  const [filteredChan, setFilteredChan] = useState<Chan | null>(null);
+  const [filterError, setFilterError] = useState<string | null>(null);
   // 初始为空波形占位：mock 波形仅在接口失败时兜底，不得在加载期闪现
   const [channels, setChannels] = useState<Chan[]>(emptyChannels);
   const [signalsLoading, setSignalsLoading] = useState(true);
@@ -439,7 +523,7 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     getWeld(dataId).then((r) => { if (!cancelled) { setRecord(r); setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); } }).catch((err) => { if (!cancelled) console.warn('[analysis] getWeld failed', err); });
     return () => { cancelled = true; };
   }, [dataId]);
-  // 时域波形：挂载 + 滤波参数变化 → 重新拉取（始终请求全部 4 通道，勾选仅本地显示过滤）
+  // 时域波形：挂载 → 拉取「原始」全通道波形（滤波不改主波形，见下方滤波后目标通道）
   useEffect(() => {
     if (!dataId || versionId == null) return;
     let cancelled = false;
@@ -449,13 +533,24 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     setWeldDuration(null);
     setSignalDuration(null);
     setSignalEvents(null);
+    setSampleRate(null);
     setChannels(emptyChannels);
     // 不传 channels 过滤：后端返回该焊缝全部分量通道（核心 4 + 扩展），默认仅勾选核心 4。
     const opts: SignalQuery = { max_points: 2048 };
-    if (filterOn) { opts.filter_type = filterType; opts.cutoff = cutoff; if (filterType === '带通') opts.cutoff2 = cutoff2; }
-    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setSignalDuration(data.duration > 0 ? data.duration : null); setSignalEvents(data.events); setCursor((c) => clamp(c, 0, data.duration > 0 ? data.duration : dur)); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
+    getSignals(dataId, String(versionId), opts).then((data: SignalData) => { if (!cancelled) { setSignalSource(data.source); if (data.source === 'real') { setSampleRate(data.sample_rate > 0 ? data.sample_rate : null); setWeldDuration(Math.max(0, data.events.weld_segment[1] - data.events.weld_segment[0])); setSignalDuration(data.duration > 0 ? data.duration : null); setSignalEvents(data.events); setCursor((c) => clamp(c, 0, data.duration > 0 ? data.duration : dur)); setChannels(data.channels.map(toChan)); } else { setChannels(emptyChannels); setSignalError('当前版本没有真实导入信号，生产分析已停止，不显示模拟波形。'); } } }).catch((err) => { if (!cancelled) { setChannels(emptyChannels); setSignalError('真实信号加载失败，未显示模拟波形。请检查数据导入状态后重试。'); console.warn('[analysis] getSignals failed', err); } }).finally(() => { if (!cancelled) setSignalsLoading(false); });
     return () => { cancelled = true; };
-  }, [dataId, versionId, filterOn, filterType, cutoff, cutoff2]);
+  }, [dataId, versionId]);
+  // 滤波后波形：只请求「目标通道」（对比条 + 频谱/相图/分布兜底都用它），参数改动即重算
+  useEffect(() => {
+    if (!dataId || versionId == null || !filterOn) { setFilteredChan(null); setFilterError(null); return; }
+    let cancelled = false;
+    const opts: SignalQuery = { channels: [filterChan], filter_type: filterType, cutoff, max_points: 2048 };
+    if (filterType === '带通') opts.cutoff2 = cutoff2;
+    getSignals(dataId, String(versionId), opts)
+      .then((data: SignalData) => { if (!cancelled) { setFilteredChan(data.channels.map(toChan)[0] ?? null); setFilterError(null); } })
+      .catch((err) => { if (!cancelled) { setFilteredChan(null); setFilterError('滤波计算失败，请调整滤波参数后重试。'); console.warn('[analysis] filtered signals failed', err); } });
+    return () => { cancelled = true; };
+  }, [dataId, versionId, filterChan, filterOn, filterType, cutoff, cutoff2]);
   // 主视图 mode（PSD/STFT/DWT/小波分解）：仅真实信号可进入生产分析
   useEffect(() => {
     if (!dataId || versionId == null || signalSource !== 'real') return;
@@ -510,8 +605,39 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
   // 生产时间轴只来自真实输入；没有真实信号时保持演示坐标（此时波形本就是空的）
   const timelineDur = signalDuration ?? dur;
   const filterChanObj = channels.find((c) => c.id === filterChan) ?? channels[0];
-  // 信号已由后端按滤波参数计算（getSignals 带 filter 时返回滤波后值），此处直接用
-  const filteredValues = filterChanObj.values;
+  // 滤波参数按 Hz 呈现：后端 cutoff 是相对奈奎斯特（fs/2）的归一化频率，Hz = cutoff × fs/2
+  const nyquist = sampleRate != null && sampleRate > 0 ? sampleRate / 2 : null;
+  const maxCutoffHz = nyquist != null ? nyquist * 0.99 : MIN_FILTER_HZ * 2;
+  const cutoffHz = hzFromRatio(cutoff, sampleRate);
+  const cutoff2Hz = hzFromRatio(cutoff2, sampleRate);
+  const filterSummary = filterType === '带通' ? `带通 ${fmtHz(cutoffHz)} – ${fmtHz(cutoff2Hz)}` : `${filterType} ${fmtHz(cutoffHz)}`;
+  const filterStateText = filterOn ? `已滤波 ${filterSummary}` : '原始信号';
+  // 滤波后波形只对目标通道；通道/参数不匹配时按“未就绪”处理，不拿旧数据顶替
+  const filterCompare = filteredChan && filteredChan.id === filterChan ? filteredChan : null;
+  const filteredValues = filterCompare ? filterCompare.values : filterChanObj.values;
+  /** 改截止频率：带通下同步抬高上限，保证 cutoff < cutoff2（后端契约，否则 400）。 */
+  const setCutoffHz = (hz: number) => {
+    const ratio = ratioFromHz(hz, sampleRate);
+    if (ratio == null) return;
+    setCutoff(ratio);
+    if (filterType === '带通' && cutoff2Hz != null && hz >= cutoff2Hz) setCutoff2(Math.min(0.99, (hz * 1.05) / (sampleRate! / 2)));
+  };
+  /** 改上限频率：带通下不低于下限 ×1.05。 */
+  const setCutoff2Hz = (hz: number) => {
+    if (sampleRate == null || sampleRate <= 0) return;
+    const floor = cutoffHz != null ? cutoffHz * 1.05 : MIN_FILTER_HZ;
+    setCutoff2(Math.min(0.99, Math.max(hz, floor) / (sampleRate / 2)));
+  };
+  /** 切滤波类型：切到带通时把已有截止频率整理成合法区间。 */
+  const selectFilterType = (ft: FilterType) => {
+    setFilterType(ft);
+    if (ft === '带通' && cutoff >= cutoff2) {
+      // 上限顶到 0.99 时不能与下限相等：反过来把下限压回 1/1.05，保证 cutoff < cutoff2
+      const hi = Math.min(0.99, cutoff * 1.05);
+      setCutoff2(hi);
+      if (hi <= cutoff) setCutoff(Math.max(0.001, hi / 1.05));
+    }
+  };
   const seg = result?.segments;
   const modes = ['时域', 'PSD', 'STFT', 'DWT', '小波分解'];
   return <div className="page-wrap"><PageIntro eyebrow="焊缝级分析" title="焊缝深度分析" description="在同一时间轴上查看多模态信号、焊接事件和质量特征。" action={<Toolbar action="开始分析" secondary="导出分析报告" exportType="analysis" exportRefIds={versionId != null ? [versionId] : undefined} />} /><div className="analysis-meta panel"><div><span className="file-badge"><Archive size={15} />分析概览</span><h2>当前焊缝起收弧识别</h2><p>分析结果基于上方“当前数据上下文”中选择的焊缝及其最新版本。</p><div className="source-status"><span className={signalSource === 'real' ? 'real' : 'generated'}>{signalsLoading ? '信号加载中…' : signalSource === 'real' ? '真实信号' : '信号不可用'}</span>{result && <span>分析结果已完成</span>}</div></div><div className="analysis-kpis"><div><span>核验状态</span><strong className={record?.quality === '通过' ? 'accent-text' : record?.quality === '异常' ? 'danger-text' : 'warning-text'}>{record?.quality ?? '加载中…'}</strong></div><div><span>有效焊接段</span><strong>{weldDuration != null ? `${weldDuration.toFixed(2)} s` : '—'}</strong></div><div><span>异常区段</span><strong className="warning-text">{result ? `${anomalies.length} 个` : '—'}</strong></div></div></div>{signalError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{signalError}</div>}{resultError && <div className="alignment-banner warn" role="status"><AlertTriangle size={15} />{resultError}</div>}
@@ -520,22 +646,28 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
       <div className="panel-heading"><div><h2>多模态信号联动</h2><p>勾选通道任意组合，拖动波形同步定位 — 当前：{modeLabel(mode)}</p></div><div className="mode-tabs">{modes.map((item) => <button className={mode === item ? 'active' : ''} onClick={() => setMode(item)} key={item}>{item}</button>)}</div></div>
       <div className="preprocess-bar">
         <div className="preprocess-toggle"><label className="switch-row compact"><span><FilterIcon size={13} />信号滤波</span><input type="checkbox" checked={filterOn} onChange={(e) => setFilterOn(e.target.checked)} /></label></div>
-        {filterOn && <><div className="preprocess-field"><label>滤波类型</label><div className="pp-chips">{filterTypes.map((ft) => <button key={ft} className={filterType === ft ? 'on' : ''} onClick={() => setFilterType(ft)}>{ft}</button>)}</div></div>
+        {filterOn && <><div className="preprocess-field"><label>滤波类型</label><div className="pp-chips">{filterTypes.map((ft) => <button key={ft} className={filterType === ft ? 'on' : ''} onClick={() => selectFilterType(ft)}>{ft}</button>)}</div></div>
         <div className="preprocess-field"><label>目标通道</label><div className="pp-chans">{channels.map((c) => <button key={c.id} className={filterChan === c.id ? 'on' : ''} onClick={() => setFilterChan(c.id)}><i style={{ background: c.color }} />{c.name}</button>)}</div></div>
-        <div className="preprocess-field"><label>截止频率</label><div className="pp-slider"><input type="range" min="0.05" max="0.9" step="0.05" value={cutoff} onChange={(e) => setCutoff(parseFloat(e.target.value))} /><span>{(cutoff * 1000).toFixed(0)} Hz</span></div></div>
-        {filterType === '带通' && <div className="preprocess-field"><label>上限频率</label><div className="pp-slider"><input type="range" min="0.1" max="0.95" step="0.05" value={cutoff2} onChange={(e) => setCutoff2(parseFloat(e.target.value))} /><span>{(cutoff2 * 1000).toFixed(0)} Hz</span></div></div>}
+        <HzRange label={filterType === '低通' ? '截止频率（通过上限）' : filterType === '高通' ? '截止频率（通过下限）' : '下限频率'} hz={cutoffHz} minHz={MIN_FILTER_HZ} maxHz={filterType === '带通' && cutoff2Hz != null ? cutoff2Hz / 1.05 : maxCutoffHz} disabled={nyquist == null} onChange={setCutoffHz} />
+        {filterType === '带通' && <HzRange label="上限频率" hz={cutoff2Hz} minHz={cutoffHz != null ? cutoffHz * 1.05 : MIN_FILTER_HZ} maxHz={maxCutoffHz} disabled={nyquist == null} onChange={setCutoff2Hz} />}
         </>}
       </div>
+      {filterOn && <div className="filter-passband">
+        <FilterIcon size={13} />
+        <span>{passbandText(filterType, cutoffHz, cutoff2Hz, nyquist)}</span>
+        <span className="fp-meta">{sampleRate != null ? `采样率 ${(sampleRate / 1000).toFixed(sampleRate % 1000 === 0 ? 0 : 1)} kHz · 奈奎斯特 ${fmtHz(nyquist)}` : '采样率未知'}</span>
+      </div>}
+      {filterOn && filterError && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />{filterError}</div>}
       <div className="channel-toggles">{channels.map((c) => <button key={c.id} className={`channel-toggle ${active.has(c.id) ? 'on' : ''}`} onClick={() => toggle(c.id)}><i style={{ background: c.color }} />{c.name}<small>{c.unit}</small><span className="toggle-check">{active.has(c.id) ? <Check size={12} /> : null}</span></button>)}</div>
       <div className="explore-legend">{channels.filter((c) => active.has(c.id)).map((c) => <span key={c.id}><i style={{ background: c.color }} />{c.name} ({c.unit})</span>)}{signalsLoading && <span className="explore-legend-empty" role="status">信号加载中…</span>}{!signalsLoading && active.size === 0 && <span className="explore-legend-empty">请至少开启一个通道</span>}<span className="explore-legend-anom"><i className="legend-orange" />异常区段</span><span className="explore-legend-cursor"><i className="result-dot red" />时间游标 {fmt(cursor)}</span></div>
-      {mode === '时域' && <><ExploreWaveform active={active} cursor={cursor} onCursor={setCursor} channels={channels} dur={timelineDur} anomalies={result?.anomalies ?? []} />{filterOn && <div className="filter-compare"><span className="fc-label">滤波后 {filterChanObj.name}（{filterType} · {cutoff.toFixed(2)}）</span><svg viewBox={`0 0 ${CH} 70`} className="filter-compare-svg" preserveAspectRatio="none"><path d={toPath(filterChanObj.values, filterChanObj.lo, filterChanObj.hi)} fill="none" stroke={filterChanObj.color} strokeWidth="1.8" opacity="0.7" /></svg></div>}
+      {mode === '时域' && <><ExploreWaveform active={active} cursor={cursor} onCursor={setCursor} channels={channels} dur={timelineDur} anomalies={result?.anomalies ?? []} />{filterOn && <FilterCompare raw={filterChanObj} filtered={filterCompare} summary={filterSummary} error={filterError} />}
       <div className="event-track"><span>起弧 <b>{signalEvents ? fmt(signalEvents.arc) : '—'}</b></span><i /><span>稳态焊接 <b>{signalEvents ? `${fmt(signalEvents.weld_segment[0])} - ${fmt(signalEvents.weld_segment[1])}` : '—'}</b></span><i /><span>收弧 <b>{signalEvents ? fmt(signalEvents.tail) : '—'}</b></span></div>
       <div className="anomaly-summary"><div className="anomaly-summary-head"><AlertTriangle size={14} /><span>已检出异常区段 {anomalies.length} 个 · 点击可定位</span></div>{anomalies.map((a, i) => <button key={i} className={`anomaly-chip ${a.sev}`} onClick={() => setCursor((a.range[0] + a.range[1]) / 2)}><i /><strong>{a.type}</strong><small>{fmt(a.range[0])} – {fmt(a.range[1])}</small><span>定位 <ArrowUpRight size={12} /></span></button>)}</div>
       <div className="signal-cards">{channels.map((c) => <div key={c.id} className={active.has(c.id) ? '' : 'dim'}><Waves size={16} /><span>{c.name}波形<strong>{c.mean}</strong></span></div>)}</div></>}
-      {mode === 'PSD' && <div className="spectrum-view">{analysisLoading && <p className="dataset-empty-state" role="status">PSD 正在计算…</p>}{analysisError && <p className="dataset-empty-state" role="alert">{analysisError}</p>}<div className="spectrum-head"><span><FilterIcon size={14} />功率谱密度 · Welch 法</span><small>目标通道：{filterChanObj.name}（{filterOn ? `已滤波 ${filterType}` : '原始信号'}）</small></div><PsdChart values={filteredValues} color={filterChanObj.color} lo={filterChanObj.lo} hi={filterChanObj.hi} freqs={psdData?.freqs} psd={psdData?.psd} /><div className="spectrum-note"><BarChart3 size={13} /><span>主峰集中在低频段（短路过渡频率），异常区段在 2-5 kHz 存在次峰。</span></div></div>}
-      {mode === 'STFT' && <div className="spectrum-view"><div className="spectrum-head"><span><Activity size={14} />短时傅里叶变换时频图</span><small>目标通道：{filterChanObj.name}</small></div><StftHeatmap values={filteredValues} color={filterChanObj.color} magnitude={stftData?.magnitude} /><div className="spectrum-note"><Waves size={13} /><span>时频图可观察到 1.9-2.3s 和 3.6-3.9s 两个异常区段的高频能量抬升。</span></div></div>}
-      {mode === 'DWT' && <div className="spectrum-view"><div className="spectrum-head"><span><Layers3 size={14} />离散小波分解（4 层 · db4）</span><small>目标通道：{filterChanObj.name}</small></div><DwtChart values={filteredValues} color={filterChanObj.color} bands={dwtData?.bands} approx={dwtData?.approx} /><div className="spectrum-note"><Gauge size={13} /><span>D1-D4 为细节系数、A4 为近似系数，异常在 D1-D2 高频层最明显。</span></div></div>}
-      {mode === '小波分解' && <div className="spectrum-view"><div className="spectrum-head"><span><Waves size={14} />小波多层分量分解</span><small>目标通道：{filterChanObj.name} · 5 层</small></div><WaveletDecomp values={filteredValues} color={filterChanObj.color} bands={waveletData?.bands} /><div className="spectrum-note"><Layers3 size={13} /><span>L1-L5 由低到高展示不同尺度的小波分量，低层捕捉高频瞬变。</span></div></div>}
+      {mode === 'PSD' && <div className="spectrum-view">{analysisLoading && <p className="dataset-empty-state" role="status">PSD 正在计算…</p>}{analysisError && <p className="dataset-empty-state" role="alert">{analysisError}</p>}<div className="spectrum-head"><span><FilterIcon size={14} />功率谱密度 · Welch 法</span><small>目标通道：{filterChanObj.name}（{filterStateText}）</small></div><PsdChart values={filteredValues} color={filterChanObj.color} lo={filterChanObj.lo} hi={filterChanObj.hi} freqs={psdData?.freqs} psd={psdData?.psd} /><div className="spectrum-note"><BarChart3 size={13} /><span>主峰集中在低频段（短路过渡频率），异常区段在 2-5 kHz 存在次峰。</span></div></div>}
+      {mode === 'STFT' && <div className="spectrum-view"><div className="spectrum-head"><span><Activity size={14} />短时傅里叶变换时频图</span><small>目标通道：{filterChanObj.name}（{filterStateText}）</small></div><StftHeatmap values={filteredValues} color={filterChanObj.color} magnitude={stftData?.magnitude} /><div className="spectrum-note"><Waves size={13} /><span>时频图可观察到 1.9-2.3s 和 3.6-3.9s 两个异常区段的高频能量抬升。</span></div></div>}
+      {mode === 'DWT' && <div className="spectrum-view"><div className="spectrum-head"><span><Layers3 size={14} />离散小波分解（4 层 · db4）</span><small>目标通道：{filterChanObj.name}（{filterStateText}）</small></div><DwtChart values={filteredValues} color={filterChanObj.color} bands={dwtData?.bands} approx={dwtData?.approx} /><div className="spectrum-note"><Gauge size={13} /><span>D1-D4 为细节系数、A4 为近似系数，异常在 D1-D2 高频层最明显。</span></div></div>}
+      {mode === '小波分解' && <div className="spectrum-view"><div className="spectrum-head"><span><Waves size={14} />小波多层分量分解</span><small>目标通道：{filterChanObj.name} · 5 层 · {filterStateText}</small></div><WaveletDecomp values={filteredValues} color={filterChanObj.color} bands={waveletData?.bands} /><div className="spectrum-note"><Layers3 size={13} /><span>L1-L5 由低到高展示不同尺度的小波分量，低层捕捉高频瞬变。</span></div></div>}
     </section>
     <aside className="explore-aside">
       <section className="panel explore-phase-panel">
@@ -559,4 +691,3 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
     </aside>
   </div></div>;
 }
-

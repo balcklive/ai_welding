@@ -21,6 +21,20 @@
 - **通道 id `cur/vol/gas/wir` 前后端一致**；后端不输出颜色 → `chanColor` 按 id 映射（`chartData.chanColorOf` 对扩展通道/未知通道按顺序/哈希稳定取色）。**2026-09**：时域波形 `getSignals` 不再写死 `channels` 过滤 → 后端返回该焊缝全部分量（核心 4 + 焊接速度/六轴/熔池扩展）；默认勾选核心 4，新增通道可在 toggle 中叠加查看。
 - `getSignals` 返回 `values` 已由 api 层抽稀 ≤512，`toPath` 按 `values.length` 归一化横轴（**勿按 mock 的 `SAMPLES`**）。
 - 六种图表都吃后端数组（`freqs/psd`、`magnitude`、`bands+approx`、`bands`、`current+voltage`、`bins+counts+kde`），未取到 API 时用 `values` 走原内部计算兜底（SVG 结构不动）；`DwtChart`/`WaveletDecomp` 有 API 时标签用后端 `band.name`。
-- 滤波由后端计算（请求带 `filter_type/cutoff/cutoff2`），前端不再本地 `applyFilter`。
+- **滤波参数按 Hz 呈现、只作用于目标通道（2026-09-15 修复）**：后端 `filter_type/cutoff/cutoff2` 里的
+  `cutoff/cutoff2` 是**相对奈奎斯特（fs/2）的归一化频率**，Hz = `cutoff × sample_rate / 2`。
+  修复前滑杆把归一化值 ×1000 当 Hz 显示（`0.30` 显示成“300 Hz”，实际 fs=5000 → 750 Hz、
+  fs=20k → 3000 Hz，滑杆 min 0.05 也不是 50 Hz），且 `filterOn` 时**全通道**波形被替换成滤波结果、
+  下方“滤波后”卡片画的又是同一份数据，导致“切换低通/高通/带通数据差异巨大 + 无法对比滤波前后”。
+  现在：`sampleRate` 取自 `getSignals`（唯一 Hz 换算依据，未知时不给假数值）；两个滑杆按**对数刻度**在
+  `MIN_FILTER_HZ ~ 0.99×奈奎斯特` 间调 Hz；`passbandText` 显式写出通带阈值（低通保留 0–f、高通 f–奈奎斯特、
+  带通 f1–f2，含采样率/奈奎斯特提示）；切到带通自动整理 `cutoff < cutoff2`（否则后端 400）；
+  **主波形与其它通道保持原始信号**，滤波结果只请求目标通道（`getSignals({channels:[filterChan], filter_type…})`）
+  并画进 `FilterCompare`（上=原始、下=滤波后，各自按自身量程缩放并把量程写进图注），
+  PSD/STFT/DWT/小波/相图/PDD 仍吃滤波后数据（分析端点自己带滤波参数）。
+  回归 `src/App.analysis-filter-regression.test.mjs`。后端滤波仍由 `dsp.filter_signal` 计算（前端无本地 `applyFilter`）。
+- **滤波后量程/直方图由后端按滤波后序列重算（2026-09-15）**：`GET …/signals` 带 `filter_type` 时返回的
+  `lo/hi/mean` 是滤波后序列的统计（否则高通/带通去均值信号会按原始量程画成贴边直线）；
+  `/analysis/pdd` 带滤波时直方图量程同理，避免全部落进首 bin。
 - 波形初始用 `emptyChannels` 占位保留通道骨架，防 `channels[0]` undefined 崩溃。
 - 分析基于当前焊缝最新版本；`getWeld` 带 15s 前端缓存（`api/welds`），异步任务刚完成后重进页面可能短暂读到旧 `latest_version_id`。

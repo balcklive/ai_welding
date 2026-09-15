@@ -2,6 +2,8 @@
 
 覆盖 `app.services.dsp` 的真实计算：
 - `filter_signal` 低通对白噪声 → 高频能量相对原始显著衰减（能量比断言）；
+- `filter_signal` 的归一化截止频率**相对奈奎斯特 fs/2**（Hz = cutoff × fs/2）：
+  同一物理频率在不同采样率下取不同归一化值、低通/高通/带通通带边界符合预期；
 - `compute_psd` 对 50Hz 正弦在 50Hz 附近有峰（argmax）；
 - `compute_dwt` 返回 D1..D4 + A4（共 5 项）；
 - `wavelet_decomp` 5 层细节分量 L1..L5；
@@ -43,6 +45,40 @@ def test_filter_signal_bandpass_keeps_passband() -> None:
     x = np.sin(2 * np.pi * 10 * t) + np.sin(2 * np.pi * 100 * t) + np.sin(2 * np.pi * 300 * t)
     y = dsp.filter_signal(x, fs, "带通", 0.1, 0.3)  # 通带 100~300 Hz（奈奎斯特归一）
     assert _high_freq_energy(y, fs, above=0.6) < _high_freq_energy(x, fs, above=0.6) * 0.5
+
+
+def _rms(x) -> float:
+    return float(np.sqrt(np.mean(np.asarray(x, dtype=float) ** 2)))
+
+
+def test_filter_cutoff_is_normalized_to_nyquist() -> None:
+    """归一化截止频率相对**奈奎斯特 fs/2**：Hz = cutoff × fs/2。
+
+    修复背景：前端曾把 0.30 显示成 300 Hz（等于 cutoff × 1000），而 fs=5000 时
+    0.30 实为 1500 Hz。这里用 fs=5000 钉死口径：0.02 ↔ 50 Hz。
+    """
+    fs = 5000
+    t = np.linspace(0, 2, 2 * fs, endpoint=False)
+    tonal = np.sin(2 * np.pi * 20 * t) + np.sin(2 * np.pi * 300 * t)
+    lowpass = dsp.filter_signal(tonal, fs, "低通", 0.02)  # 50 Hz 以下通过
+    highpass = dsp.filter_signal(tonal, fs, "高通", 0.02)  # 50 Hz 以上通过
+    # 每路单频分量 rms ≈ 0.707：低通只留 20 Hz，高通只留 300 Hz
+    assert 0.62 < _rms(lowpass) < 0.80
+    assert 0.62 < _rms(highpass) < 0.80
+    # 通带内的两个分量都保留：10~1000 Hz ↔ 0.004~0.4
+    bandpass = dsp.filter_signal(tonal, fs, "带通", 0.004, 0.4)
+    assert _rms(bandpass) > 0.9
+
+
+def test_filter_same_hz_across_sample_rates() -> None:
+    """同一物理截止频率（50 Hz）在不同采样率下取不同归一化值，滤波结果一致。"""
+    expected: list[float] = []
+    for fs, cutoff in ((5000, 0.02), (20000, 0.005)):
+        t = np.linspace(0, 1, fs, endpoint=False)
+        x = np.sin(2 * np.pi * 20 * t) + np.sin(2 * np.pi * 300 * t)
+        expected.append(_rms(dsp.filter_signal(x, fs, "低通", cutoff)))
+    assert abs(expected[0] - expected[1]) < 0.02
+    assert all(0.62 < value < 0.80 for value in expected)
 
 
 def test_compute_psd_peak_near_50hz() -> None:

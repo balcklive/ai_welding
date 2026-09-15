@@ -30,7 +30,11 @@ Task 13：对齐任务走异步 Job——`POST …/alignment-tasks` 建 pending 
   两种写法——FastAPI 的 `Query` 只绑定其中一种 key，故从 `request.query_params` 手读合并。
 - `analysis/result` 是**具体路径**，必须在 `analysis/{mode}` 之前注册，否则会被
   `mode="result"` 吞掉（FastAPI 按注册顺序匹配）。
-- 滤波参数 `cutoff/cutoff2` 为 0~1 归一化频率（相对奈奎斯特），`带通` 需两者。
+- 滤波参数 `cutoff/cutoff2` 为 0~1 归一化频率（**相对奈奎斯特频率 fs/2**，与 scipy
+  `butter` 不传 fs 的默认一致），`带通` 需两者且 `cutoff < cutoff2`。换算：
+  **Hz = cutoff × fs/2**（真实数据 fs 常见 5k/20k，因此 0.3 是 1500/3000 Hz 而不是 300 Hz；
+  前端滑杆按 Hz 呈现即取 `sample_rate` 换算）。滤波后返回的 `lo/hi/mean` 按滤波后序列重算
+  （`_series_range`），PDD 直方图量程同理。
 """
 
 from datetime import datetime, timezone
@@ -39,6 +43,7 @@ from io import BytesIO
 import json
 import math
 
+import numpy as np
 from fastapi import APIRouter, Depends, Request
 from loguru import logger
 from pydantic import BaseModel
@@ -224,7 +229,9 @@ def get_signals(
     （秒，与 values 等长——min-max 选点非均匀，前端须按 [t,v] 画点，勿按序号均分）；
     `start`/`end`（秒）给定则只取该时间窗（缩放增量取细节）。不传参数返回全分辨率
     数据（旧调用方/兼容行为不变）。**DSP 分析端点（/analysis/*）不用此抽稀，仍吃全量。**
-    滤波给定则对选中通道真实滤波（dsp.filter_signal）。返回
+    滤波给定则对选中通道真实滤波（dsp.filter_signal；`cutoff/cutoff2` 为相对奈奎斯特的
+    归一化频率，Hz = cutoff × sample_rate/2），此时 `lo/hi/mean` 按**滤波后**序列重算。
+    返回
     `{duration, sample_rate, channels:[{id,name,unit,values[],times?,lo,hi,mean}], events, anomalies}`。
     """
     resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
@@ -270,6 +277,11 @@ def get_signals(
             "hi": chan.hi,
             "mean": chan.mean,
         }
+        if filter_type:
+            # 滤波改均值/幅度：量程必须按滤波后序列重算，否则高通/带通信号会被按
+            # 原始量程（电流 0–600）画成贴边直线，前端"滤波前后对比"必然失真。
+            lo, hi, mean = _series_range(values)
+            item["lo"], item["hi"], item["mean"] = lo, hi, mean
         if downsample:
             sel = signals.downsample_indices(values, max_points or 0)
             item["values"] = values[sel].tolist()
@@ -369,6 +381,11 @@ def get_analysis_mode(
     if mode == "wavelet":
         return ok(dsp.wavelet_decomp(x))
     if mode == "pdd":
+        if filter_type:
+            # 滤波后信号均值/幅度都变了，直方图量程必须按滤波后序列取；
+            # 否则高通信号（均值≈0）会全部落进原始量程（如电流 0–600）的第 0 个 bin。
+            lo, hi, _ = _series_range(x)
+            return ok(dsp.pdd_density(x, bins=28, lo=lo, hi=hi))
         return ok(dsp.pdd_density(x, bins=28, lo=chan.lo, hi=chan.hi))
     return err(40000, f"未知分析模式: {mode}，需为 psd|stft|dwt|wavelet|phase|pdd", status=400)
 
@@ -1199,3 +1216,23 @@ def _filter_error(filter_type: str | None, cutoff: float | None, cutoff2: float 
         if cutoff >= cutoff2:
             return "cutoff 需小于 cutoff2"
     return None
+
+
+def _series_range(values) -> tuple[float, float, float]:
+    """序列的 `(lo, hi, mean)`，量程按数据自身 min/max 加 5% 余量（`mean` 保留 2 位）。
+
+    用途：滤波后的量程/均值回填。核心通道的原始量程固定在 `CHANNEL_SPECS`（电流 0–600、
+    电压 0–700），对滤波后信号不再成立——高通/带通去均值后按原始量程绘制会贴边成直线，
+    PDD 直方图会全挤进首 bin。与 `signal_ingest._data_range` 同口径。
+    """
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return 0.0, 1.0, 0.0
+    mean = round(float(np.mean(arr)), 2)
+    lo = float(np.min(arr))
+    hi = float(np.max(arr))
+    if hi <= lo:  # 常值序列：防除零，给一个可见量程
+        pad = max(abs(hi) * 0.05, 1.0)
+        return lo - pad, hi + pad, mean
+    pad = (hi - lo) * 0.05
+    return lo - pad, hi + pad, mean
