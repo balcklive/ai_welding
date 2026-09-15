@@ -9,6 +9,15 @@
   - `data_records.dataset_id` 引用 `datasets`，须先删焊缝再删数据集；
   - 真实焊缝若误挂在演示数据集下（曾出现 REG-20260815-00004 挂在 工艺质量预测集），脚本会挪回真实数据集（id=1）再删；
   - 脚本失败自动回滚（整个 Session 一个事务，仅末尾 commit）。
+- `backfill_ingest_events.py`：按新的 `detect_events` **重算已入库的 `signal_ingests.events/anomalies`**
+  （`--dry-run` 预览 / `--weld WLD-...` 限定单条焊缝）。用途：`events` 只在导入时算一次并存在行里
+  （`load_signal_bundle` 直接读该行，不重算），而 `POST …/raw-files` 对已存在的 `(version_id,
+  source_object_key)` 一律 409 不重跑——算法修复后线上存量数据不会自愈。CSV 按 `source_object_key`
+  从 MinIO 重读，`column_map`/`sample_rate` 沿用行内存值（与当初导入同一套输入，无需重新校验）。
+  **连带重算 `DataRecord.data_fields` 与 `wire_feed_speed`/`welding_speed`**——它们都取
+  `events.weld_segment` 作稳态窗口（`_steady_window`），events 变了必须跟着变，否则登记详情里的
+  工艺列还是旧窗口的中位数。首次执行（2026-09-15）修正 4 条：`WLD-20260903-0002` 焊接段
+  0.133s→18.196s、`WLD-20260815-0003` 83.204s→83.244s。
 
 ## 子目录
 
