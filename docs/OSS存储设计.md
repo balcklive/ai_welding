@@ -25,7 +25,10 @@ aiwelding/  (桶)
 ├── raw/{registration_no}/{original_filename}          # 原始采集数据（登记上传）
 ├── processed/{weld_id}/
 │   ├── align/{asset}                                  # 对齐产物（时序 CSV / 关键帧 JPG / mapping.json / tracks.json）
-│   ├── split/{sample_key}.jpg | .npy                  # 切分样本（图像/信号）
+│   ├── split/{task_id}/manifest.json                  # 分段任务清单（v3：规则/源版本/映射/样本清单）
+│   ├── split/{task_id}/samples/{index:06d}.json       # 单样本可独立读取（v3 多模态样本包）
+│   ├── split/{task_id}/samples/{index:06d}.jpg        # 焊缝图片按 ROI 投影裁出的切片（v3）
+│   ├── split/{sample_key}.jpg | .npy                  # 历史（≤2）切分样本（图像/信号）
 │   ├── signals/{ingest_id}.parquet                    # 真实信号导入的结构化副本（Task 18，signal_ingest 写入）
 │   ├── video/{stem}.preview.mp4                       # 浏览器可播预览版（H.264+faststart，media_prep 登记挂载视频时自动转码）
 │   └── signals/{channel}.csv                          # 信号片段

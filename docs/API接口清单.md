@@ -97,7 +97,9 @@
 | `ValidationRule` | 核验规则结果（15 项） | name, status(passed/warning/failed), message |
 | `AlignmentTask` | 多模态对齐任务（Job） | id, version_id, status, events{arc, weld_segment, tail}, tracks[]（可用性展示），mapping（**可执行坐标映射**，2026-09-22 新增），assets[]（对齐产物对象键，供播放/下载） |
 | `Calibration` | 统一坐标系标定（**归属焊缝 v1.0 原始版本**） | calibration{video{offset_seconds}, seam_image{roi{x,y,w,h}}}, anchored_version_id, video{offset_seconds, calibrated}, seam_image{roi, calibrated, object_key}。`offset_seconds` 语义：视频零点在信号轴上的时刻，`t_video = t_signal - offset` |
-| `SplitTask` | 数据切分任务（Job） | id, version_id, status, rules, sample_count |
+| `SplitTask` | 数据切分任务（Job） | id, version_id, status, rules（v3 含 `rules_version=3`/`window_seconds`/`stride_seconds`/`tail_policy`/`effective_range`/`mapping_hash`）, sample_count。`task_format` **v3 起为 null**（§3.4 废弃；历史任务保留原值） |
+| `SplitPreview` | 分段预览（v3，只读） | preview_token, rules, rules_hash, mapping_hash, effective_range{start,end}, window_seconds, stride_seconds, overlap_seconds, overlap_ratio, tail_policy, sample_count, windows[]（index/start/end/duration + signal/video/seam_image 摘要）, timeline（duration/events/signal.tracks/video_thumbnail_times/seam_image_projection）, modalities{}, warnings[] |
+| `SplitSample` | 多模态样本（v3） | id, frame_no, start_time, end_time, schema_version, object_keys[], modalities{}；详情额外含 meta（§3.3）与 time_series[] |
 | `AnnotationTask` | 标注任务（Job：从切分样本/手动选样生成） | id, job_id, split_task_id, name, status, progress |
 | `Sample` | 切分样本 | id, task_id, annotation_task_id, object_keys[], frame_no, annotations[] |
 | `Annotation` | 标注结果 | sample_id, labels[{category, box, confidence}], annotator, updated_at |
@@ -173,8 +175,11 @@
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/signals` | 多通道时域波形。**真实信号（source=real）返回"核心 4（cur 电流/vol 电压/gas 气体流量/wir 送丝速度）+ 导入 CSV 的全部扩展通道"**（多模态分析格式含焊接速度 `weld_speed`、六轴关节 `j1..j6`、熔池几何 `pool_width/pool_height/pool_area/pool_perimeter` 及自动保留的数值列）；不传 `channels[]` 即返回全部分量，前端据此勾选；`generated` 仅核心 4。响应含 `source`。**波形预览两级加载**：`max_points`(2~20000) 触发服务端 **min-max 池化抽稀**（保留瞬态尖峰），每通道附 `times[]`（秒，与 values 等长且非均匀，前端按 [t,v] 画点）；`start`/`end`(秒) 只取时间窗。DSP 分析端点不受影响。**滤波口径（2026-09-15）**：`cutoff/cutoff2` 是**相对奈奎斯特频率 fs/2 的归一化频率**（0<cutoff<1，换算 `Hz = cutoff × sample_rate/2`；如 fs=5000 时 0.30=750 Hz，fs=20000 时 0.30=3000 Hz，**不是** 300 Hz），带 `filter_type` 时返回的 `lo/hi/mean` 按**滤波后**序列重算 | query: `channels[]`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`, `max_points`, `start`, `end` |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/{mode}` | 单视图分析数据：`mode` ∈ `psd\|stft\|dwt\|wavelet\|phase\|pdd` | query: `channel`, `filter_type`(低通/高通/带通), `cutoff`, `cutoff2`（可选，滤波后计算，与信号页滤波联动；`cutoff/cutoff2` 同 `/signals` 口径，`pdd` 带滤波时直方图量程取滤波后序列） |
 | GET | `/api/v1/welds/{weld_id}/versions/{version_id}/analysis/result` | AI 异常检测结果：焊接稳定度、正常/电弧不稳/飞溅比例、异常区段列表 | — 需登录 |
-| POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交数据切分任务（**异步**） | body: `fixed_rate`(帧/样本), `keep_event_buffer`(±s), `task_format`(目标检测/图像分类/语义分割/时序分类) |
-| GET | `/api/v1/split-tasks/{task_id}` | 切分任务状态/结果（生成样本数） | 轮询（Job 结构） |
+| POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-preview` | 分段预览（**v3，只读**）：按秒级规则算窗口，**不建任务、不写产物**。返回 `preview_token`（创建任务的唯一凭证）+ `window_seconds`/`stride_seconds`/`overlap_seconds`/`tail_policy`/`sample_count` + `windows[]`（每窗各模态映射摘要）+ `timeline`（统一轴：事件、降采样时序 ≤1200 点/轨、视频缩略图时间点、焊缝图片投影）+ `modalities`（各模态 `available`/`calibrated`/`reason`）+ `warnings[]`。**请求体不含标定参数**——映射恒从源版本 `calibration` 与对齐产物读取 | body: `window_seconds?`(默认 2.0), `stride_seconds?`(默认 2.0), `event_start?`, `event_end?`, `keep_event_buffer?`, `tail_policy?`(`drop`/`keep`) |
+| POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交分段任务（**v3 异步**）：**只接受 `preview_token`**，服务端用 token 里签过的规则与映射哈希**重建**窗口——客户端不能另交一套规则。token 绑定焊缝/版本；规则、有效事件区间或标定/映射自预览以来**已变更 → 409** 要求重新预览。新任务 `rules_version=3`、`task_format=null`（§3.4 废弃） | body: `{preview_token}` |
+| GET | `/api/v1/split-tasks/{task_id}` | 分段任务状态/结果：`result` 内嵌 `sample_count`/`rules_version`/`schema_version`/`mapping_hash`/`manifest_key`——前端据此区分 v3 与历史（≤2）任务，历史任务只在「历史切分任务」只读展示 | 轮询（Job 结构） |
+| GET | `/api/v1/split-tasks/{task_id}/samples` | 任务样本分页（**v3**）：只给时间窗与各模态**摘要**，**不返回完整高频时序数组或大尺寸图片**（几百切片时首屏会失控） | query: `page`, `page_size`(≤100) |
+| GET | `/api/v1/split-tasks/{task_id}/samples/{sample_id}` | 单样本详情：完整 `meta`（§3.3 多模态样本包）+ **该窗内的时序局部数据**（降采样 ≤600 点/通道）；媒体走对象键按需换签名 URL | 需登录 |
 | GET | `/api/v1/label-categories` | 缺陷标签类别（焊瘤/气孔/未熔合/咬边/正常） | 需登录 |
 | POST | `/api/v1/annotation-tasks` | 创建标注任务（**异步**：从切分样本/手动选样/时序信号/熔池视频生成，返回 `{ job_id }`）。`video` 锚点样本 `video_key` 优先用 media_prep 转码预览版（`meta.source_video_key` 保留原始 key；未转码/失败回退原始 key） | body: `source`(`split_task` / `manual` / `signal` / `video`), `split_task_id?`, `version_id?`(signal/video 必填), `name?` |
 | POST | `/api/v1/annotation-tasks/{task_id}/import` | 导入额外样本到标注任务（补充文件或其它切分任务样本） | body: `source`(`files` / `split_task`), `object_keys[]?`, `split_task_id?` |
@@ -342,8 +347,11 @@ getAlignmentTask(taskId: string): Promise<Job<AlignmentResult>>
 getSignals(weldId: string, versionId: string, opts: SignalQuery): Promise<SignalData>
 getAnalysisMode(weldId: string, versionId: string, mode: AnalysisMode, channel: string, filter?: { type: '低通'|'高通'|'带通'; cutoff: number; cutoff2?: number }): Promise<AnalysisViewData>
 getAnalysisResult(weldId: string, versionId: string): Promise<AnalysisResult>
-createSplitTask(weldId: string, versionId: string, rules: SplitRules): Promise<{ job_id: string }>
+previewSplitTask(weldId: string, versionId: string, rules: SplitRules): Promise<SplitPreview>
+createSplitTask(weldId: string, versionId: string, previewToken: string): Promise<{ job_id: string }>
 getSplitTask(taskId: string): Promise<Job<SplitResult>>
+listSplitSamples(taskId: string, params?: {page?, page_size?}): Promise<Page<SplitSample>>
+getSplitSample(taskId: string, sampleId: number): Promise<SplitSampleDetail>
 listLabelCategories(): Promise<LabelCategory[]>
 createAnnotationTask(body: { source: 'split_task' | 'manual'; split_task_id?: string; name?: string }): Promise<{ job_id: string }>
 importAnnotationSamples(taskId: string, body: { source: 'files' | 'split_task'; object_keys?: string[]; split_task_id?: string }): Promise<void>
@@ -420,7 +428,7 @@ exportReport(body: ExportRequest): Promise<{ urls: { ref_id: string; url: string
 | 数据版本 · 新建（去噪/人工修正） | `welds.createVersion()` | `POST /welds/{weld_id}/versions` |
 | 分析 · 选择数据 | `datasets.listDatasets()` + `welds.listWelds({ dataset_id })`（数据集优先两级选择，未核验通过置灰） | `GET /datasets` + `GET /welds?dataset_id=` |
 | 对齐 · 时间轴/事件/轨道 | `analysis.createAlignmentTask()` + `useJob(getAlignmentTask)` | `POST` / `GET …/alignment-tasks`（成功自动生成时间对齐版本） |
-| 切分 · 规则/预览/样本数 | `analysis.createSplitTask()` + `useJob(getSplitTask)` | `POST` / `GET …/split-tasks` |
+| 分段 · 规则/多模态预览/样本 | `analysis.previewSplitTask()` → `createSplitTask(previewToken)` + `useJob(getSplitTask)`；样本列表/详情 ← `listSplitSamples`/`getSplitSample` | `POST …/split-preview` → `POST …/split-tasks` → `GET /split-tasks/{id}(/samples)` |
 | 起收弧识别 · 时域波形+滤波 | `analysis.getSignals()` | `GET …/signals` |
 | 起收弧识别 · PSD/STFT/DWT/小波/相图/PDD | `analysis.getAnalysisMode(mode, channel, filter?)` | `GET …/analysis/{mode}`（支持滤波参数） |
 | 起收弧识别 · 异常区段/稳定度 | `analysis.getAnalysisResult()` | `GET …/analysis/result` |
