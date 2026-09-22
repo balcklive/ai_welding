@@ -40,6 +40,13 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - **T4.4 状态与恢复（2026-09-14，R2）**：新增 `GET /registrations/{id}/ingest-status`（**全部由已有数据推导**：`awaiting_upload/importing/failed/ready` + `csv_failed`）与 `POST /registrations/{id}/reimport`（清掉 failed 行与其 Job 后重新入队，无 failed 行 → 400）。挂载接口的 `CSV 已存在导入任务` 改用**独立错误码 `40901`**（`CSV_INGEST_CONFLICT`）——前端据此判定"上次其实挂载成功了、只是响应丢了"，继续进导入态而不是卡死。
 - `analysis.py`：**Task 11 ~ Task 14 已实现**。router 无前缀、`dependencies=[Depends(get_current_user)]`
   统一要求登录（完整路径 `/api/v1/*`），契约 `docs/API接口清单.md` §3.4：
+  - `GET` / `PUT /welds/{weld_id}/versions/{version_id}/calibration`（**2026-09-22 闭环打通**）：
+    读/写该焊缝的**权威标定**。**归属固定钉在该焊缝的 v1.0 原始版本**——`version_id` 只用于
+    焊缝/版本归属校验（走公共服务 `_resolve_weld_version`，含 ownership ACL），任何属于该焊缝的
+    版本都读到同一份、也都会写到 v1.0。PUT 是**合并语义**（`CalibrationUpdate`，省略的组保持原值、
+    显式 `null` 清除该组），只改 `data_versions.calibration` 一列，写 `update/calibration` 审计。
+    **只在本次确实给出 ROI 时**才下载图片取宽高做越界校验（GET 与仅改 offset 的 PUT 不付这个成本）；
+    校验失败一律 400（`40000`）+ 面向用户的原因。标定能力见 `services/CLAUDE.md` 的标定段。
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
     **Task 4 修复：写 `create/alignment_task` 审计，且非管理员按焊缝 stable owner(user_id) 做 ownership ACL**；

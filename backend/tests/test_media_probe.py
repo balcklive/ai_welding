@@ -85,6 +85,51 @@ def test_extract_keyframes_negative_timestamp_skipped(mp4_bytes: bytes) -> None:
     assert keyframes == []
 
 
+def test_seek_offset_records_signal_time_but_seeks_video_time(mp4_bytes: bytes) -> None:
+    """`seek_offset` 只改 seek 的时刻，写进结果的 `t` 仍是**信号时间**（前端按信号轴摆帧）。"""
+    _meta, keyframes = media_probe.analyze_video(
+        mp4_bytes, [("arc", 1.2)], seek_offset=0.5
+    )
+    assert [kf["event"] for kf in keyframes] == ["arc"]
+    assert keyframes[0]["t"] == pytest.approx(1.2, abs=0.15)  # 未被 offset 改写
+
+
+def test_seek_offset_shifts_events_out_of_video_coverage(mp4_bytes: bytes) -> None:
+    """换算到视频轴后越界的时刻被跳过——这正是"视频比信号晚开"时的真实情形。"""
+    points = [("arc", 0.4), ("weld_start", 1.0)]
+    _meta, without = media_probe.analyze_video(mp4_bytes, points)
+    assert [kf["event"] for kf in without] == ["arc", "weld_start"]
+
+    # offset=0.6 → 视频轴时刻 0.4-0.6=-0.2（早于视频开头）、1.0-0.6=0.4 → 只剩 weld_start
+    _meta, shifted = media_probe.analyze_video(mp4_bytes, points, seek_offset=0.6)
+    assert [kf["event"] for kf in shifted] == ["weld_start"]
+
+    # offset=1.2 → 两帧都早于视频开头 → 全部跳过
+    _meta, none_left = media_probe.analyze_video(mp4_bytes, points, seek_offset=1.2)
+    assert none_left == []
+
+
+def test_seek_offset_positive_pulls_late_event_into_coverage(mp4_bytes: bytes) -> None:
+    """反向验证：正的 offset 把**晚于视频时长**的事件拉进覆盖范围。"""
+    _meta, without = media_probe.analyze_video(mp4_bytes, [("late", 2.6)])
+    assert without == []  # 2.6s > 2s 视频
+
+    _meta, with_offset = media_probe.analyze_video(mp4_bytes, [("late", 2.6)], seek_offset=0.9)
+    assert [kf["event"] for kf in with_offset] == ["late"]  # 2.6-0.9=1.7s，落在视频内
+
+
+def test_seek_offset_negative_moves_sampling_point_earlier(mp4_bytes: bytes) -> None:
+    """负 offset（视频早于信号开始）改变实际取帧位置——同一信号时刻取到不同的帧。"""
+    _meta, at_zero = media_probe.analyze_video(mp4_bytes, [("probe", 1.0)])
+    _meta, shifted = media_probe.analyze_video(mp4_bytes, [("probe", 1.0)], seek_offset=-0.6)
+    assert [kf["event"] for kf in at_zero] == ["probe"]
+    assert [kf["event"] for kf in shifted] == ["probe"]
+    # 1.0s 处 vs 1.6s 处：testsrc 逐帧变化，JPEG 字节必然不同
+    assert at_zero[0]["bytes"] != shifted[0]["bytes"]
+    # 记录的仍是同一信号时刻
+    assert shifted[0]["t"] == pytest.approx(1.0, abs=0.15)
+
+
 def test_get_ffmpeg_exe_missing_raises(monkeypatch) -> None:
     import sys
 

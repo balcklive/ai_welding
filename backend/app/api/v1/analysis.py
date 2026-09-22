@@ -63,7 +63,7 @@ from app.models.analysis import (
 )
 from app.models.data import User
 from app.schemas.common import err, ok
-from app.services import dsp, features, signal_ingest, signals, splitting
+from app.services import alignment, dsp, features, signal_ingest, signals, splitting
 from app.services import welds as svc
 from app.services.jobs import (
     _iso_utc,
@@ -105,6 +105,19 @@ class AlignmentTaskCreate(BaseModel):
     """POST …/alignment-tasks 请求体（契约 §3.4）。`modalities[]` 空时由服务端按焊缝登记模态兜底。"""
 
     modalities: list[str] = []
+
+
+class CalibrationUpdate(BaseModel):
+    """PUT …/calibration 请求体（契约 §3.4）。
+
+    **合并语义**：只更新给出的组，省略的组保持原值，显式 `null` 清除该组。
+
+    - `video.offset_seconds`：视频零点在信号轴上的时刻，`t_video = t_signal - offset`；
+    - `seam_image.roi`：焊缝照片上包住焊缝条带的轴对齐矩形 `{x,y,w,h}`（像素）。
+    """
+
+    video: dict | None = None
+    seam_image: dict | None = None
 
 
 class SplitTaskCreate(BaseModel):
@@ -617,6 +630,85 @@ def get_feature_extraction(
 
 
 # ── 对齐任务（Task 13：异步 Job，执行器在后台跑 handler） ───────────────
+
+
+@router.get("/welds/{weld_id}/versions/{version_id}/calibration")
+def get_calibration(
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """读该焊缝的**权威标定**（契约 §3.4）。
+
+    标定归属固定钉在 **v1.0 原始版本**上——对齐任务可能跑在任意加工版本，标定若跟着任务
+    版本走，同一条焊缝会散出多份互相矛盾的标定。故 `version_id` 只用于归属校验，任何属于
+    该焊缝的版本都读到同一份标定。
+    """
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
+    if resolved is not None:
+        return resolved
+    record = svc.get_record_by_weld_id(session, weld_id)
+    v10, calibration = alignment.anchored_calibration(session, record)
+    return ok(alignment.calibration_payload(v10, calibration))
+
+
+@router.put("/welds/{weld_id}/versions/{version_id}/calibration")
+def put_calibration(
+    weld_id: str,
+    version_id: int,
+    body: CalibrationUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """写标定（归属 v1.0 原始版本），写审计（契约 §3.4）。
+
+    **只改 `calibration` 一列**——不碰 `object_keys`、不重算历史 `alignment_tasks.mapping`、
+    不动任何 `split_tasks`；重新标定只影响此后新发起的对齐/分段，历史产物保持当时口径。
+    ROI 必须落在焊缝照片的真实像素范围内，故给出 ROI 时会下载图片读一次宽高。
+    """
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
+    if resolved is not None:
+        return resolved
+    record = svc.get_record_by_weld_id(session, weld_id)
+    v10, current = alignment.anchored_calibration(session, record)
+    if v10 is None:
+        return err(40000, "该焊缝没有 v1.0 原始版本，无法保存标定", status=400)
+    patch_fields = body.model_dump(exclude_unset=True)
+
+    # 只有本次确实给了 ROI 才去下载图片取宽高——GET 与仅改 offset 的 PUT 不付这个成本。
+    image_size = None
+    roi_given = (
+        isinstance(patch_fields.get("seam_image"), dict)
+        and patch_fields["seam_image"].get("roi") is not None
+    )
+    if roi_given:
+        image_key = alignment.seam_image_key(v10.object_keys)
+        if image_key is None:
+            return err(40000, "该焊缝没有焊缝图片，无法标定 ROI", status=400)
+        from app.storage import get_storage
+
+        image_size = alignment.read_image_size(get_storage(), image_key)
+        if image_size is None:
+            return err(40000, f"焊缝图片不可读（{image_key}），无法校验 ROI 范围", status=400)
+
+    try:
+        patch = alignment.validate_calibration_patch(patch_fields, image_size=image_size)
+    except alignment.CalibrationError as exc:
+        return err(40000, str(exc), status=400)
+
+    merged = alignment.merge_calibration(current, patch)
+    alignment.save_calibration(session, v10, merged)
+    write_audit(
+        session,
+        current_user.id,
+        "update",
+        "calibration",
+        str(v10.id),
+        {"weld_id": weld_id, "calibration": merged},
+    )
+    session.commit()
+    return ok(alignment.calibration_payload(v10, merged))
 
 
 @router.post("/welds/{weld_id}/versions/{version_id}/alignment-tasks")

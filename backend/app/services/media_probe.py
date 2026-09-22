@@ -75,14 +75,19 @@ def parse_ffmpeg_info(stderr: str) -> dict:
 
 
 def analyze_video(
-    data: bytes, event_points: list[tuple[str, float]]
+    data: bytes,
+    event_points: list[tuple[str, float]],
+    *,
+    seek_offset: float = 0.0,
 ) -> tuple[dict, list[dict]]:
     """探测视频元数据并按事件时刻抽关键帧（临时文件只写一次）。
 
-    - `event_points`: `[("arc", 0.42), ...]`，时刻会被钳制到 `[0, duration-0.05]`，
-      钳后 <0（视频比事件还短）的跳过；
+    - `event_points`: `[("arc", 0.42), ...]`，时刻在**信号时间轴**上；
+    - `seek_offset`: 视频在信号轴上的零点（`t_video = t_signal - seek_offset`，设计 §3.1.1），
+      默认 0（视频与信号同零点）。传 `event_points=[]` 即为**只探测不抽帧**；
     - 返回 `(metadata, keyframes)`：metadata 同 `parse_ffmpeg_info`（duration 必有），
-      keyframes = `[{"event", "t"(钳后时刻), "bytes"(JPEG, SOI 开头)}]`（仅成功的）。
+      keyframes = `[{"event", "t"(信号时间), "bytes"(JPEG, SOI 开头)}]`（仅成功的）。
+      换算到视频轴后落在覆盖范围外的时刻被跳过。
     - 空数据/时长解析失败抛 ValueError；ffmpeg 不可用抛 RuntimeError。
     """
     if not data:
@@ -92,7 +97,9 @@ def analyze_video(
         path = Path(tmp) / "probe.mp4"
         path.write_bytes(data)
         meta = _probe_file(ff, path)
-        keyframes = _extract_keyframes(ff, path, event_points, meta["duration"])
+        keyframes = _extract_keyframes(
+            ff, path, event_points, meta["duration"], seek_offset=seek_offset
+        )
     return meta, keyframes
 
 
@@ -180,8 +187,14 @@ def _extract_keyframes(
     path: Path,
     event_points: list[tuple[str, float]],
     duration: float | None,
+    seek_offset: float = 0.0,
 ) -> list[dict]:
-    """逐事件 `ffmpeg -ss {t} -i {in} -frames:v 1 -q:v 2 out.jpg`；单帧失败告警跳过。"""
+    """逐事件 `ffmpeg -ss {t - seek_offset} -i {in} -frames:v 1 -q:v 2 out.jpg`；单帧失败告警跳过。
+
+    `event_points` 的时刻在**信号时间轴**（统一轴）上；`seek_offset` 是该视频在统一轴上的
+    零点，换算为 `t_video = t_signal - seek_offset`（设计 §3.1.1）。写进结果的 `t` 仍是
+    **信号时间**——前端按信号时间轴摆放关键帧，换算只发生在 seek 这一刻。
+    """
     out: list[dict] = []
     if duration is None:
         return out
@@ -191,12 +204,16 @@ def _extract_keyframes(
         except (TypeError, ValueError):
             logger.warning("Invalid keyframe event timestamp; skipping: event={} t={}", event, t)
             continue
-        if t < 0 or t >= duration:
-            # 事件超出视频时长：直接跳过（EOF 附近 -ss 抽不到帧，钳制会静默产出
-            # 错误时刻的帧），reason 由调用方按 metadata.keyframes 缺失解读。
-            logger.warning("Event timestamp exceeds video duration; skipping: event={} t={} duration={}", event, t, duration)
+        seek_t = t - seek_offset
+        if seek_t < 0 or seek_t >= duration:
+            # 换算到视频轴后落在视频覆盖范围外：直接跳过（EOF 附近 -ss 抽不到帧，
+            # 钳制会静默产出错误时刻的帧），reason 由调用方按 metadata.keyframes 缺失解读。
+            logger.warning(
+                "Event outside video coverage; skipping: event={} signal_t={} video_t={} duration={}",
+                event, t, seek_t, duration,
+            )
             continue
-        t_eff = min(t, duration - 0.05)
+        t_eff = min(seek_t, duration - 0.05)
         out_path = path.with_name(f"frame_{event}.jpg")
         try:
             subprocess.run(
@@ -216,5 +233,5 @@ def _extract_keyframes(
         if not data.startswith(_JPEG_SOI):
             logger.warning("Keyframe output is not JPEG; skipping: event={}", event)
             continue
-        out.append({"event": event, "t": round(t_eff, 4), "bytes": data})
+        out.append({"event": event, "t": round(t, 4), "bytes": data})
     return out

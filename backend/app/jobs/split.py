@@ -16,7 +16,7 @@ from app.jobs.executor import register_handler
 from app.models.analysis import Sample, SplitTask
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
-from app.services import media_probe, splitting
+from app.services import alignment, media_probe, splitting
 from app.services.jobs import mark_succeeded
 from app.services.welds import reuse_or_create_version
 from app.storage import get_storage
@@ -71,6 +71,11 @@ def handle(job_id: int, session: Session) -> None:
     storage = get_storage()
     video_key = next((key for key in version.object_keys or [] if key.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".webm"))), None)
     video_bytes = storage.get_object(video_key) if task.task_format == "目标检测" and video_key else None
+    # 统一坐标：视频零点取该焊缝 v1.0 的标定，走与对齐服务**同一个 resolver**——
+    # 两处各读一次就会漂移，"分段侧用哪个 offset"只有这一处来源。
+    seek_offset = alignment.calibration_offset_seconds(
+        alignment.resolve_calibration(session, record)
+    )
     uploaded: list[str] = []
     try:
         for index, window in enumerate(windows, start=1):
@@ -89,13 +94,24 @@ def handle(job_id: int, session: Session) -> None:
                 "rules_version": rules.get("rules_version", 1),
             }
             # T10：视频帧号取**窗口中点**对应的帧（窗口本身按秒算；没有 fps 就不记）。
+            # 统一坐标：窗口的秒是**信号时间**，须先按 `t_video = t_signal - offset` 换算到
+            # 视频轴再乘帧率。换算后仍为负说明整段落在视频开始之前 → 本窗没有视频内容，不记。
             fps = rules.get("video_fps")
             if isinstance(fps, (int, float)) and fps > 0:
-                metadata["video_frame_no"] = int(((window.start + window.end) / 2) * fps)
+                v_start = (window.start - seek_offset) * fps
+                v_end = (window.end - seek_offset) * fps
+                if v_end > 0:
+                    metadata["video_frame_start"] = max(0, int(v_start))
+                    metadata["video_frame_no"] = max(0, int((v_start + v_end) / 2))
+                    metadata["video_frame_end"] = int(v_end)
             if task.task_format == "目标检测":
                 if not video_bytes:
                     raise splitting.SplitInputError("目标检测需要真实视频输入")
-                _, frames = media_probe.analyze_video(video_bytes, [(f"sample_{index}", (window.start + window.end) / 2)])
+                _, frames = media_probe.analyze_video(
+                    video_bytes,
+                    [(f"sample_{index}", (window.start + window.end) / 2)],
+                    seek_offset=seek_offset,
+                )
                 if not frames:
                     raise splitting.SplitInputError(f"无法抽取第 {index} 个窗口的视频帧")
                 image_key = f"processed/{record.weld_id}/split/{task.id}/{index:06d}.jpg"

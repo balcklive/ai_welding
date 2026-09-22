@@ -586,6 +586,27 @@ export interface AlignmentResult {
   version: DataVersion;
 }
 
+/** 标定（§3.4）：视频零点 offset + 焊缝图片 ROI。
+ *
+ * 权威归属固定钉在该焊缝的 **v1.0 原始版本**上——任何属于该焊缝的版本都读到同一份。
+ * `video.offset_seconds` 语义：视频零点在信号轴上的时刻，换算为 `t_video = t_signal - offset`。
+ */
+export interface Calibration {
+  /** 原始标定（未标定 → 空对象）。 */
+  calibration: {
+    video?: { offset_seconds: number } | null;
+    seam_image?: { roi: { x: number; y: number; w: number; h: number } } | null;
+  };
+  /** 标定归属版本（v1.0）；该焊缝无 v1.0 时为 null。 */
+  anchored_version_id: number | null;
+  video: { offset_seconds: number; calibrated: boolean };
+  seam_image: {
+    roi: { x: number; y: number; w: number; h: number } | null;
+    calibrated: boolean;
+    object_key: string | null;
+  };
+}
+
 export interface SplitResult {
   sample_count: number;
   rules: { fixed_rate: number; stride?: number; keep_event_buffer: number; event_bounds?: [number, number] };

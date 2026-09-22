@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 from loguru import logger
+from PIL import Image
 from sqlmodel import Session, select
 
 from app.models.analysis import AlignmentTask, SignalIngest
@@ -59,7 +60,7 @@ from app.services.welds import (
     version_payload,
 )
 
-#: 进度递增点（0→100）：20=清单+信号/事件 → 40=视频探测+关键帧 → 60=轨道/产物构建
+#: 进度递增点（0→100）：20=清单+信号/事件 → 40=视频探测 → 60=坐标映射+关键帧+轨道/产物
 #: → 80=上传 → 100=mark_succeeded。步间 commit + 小睡，让轮询/前端能看到 progress 变化。
 _PROGRESS_STEPS: tuple[int, ...] = (20, 40, 60, 80)
 _PROGRESS_SLEEP: float = 0.05
@@ -173,8 +174,8 @@ def arc_length_profile(
 def _normalize_roi(roi) -> dict | None:
     """校验焊缝图片 ROI 形状（x/y/w/h 四个有限数、w/h > 0）；不合法返回 None。
 
-    ponytail: 只校验形状，**不**校验 ROI 是否落在图片范围内——后者要解码图片拿宽高，
-    留给标定接口 `PUT …/calibration` 做，那里才值得付这次下载成本。
+    只校验**形状**；是否落在真实图片范围内由标定写入路径
+    （`validate_calibration_patch(image_size=...)`）负责——只有那里拿得到图片宽高。
     """
     if not isinstance(roi, dict):
         return None
@@ -278,15 +279,188 @@ def build_coordinate_mapping(
     }
 
 
+# ── 标定（calibration）：权威归属 = 焊缝 v1.0 原始版本 ─────────────────
+#
+# 标定是**人工**输入（视频零点 offset、焊缝图片 ROI），存 `data_versions.calibration`。
+# 归属固定钉在 **v1.0 原始版本**：对齐任务可能跑在任意加工版本上，标定若跟着任务版本走，
+# 同一条焊缝就会散出多份互相矛盾的标定。v1.0 是每条焊缝唯一且不变的锚点。
+#
+# 写入**只改 `calibration` 一列**——不碰 `object_keys`、不重算历史 `alignment_tasks.mapping`、
+# 不动任何 `split_tasks`。重新标定只影响此后新发起的对齐/分段，历史产物保持当时的口径。
+
+#: `offset_seconds` 的绝对上限（秒）。**手误护栏**（把 `-1.1` 敲成 `-1100`），不是物理约束——
+#: 真实零点偏移由现场标定决定，代码不替业务设上限。
+MAX_ABS_OFFSET_SECONDS = 3600.0
+
+#: 焊缝照片扩展名（与 `welds._IMAGE_EXTS` 同口径；这里不 import 私有常量）
+_SEAM_IMAGE_EXTS: tuple[str, ...] = (".jpg", ".jpeg", ".png", ".bmp")
+
+
+class CalibrationError(ValueError):
+    """标定参数不合法（消息面向用户，由路由转 400）。"""
+
+
+def seam_image_key(object_keys: list[str] | None) -> str | None:
+    """从对象键里挑焊缝照片；跳过上次对齐的产物（`/align/keyframes/*.jpg`）。"""
+    for key in object_keys or []:
+        low = key.lower()
+        if "/align/" not in low and low.endswith(_SEAM_IMAGE_EXTS):
+            return key
+    return None
+
+
+def read_image_size(storage, object_key: str) -> tuple[int, int] | None:
+    """取图片 `(width, height)`；下载失败或解不开返回 None。
+
+    `Image.open` 只解析**文件头**、不做全图解码，所以取 size 很便宜（代价是仍要下载整个对象）。
+    """
+    try:
+        data = storage.get_object(object_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Seam image unreadable for calibration: key={} err={}", object_key, exc)
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return int(img.width), int(img.height)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Seam image undecodable for calibration: key={} err={}", object_key, exc)
+        return None
+
+
+def anchored_calibration(
+    session: Session, record: DataRecord
+) -> tuple[DataVersion | None, dict]:
+    """标定上下文：归属版本（v1.0）+ 当前标定（未标定 → `{}`）。
+
+    **所有读取标定的路径都走这里**（对齐任务、GET/PUT 端点），"读哪份标定"只在这一处定义。
+    """
+    v10 = get_v10_version(session, record.id)
+    raw = v10.calibration if v10 is not None else None
+    return v10, (dict(raw) if isinstance(raw, dict) else {})
+
+
+def resolve_calibration(session: Session, record: DataRecord) -> dict:
+    """读该焊缝的权威标定（v1.0 归属）。"""
+    return anchored_calibration(session, record)[1]
+
+
+def calibration_offset_seconds(calibration: dict) -> float:
+    """从标定里取视频零点 `offset_seconds`（`t_video = t_signal - offset`）。
+
+    未标定返回 `0.0`——即"视频与信号同零点"的旧假设；此时映射会如实记 `calibrated=false`，
+    调用方（分段 Job 等）拿它当地址换算即可，不需要自己判空。
+    """
+    video = calibration.get("video")
+    offset = video.get("offset_seconds") if isinstance(video, dict) else None
+    if isinstance(offset, bool) or not isinstance(offset, (int, float)):
+        return 0.0
+    return float(offset)
+
+
+def validate_calibration_patch(
+    payload: dict, *, image_size: tuple[int, int] | None
+) -> dict:
+    """校验 PUT 载荷，返回**只含本次给出键**的规范化补丁（合并语义）。
+
+    组值为 `None` 表示清除该组。ROI 必须落在真实图片范围内——`image_size` 为 None 时
+    **拒绝**：核实不了的断言不该放行。
+    """
+    if not isinstance(payload, dict):
+        raise CalibrationError("标定载荷必须是对象")
+    patch: dict = {}
+
+    if "video" in payload:
+        video = payload["video"]
+        if video is None:
+            patch["video"] = None
+        elif isinstance(video, dict):
+            offset = video.get("offset_seconds")
+            if isinstance(offset, bool) or not isinstance(offset, (int, float)):
+                raise CalibrationError("video.offset_seconds 必须是有限数值")
+            if not math.isfinite(float(offset)):
+                raise CalibrationError("video.offset_seconds 必须是有限数值")
+            if abs(float(offset)) > MAX_ABS_OFFSET_SECONDS:
+                raise CalibrationError(
+                    f"video.offset_seconds 超出 ±{MAX_ABS_OFFSET_SECONDS:g} 秒的手误护栏范围"
+                )
+            patch["video"] = {"offset_seconds": float(offset)}
+        else:
+            raise CalibrationError("video 必须是对象或 null")
+
+    if "seam_image" in payload:
+        seam = payload["seam_image"]
+        if seam is None:
+            patch["seam_image"] = None
+        elif isinstance(seam, dict):
+            roi = _normalize_roi(seam.get("roi"))
+            if roi is None:
+                raise CalibrationError("seam_image.roi 必须是 {x,y,w,h} 四个有限数且 w/h > 0")
+            if image_size is None:
+                raise CalibrationError("读不到该焊缝的图片，无法校验 ROI 是否落在图片范围内")
+            width, height = image_size
+            if (roi["x"] < 0 or roi["y"] < 0
+                    or roi["x"] + roi["w"] > width or roi["y"] + roi["h"] > height):
+                raise CalibrationError(
+                    f"ROI 超出图片范围（图片 {width}×{height}，ROI "
+                    f"x={roi['x']:g} y={roi['y']:g} w={roi['w']:g} h={roi['h']:g}）"
+                )
+            patch["seam_image"] = {"roi": roi}
+        else:
+            raise CalibrationError("seam_image 必须是对象或 null")
+
+    return patch
+
+
+def merge_calibration(current: dict, patch: dict) -> dict:
+    """把补丁合并进现有标定；值为 `None` 的组被清除。"""
+    merged = dict(current)
+    for group, value in patch.items():
+        if value is None:
+            merged.pop(group, None)
+        else:
+            merged[group] = value
+    return merged
+
+
+def save_calibration(session: Session, v10: DataVersion, calibration: dict) -> None:
+    """把标定写到 v1.0 版本（**只改 `calibration` 一列**）。不 commit，由调用方提交。"""
+    v10.calibration = calibration or None
+    session.add(v10)
+    session.flush()
+
+
+def calibration_payload(v10: DataVersion | None, calibration: dict) -> dict:
+    """GET/PUT 共用的响应体：标定原文 + 归属版本 + 两组各自的标定状态。"""
+    video = calibration.get("video")
+    offset = video.get("offset_seconds") if isinstance(video, dict) else None
+    has_offset = isinstance(offset, (int, float)) and not isinstance(offset, bool)
+    seam = calibration.get("seam_image")
+    roi = _normalize_roi(seam.get("roi")) if isinstance(seam, dict) else None
+    return {
+        "calibration": calibration,
+        "anchored_version_id": v10.id if v10 is not None else None,
+        "video": {
+            "offset_seconds": float(offset) if has_offset else 0.0,
+            "calibrated": has_offset,
+        },
+        "seam_image": {
+            "roi": roi,
+            "calibrated": roi is not None,
+            "object_key": seam_image_key(v10.object_keys if v10 is not None else None),
+        },
+    }
+
+
 def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
     """真实执行一次对齐任务，返回写入 `job.result` 的 dict。
 
     步骤（进度语义见 `_PROGRESS_STEPS`）：
     1. 解析输入清单（v1.0 原始文件 + 当前版本 object_keys 按扩展名分模态）；
     2. 信号版本回退解析并加载 `SignalBundle`，events 取真实启发式/生成回退（如实标注）；
-    3. 视频元数据探测（ffmpeg）+ 事件时刻关键帧抽取（视频不可用则该轨道 unavailable）；
-    4. 构建真实产物（时序 CSV 全量+weld 窗口切片 / 关键帧 JPG / tracks.json）并上传
-       MinIO，任一写失败逆序清理已写对象后重抛；
+    3. 视频探测（ffmpeg，只探元信息）→ **建坐标映射**（读 v1.0 标定的 offset）→ 按
+       `t_video = t_signal - offset` 抽事件关键帧（视频不可用则该轨道 unavailable）；
+    4. 构建真实产物（时序 CSV 全量+weld 窗口切片 / 关键帧 JPG / mapping.json /
+       tracks.json）并上传 MinIO，任一写失败逆序清理已写对象后重抛；
     5. 同事务：新建「时间对齐」`DataVersion`（v1.<n+1>，operator=算法任务）并更新
        `latest_version_id`（`services.welds.create_version`）、回填
        `alignment_tasks.events/tracks/assets`、`mark_succeeded(job, result)`。
@@ -319,29 +493,40 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
     video_data, video_meta, video_error = (
         _load_video(video_key) if "video" in modalities else (None, None, "未纳入视频模态")
     )
-    keyframes: list[dict] = []
     if video_data is not None:
         try:
-            video_meta, keyframes = media_probe.analyze_video(
-                video_data, _event_points(events)
-            )
+            # 只探测元信息，不抽帧——抽帧要等映射建好、拿到 offset 之后再按
+            # `t_video = t_signal - offset` 定位（设计 §3.1.1）。
+            video_meta, _ = media_probe.analyze_video(video_data, [])
         except (RuntimeError, ValueError) as exc:
             video_error = str(exc)
             logger.warning("Video alignment probe failed (marking unavailable): weld={} err={}", record.weld_id, exc)
     _advance(session, job, _PROGRESS_STEPS[1])
 
-    # ── 60%：坐标映射 + 轨道 + 产物字节 ──────────────────────────────
-    # 映射先于轨道建：视频轨的 aligned 由它推导（未标定 → false），保持单一事实来源。
-    # 标定读**源版本**（任务发起的那个版本）；写标定的接口落地时若改挂 v1.0，这里同步。
+    # ── 60%：坐标映射 + 关键帧 + 轨道 + 产物字节 ─────────────────────
+    # 顺序是刻意的：先探测拿到 fps/duration → 建映射 → 再用**映射里的 offset** 抽帧。
+    # 这样"用哪个 offset"只有映射一处来源，不会出现抽帧与 mapping 记录不一致。
+    # 标定统一走 resolver（权威归属 = v1.0 原始版本），不读任务发起版本上的副本。
+    calibration = resolve_calibration(session, record)
     mapping = build_coordinate_mapping(
         bundle=bundle,
         events=events,
-        calibration=version.calibration,
+        calibration=calibration,
         has_scalar_speed=record.welding_speed is not None,
         video_key=video_key,
         video_meta=video_meta,
         seam_image_key=sources["seam_image"][0] if sources["seam_image"] else None,
     )
+    keyframes: list[dict] = []
+    if video_data is not None and video_meta is not None:
+        try:
+            seek_offset = float(mapping["mappings"]["video"].get("offset_seconds") or 0.0)
+            _, keyframes = media_probe.analyze_video(
+                video_data, _event_points(events), seek_offset=seek_offset
+            )
+        except (RuntimeError, ValueError) as exc:
+            # 探测已成功、只是抽帧失败：降级为"无关键帧"，不把整条视频轨打成 unavailable
+            logger.warning("Keyframe extraction failed: weld={} err={}", record.weld_id, exc)
     tracks = _build_tracks(modalities, sources, bundle, video_key, video_meta,
                            video_error, keyframes, mapping)
     payloads = _build_asset_payloads(record.weld_id, bundle, events, tracks, keyframes,

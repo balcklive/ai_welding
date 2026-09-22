@@ -126,6 +126,20 @@
     （视频，`offset_seconds` 来自源版本 `data_versions.calibration`）/ `arc_length`（焊缝图片，
     ROI 来自同一标定）。`position_ratio_at(profile, t)` 供下游按 `t` 插值取 `r`（区间外**钳制
     不外推**）。**标定缺失不阻断任务**——对应模态记 `calibrated=false` + reason。
+  - **标定读写（2026-09-22，闭环打通）**：`calibration` 的权威归属固定钉在该焊缝的
+    **v1.0 原始版本**上（对齐任务可能跑在任意加工版本，标定跟着任务版本走会同一条焊缝
+    散出多份互相矛盾的标定）。**所有读取路径走统一 resolver `anchored_calibration(session, record)`
+    / `resolve_calibration(...)`**（`run_alignment` 与分段 Job 都用它，不再读 `version.calibration`）；
+    `calibration_offset_seconds(calibration)` 取 `video.offset_seconds`（未标定返回 0.0，
+    与 mapping 的 `calibrated=false` 同义，调用方不必自己判空）。
+    `validate_calibration_patch(payload, image_size=)` 校验并返回**只含本次给出键**的补丁
+    （合并语义；组值为 `None` 表示清除）：offset 要求有限数值且 ≤`MAX_ABS_OFFSET_SECONDS`
+    （±3600s **手误护栏**，非物理约束）；ROI 要求四数有限、`w/h>0`、**且落在真实图片像素范围内**
+    ——`image_size` 为 None 时**拒绝**（核实不了的断言不放行）。`read_image_size(storage, key)`
+    用 Pillow 读**文件头**取 `(w,h)`（不全图解码）；`merge_calibration` 合并；`save_calibration`
+    写 v1.0 的 `calibration` **一列**（不 commit）。`calibration_payload(v10, calibration)`
+    是 GET/PUT 共用响应体。**写入不碰 `object_keys`、不重算历史 `alignment_tasks.mapping`、
+    不动 `split_tasks`**——重新标定只影响此后新发起的对齐/分段。
   - tracks 每条：`{channel, modality, availability(available|generated|unavailable),
     source, aligned, asset, object_key, metadata, reason}`；timeseries 恒对齐成功
     （generated 如实标注）；**video 的 `aligned` 由映射的 `calibrated` 推导（2026-09-22）**——

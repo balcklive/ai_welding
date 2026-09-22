@@ -42,7 +42,10 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   按旧口径换算（`fixed_rate`/`stride` 是采样点数 → `点数 ÷ 采样率`，结果与旧实现一致，不重跑）
   （DURATION=signals 5.42s → 5420 帧，确定性）→ 进度逐步 → 逐样本建 `Sample` 行
   （frame_no = **任务内序号** 1..n（不是真实视频帧号，勿用于跨任务判重，见 services/CLAUDE.md 的 T11 段），
-  `meta` 含 `sample_index/window_start/window_end/frame_start/frame_end（采样点下标）/window_seconds/video_frame_no/source_version_id/task_format`
+  `meta` 含 `sample_index/window_start/window_end/frame_start/frame_end（采样点下标）/window_seconds/video_frame_no/video_frame_start/video_frame_end/source_version_id/task_format`
+  （**2026-09-22 统一坐标**：窗口的秒是**信号时间**，视频帧号须按 `t_video = t_signal - offset` 换算，
+  offset 经 `alignment.resolve_calibration` + `calibration_offset_seconds` 从**该焊缝 v1.0 标定**取——
+  与对齐服务同一个 resolver，两处各读一次就会漂移；换算后整段仍为负 → 本窗没有视频内容、不记这三个键）
   与 **`rules_version`**（默认 1 = 旧口径"帧=采样点"；T10 的新任务由 rules 携带 2，供 D16-A 区分新旧切片），
   `object_keys=processed/{weld_id}/split/{sample.id}.jpg|.json`，
   **先 flush 拿 id 再回填 object_keys**）并**真实写入 JPG/JSON 到 MinIO**；任一写失败会清理已写对象并回滚样本/

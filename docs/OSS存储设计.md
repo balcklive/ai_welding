@@ -24,7 +24,7 @@
 aiwelding/  (桶)
 ├── raw/{registration_no}/{original_filename}          # 原始采集数据（登记上传）
 ├── processed/{weld_id}/
-│   ├── align/{asset}                                  # 对齐产物（视频/轨道）
+│   ├── align/{asset}                                  # 对齐产物（时序 CSV / 关键帧 JPG / mapping.json / tracks.json）
 │   ├── split/{sample_key}.jpg | .npy                  # 切分样本（图像/信号）
 │   ├── signals/{ingest_id}.parquet                    # 真实信号导入的结构化副本（Task 18，signal_ingest 写入）
 │   ├── video/{stem}.preview.mp4                       # 浏览器可播预览版（H.264+faststart，media_prep 登记挂载视频时自动转码）
@@ -103,6 +103,6 @@ aiwelding/  (桶)
 | 数据库 | `data_versions.object_keys`（v1.0 原始文件）、`samples.object_keys`、`model_versions.file_key`、`dataset_versions.snapshot_id`、`inference_tasks.input_key` 存的就是本文档的对象键 |
 | 登记上传 | 登记表单的原始文件 → `raw/{registration_no}/...`；上传后经 `POST /registrations/{id}/raw-files` 把 object_key 挂到 v1.0 原始数据版本（存 `data_versions.object_keys`） |
 | 推理输入 | 推理样本先传 `uploads/{uuid}/...`，再以返回 `object_key` 提交 `POST /inference-tasks`（存 `inference_tasks.input_key`） |
-| 对齐产物 | 对齐任务成功后的视频/轨道/JSON → `processed/{weld_id}/align/...`，object_key 回填 `alignment_tasks.assets`，前端经 `GET /files/{key}/url` 播放 |
+| 对齐产物 | 对齐任务成功后的时序 CSV/关键帧 JPG/**`mapping.json`**（可执行坐标映射，2026-09-22）/`tracks.json` → `processed/{weld_id}/align/...`，object_key 回填 `alignment_tasks.assets`，前端经 `GET /files/{key}/url` 播放。**注**：`mapping.json` 与 `tracks.json` 的键**不含任务身份**，重新对齐会覆盖同一键；历史任务的口径以 `alignment_tasks.mapping` 列为准 |
 
 > 一致性：所有对象键一律以本文档前缀体系为准；数据库字段与接口参数只引用 `object_key` 字符串。

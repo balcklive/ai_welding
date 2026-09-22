@@ -17,6 +17,7 @@
 ## 关键规则/坑
 
 - **对齐页已真实化**：`listVersions` 找 v1.0 → 按视频扩展名取 key → `getFileUrl` 渲染 `<video>`；`getSignals(v1.0)` 真实波形画进轨道；成功/失败横幅（`event_source`/`job.error.message`）。
+- **视频零点 offset（2026-09-22，统一坐标 `t_video = t_signal - offset`）**：`getCalibration` 取该焊缝 v1.0 的标定存 `videoOffset` state（未标定/读取失败保持 0，与后端 mapping 的 `calibrated=false` 同义）。两处换算必须成对，否则 seek 后 `onTimeUpdate` 会立刻把游标拨回去：seek 写 `video.currentTime = Math.max(0, next - videoOffset)`（钳 0——目标时刻早于视频开头时停在首帧，而不是给 `currentTime` 负值）；`onTimeUpdate` 写 `setPlayhead(e.currentTarget.currentTime + videoOffset)`。标定读取失败只 `console.warn` 不报错横幅——标定是增强项，播放器按未标定即 offset 0 继续可用。
 - **T10 切分单位（2026-09-14）**：切分页新增**切分单位**选择（帧 / 秒）。帧率有两个来源——本次跑完对齐的 `alignRes.tracks`、或**最近一次已存**对齐任务的视频元数据（切分页单独取一次帧率，**不设置 jobId**，否则会把上一次对齐的终态显示成一次切分结果）；拿不到帧率时禁用"帧"、切到"秒"并把数值换成秒量级（10 → 0.4），页面提示"没有视频帧率时只能按秒切分"。统计卡给出**两种口径**：切片时长（帧 与 = N.NNN 秒）、时序窗口（采样点数 @ 采样率）、切片步长、预计切片；换算只在组件里做一次（`windowSeconds`/`strideSeconds`/`windowSamples`），请求把 `unit` 一并发给后端。用户手动改过单位后不再自动切换（`unitTouchedRef`）。
 - **切分页缓冲秒数可编辑**：`keep_event_buffer` 按准确数值透传，关闭时传 0（回归测试 `App.buffer-regression.test.mjs` 断言此行为）。
 - 此页不展示切分规则/输出格式/预览按钮（`splitOnly=false` 形态）——避免「点创建切分任务实跑对齐任务」的错位。

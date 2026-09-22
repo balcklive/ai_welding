@@ -12,6 +12,7 @@ import type {
   AnalysisResult,
   AnalysisViewData,
   Annotation,
+  Calibration,
   DataRecord,
   FeatureExtractRequest,
   FeatureExtraction,
@@ -72,6 +73,14 @@ export async function getLatestAlignmentTask(
   return request<Job<AlignmentResult> | null>(
     `/welds/${weldId}/versions/${versionId}/alignment-tasks/latest`,
   );
+}
+
+/** 读该焊缝的权威标定（归属 v1.0，任何版本读到同一份）。 */
+export async function getCalibration(
+  weldId: string,
+  versionId: string,
+): Promise<Calibration> {
+  return request<Calibration>(`/welds/${weldId}/versions/${versionId}/calibration`);
 }
 
 /** 多通道时域波形。传 `max_points` 时由服务端 min-max 抽稀（含 `times` 坐标，点数

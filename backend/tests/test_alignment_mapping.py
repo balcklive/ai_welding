@@ -248,3 +248,144 @@ def test_migration_0018_columns_declared_as_json(table: str, column: str) -> Non
     col = SQLModel.metadata.tables[table].columns[column]
     assert isinstance(col.type, SAJSON)
     assert col.nullable is True  # 纯 expand：老行无值，必须可空
+
+
+# ── 标定校验 / 合并 / offset 取值 ────────────────────────────────────
+
+
+def test_calibration_offset_positive_negative_and_unset() -> None:
+    assert alignment.calibration_offset_seconds({"video": {"offset_seconds": 1.1}}) == 1.1
+    assert alignment.calibration_offset_seconds({"video": {"offset_seconds": -1.1}}) == -1.1
+    # 未标定 / 形状不对 → 0.0（= "视频与信号同零点"的旧假设，映射会如实记 calibrated=false）
+    assert alignment.calibration_offset_seconds({}) == 0.0
+    assert alignment.calibration_offset_seconds({"video": None}) == 0.0
+    assert alignment.calibration_offset_seconds({"video": {"offset_seconds": True}}) == 0.0
+
+
+def test_validate_patch_accepts_signed_offsets() -> None:
+    assert alignment.validate_calibration_patch(
+        {"video": {"offset_seconds": 2.5}}, image_size=None
+    ) == {"video": {"offset_seconds": 2.5}}
+    assert alignment.validate_calibration_patch(
+        {"video": {"offset_seconds": -2.5}}, image_size=None
+    ) == {"video": {"offset_seconds": -2.5}}
+    assert alignment.validate_calibration_patch(
+        {"video": {"offset_seconds": 0}}, image_size=None
+    ) == {"video": {"offset_seconds": 0.0}}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"video": {"offset_seconds": "1.0"}},
+        {"video": {"offset_seconds": None}},
+        {"video": {"offset_seconds": float("nan")}},
+        {"video": {"offset_seconds": float("inf")}},
+        {"video": {"offset_seconds": True}},
+        {"video": {"offset_seconds": 100000.0}},  # 超手误护栏
+        {"video": "不是对象"},
+    ],
+)
+def test_validate_patch_rejects_bad_offset(payload) -> None:
+    with pytest.raises(alignment.CalibrationError):
+        alignment.validate_calibration_patch(payload, image_size=None)
+
+
+def test_validate_patch_roi_requires_image_size() -> None:
+    """核实不了的断言不该放行：拿不到图片宽高时拒绝 ROI。"""
+    with pytest.raises(alignment.CalibrationError):
+        alignment.validate_calibration_patch(
+            {"seam_image": {"roi": {"x": 0, "y": 0, "w": 10, "h": 10}}}, image_size=None
+        )
+
+
+def test_validate_patch_roi_within_image_bounds() -> None:
+    roi = {"x": 10, "y": 20, "w": 100, "h": 30}
+    assert alignment.validate_calibration_patch(
+        {"seam_image": {"roi": roi}}, image_size=(400, 120)
+    ) == {"seam_image": {"roi": {"x": 10.0, "y": 20.0, "w": 100.0, "h": 30.0}}}
+
+
+@pytest.mark.parametrize(
+    "roi",
+    [
+        {"x": -1, "y": 0, "w": 10, "h": 10},          # 左越界
+        {"x": 0, "y": -1, "w": 10, "h": 10},          # 上越界
+        {"x": 395, "y": 0, "w": 10, "h": 10},         # x+w > 宽
+        {"x": 0, "y": 115, "w": 10, "h": 10},         # y+h > 高
+        {"x": 0, "y": 0, "w": 401, "h": 10},          # 宽超图
+    ],
+)
+def test_validate_patch_rejects_roi_outside_image(roi) -> None:
+    with pytest.raises(alignment.CalibrationError):
+        alignment.validate_calibration_patch(
+            {"seam_image": {"roi": roi}}, image_size=(400, 120)
+        )
+
+
+def test_validate_patch_roi_exactly_at_bounds_is_ok() -> None:
+    """贴边是合法的：`x+w == width` 不越界。"""
+    assert alignment.validate_calibration_patch(
+        {"seam_image": {"roi": {"x": 0, "y": 0, "w": 400, "h": 120}}},
+        image_size=(400, 120),
+    )
+
+
+def test_validate_patch_null_clears_group() -> None:
+    assert alignment.validate_calibration_patch(
+        {"video": None, "seam_image": None}, image_size=None
+    ) == {"video": None, "seam_image": None}
+
+
+def test_validate_patch_only_touches_given_groups() -> None:
+    """合并语义：没给的组不出现在补丁里，调用方据此保留原值。"""
+    assert alignment.validate_calibration_patch(
+        {"video": {"offset_seconds": 1.0}}, image_size=None
+    ) == {"video": {"offset_seconds": 1.0}}
+
+
+def test_merge_calibration_updates_adds_and_clears() -> None:
+    current = {"video": {"offset_seconds": 1.0}, "seam_image": {"roi": {"x": 1, "y": 2, "w": 3, "h": 4}}}
+    # 只改 video → seam_image 原样保留
+    assert alignment.merge_calibration(current, {"video": {"offset_seconds": 2.0}}) == {
+        "video": {"offset_seconds": 2.0},
+        "seam_image": {"roi": {"x": 1, "y": 2, "w": 3, "h": 4}},
+    }
+    # 显式 None → 清除该组
+    assert alignment.merge_calibration(current, {"video": None}) == {
+        "seam_image": {"roi": {"x": 1, "y": 2, "w": 3, "h": 4}}
+    }
+    # 空补丁 → 原样
+    assert alignment.merge_calibration(current, {}) == current
+
+
+def test_seam_image_key_skips_align_artifacts() -> None:
+    """上次对齐产出的关键帧 JPG 不是焊缝照片，不能被选中当 ROI 底图。"""
+    assert alignment.seam_image_key(
+        ["processed/W/align/keyframes/arc.jpg", "raw/REG/seam.png"]
+    ) == "raw/REG/seam.png"
+    assert alignment.seam_image_key(["processed/W/align/keyframes/arc.jpg"]) is None
+    assert alignment.seam_image_key(None) is None
+
+
+def test_calibration_payload_shape_and_defaults() -> None:
+    payload = alignment.calibration_payload(None, {})
+    assert payload["anchored_version_id"] is None
+    assert payload["video"] == {"offset_seconds": 0.0, "calibrated": False}
+    assert payload["seam_image"] == {"roi": None, "calibrated": False, "object_key": None}
+
+
+def test_calibration_payload_reflects_calibration() -> None:
+    class _V:
+        id = 7
+        object_keys = ["raw/REG/seam.png"]
+
+    calibration = {
+        "video": {"offset_seconds": -1.5},
+        "seam_image": {"roi": {"x": 1, "y": 2, "w": 3, "h": 4}},
+    }
+    payload = alignment.calibration_payload(_V(), calibration)
+    assert payload["anchored_version_id"] == 7
+    assert payload["video"] == {"offset_seconds": -1.5, "calibrated": True}
+    assert payload["seam_image"]["calibrated"] is True
+    assert payload["seam_image"]["object_key"] == "raw/REG/seam.png"
