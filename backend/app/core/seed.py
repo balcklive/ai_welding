@@ -34,6 +34,15 @@ DEFAULT_OPTION_ITEMS: tuple[tuple[str, str], ...] = (
     ("dataset_task", "目标检测"),
     ("dataset_task", "语义分割"),
     ("dataset_task", "多模态回归"),
+    # 分段样本段级标注的主缺陷词表（与迁移 0020 同一份默认值）。与 `LABEL_CATEGORIES`
+    # （模型口径 6 类，LS 集成与 `POST …/labels` 校验依赖）是**两套词表**，勿混。
+    ("defect_category", "气孔"),
+    ("defect_category", "未焊透"),
+    ("defect_category", "焊穿"),
+    ("defect_category", "咬边"),
+    ("defect_category", "裂纹"),
+    ("defect_category", "成形不良"),
+    ("defect_category", "其他"),
 )
 
 

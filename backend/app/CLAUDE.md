@@ -12,7 +12,7 @@
 - `core/db.py`：MySQL `engine` + `SessionLocal` + `get_session()` 依赖（Task 2，详见 `core/CLAUDE.md`）。
 - `core/audit.py`：`write_audit(...)` 向 `audit_logs` 写审计（Task 3，详见 `core/CLAUDE.md`）。
 - `core/security.py`：密码哈希 + JWT 签发/解析（Task 5，详见 `core/CLAUDE.md`）。
-- `models/`：全部 24 张 SQLModel 表类（Task 2，详见 `models/CLAUDE.md`）。
+- `models/`：全部 27 张 SQLModel 表类（Task 2 + 各期新增，详见 `models/CLAUDE.md`）。
 - `schemas/`：统一响应信封 `ok/err` + 分页 `paginate`（Task 3，详见 `schemas/CLAUDE.md`）。
 - `services/`：跨域复用业务服务。`jobs.py` = 通用 Job 生命周期
   （create_job/mark_* /to_job_payload，状态机 pending→running→succeeded/failed，**不 commit** 由调用方落库），
@@ -30,6 +30,9 @@
   `models.py` = **Task 16**（模型仓库：列表汇总/详情/新建/状态流转 + 训练/测试/推理 handler
   领域逻辑：训练成功事务内生成 `model_versions`（实验版本）+ 权重写 MinIO `models/{id}/weights.pt`
   尽力而为、测试 2×2 混淆矩阵、推理确定性 boxes），
+  `sample_annotation.py` = **2026-09-22 段级标注**（分段样本的段级分类领域逻辑：前置条件校验 /
+  词表只读 / 样本分页与未标注筛选 / upsert 结论 / 进度与缺陷分布 / 冻结快照与版本化导出；
+  被标注工作台与 `datasets._annotation_snapshots` 消费），
   `reports.py` = **Task 17**（通用报告导出：validation/data-list 真实模板 + 其余通用模板，
   PDF=Jinja2+xhtml2pdf 复用项，写 MinIO `reports/{type}/{ref_id}.pdf|.json` + 预签名 URL；
   analysis 报告经 `signal_ingest.load_signal_bundle` 优先读真实信号，summary 标注来源），
@@ -56,7 +59,10 @@
   annotation-tasks 全端点）、`v1/datasets.py` 为 **Task 15 已实现**（datasets 全端点：
   列表/新建/详情/dimensions/readiness/versions/版本详情/**版本成员 items 分页**/build-tasks/lineage），
   `v1/models.py` 为 **Task 16 已实现**（models 全端点：列表/详情/新建/状态流转 +
-  training-tasks/test-tasks/inference-tasks 创建与轮询）、`v1/reports.py` 为 **Task 17 已实现**
+  training-tasks/test-tasks/inference-tasks 创建与轮询）、`v1/sample_annotations.py` 为 **2026-09-22 分段样本段级标注已实现**
+  （`/split-tasks/{id}/annotation-samples*` + `/welds/{id}/segment-annotation-tasks` + `/segment-annotation/categories`，
+  业务逻辑在 `services/sample_annotation.py`：v3 分段样本一个主结论 normal/defect + 主缺陷类别，
+  列表/进度/upsert/撤销/版本化导出）、`v1/reports.py` 为 **Task 17 已实现**
   （通用报告导出 POST /reports/export），详见 `api/CLAUDE.md`。
 
 ## 坑/限制

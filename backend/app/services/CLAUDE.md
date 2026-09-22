@@ -258,6 +258,9 @@
     **R4（2026-09-14）**：`ensure_version_rebuildable`（成功版本禁止原地重建 → `VersionAlreadyBuilt`，
     手工入口与重试入口都调用，`run_build` 里再拦一次）、`version_build_state`、`annotations_frozen`
     （历史版本的 `dataset_items.annotations` 为 NULL → 训练只能现查标注，如实返回 `False`）。
+    **段级标注消费（2026-09-22）**：`_annotation_snapshots` **合并两条标注线**——`annotations`（旧几何标注）+ `sample_annotations`（段级分类，
+    `kind="segment_class"` + 权威 `label`）都写进冻结快照；`_compute_quality` 的 `empty_label_rate` 用同一份合并口径
+    （否则快照里明明有结论的切片会被记成"空标注"）。训练侧优先认 `label`（见 `torch_training._is_defect_entry`）。
     **T11（2026-09-14，成员口径与判重）**：来源白名单与判重规则都改过，改这两处前先读
     `tests/test_dataset_members.py`——
     ① `_samples_for_dataset_records` 不再是"数据集下全部 Sample 都收"：每条登记数据
@@ -297,7 +300,8 @@
     延迟 `from app.storage import get_storage`，测试 monkeypatch `app.storage.get_storage`；
     `run_build` 内的进度 commit 是执行器专用 session 场景（同 alignment）。
 
-- `torch_training.py`：**2026-08-29 真实训练内核**（**T16.1（2026-09-14）：`load_real_examples` 改为读
+- `torch_training.py`：**2026-08-29 真实训练内核**（**2026-09-22**：折叠改为 `_is_defect_entry`——快照条目带 `label`（段级标注）时**优先采信**，
+  认不到才按 `DEFECT_LABELS` 白名单折叠类别名；否则词表里加一个自定义缺陷类别会被静默折反）（**T16.1（2026-09-14）：`load_real_examples` 改为读
   `dataset_items.annotations` 冻结快照**——版本构建后改标注不再影响同一版本的训练输入；该列为 NULL
   （T16 之前建的版本）时才现查 `annotations` 表，保持旧行为，**并写 warning 日志**（R4：不静默——
   该版本的训练输入不可复现，`GET …/versions/{vid}` 的 `annotations_frozen=false` 是同一事实的对外出口））（Task 16 由模拟升级为真实 CPU 训练）。
@@ -436,6 +440,22 @@
   `tests/test_labelstudio_handler.py`；真实 e2e
   `scripts/premise_validation/e2e_ls_roundtrip.py`。
 
+- `sample_annotation.py`：**分段样本段级标注（2026-09-22）**。一期只做**段级分类**：一个 v3 `Sample`
+  （时间窗）一个主结论 `normal`/`defect`（+ 主缺陷类别），不做框/点/掩膜与两级精度。
+  - `is_segment_task` / `task_block_reason`：前置条件（`rules_version>=3` **且** Job `succeeded`），
+    不满足就**主动拒绝**（400）而不是尽力尝试——历史口径的切片没有统一时间窗，段级结论对它不成立。
+  - `list_categories` / `category_by_id`（读 `option_items` 的 `defect_category` 组，只读；增删改走设置接口）、
+    `list_samples`（分页 + `only_unannotated` 在 **SQL 侧**左联过滤，行只给导航/进度字段）、
+    `stats`（进度 + 缺陷分布）、`list_annotatable_tasks`（工作台入口：该焊缝已完成 + v3 的任务，
+    带进度；两条 group_by 聚合避免逐任务查）。
+  - `upsert_annotation`（**一样本恒一行**：`sample_id` UK + 存在即更新；`_validate` 校验
+    normal 不带类别 / defect 必须有类别 / 备注 ≤512；**停用类别只挡新写入**，对"本来就引用了它"
+    的旧标注放行，否则类别一停用那条历史标注就改不动了）、`clear_annotation`。
+  - `annotation_payload` / `snapshot_for_samples` / `annotated_sample_ids` / `export_payload`：
+    对外载荷、冻结快照（`{category, confidence, kind:"segment_class", label}`，训练侧优先认 `label`）、
+    已标注 id 集合（构建时"空标注切片"判定）、版本化导出（顶层 `schema_version`）。
+  - **不 commit**（路由统一提交）；`SCHEMA_VERSION`/`LABEL_NORMAL`/`LABEL_DEFECT`/`DEFAULT_REVIEW_STATUS`
+    是消费方要认的常量。设计与范围见 `docs/分段样本标注设计与实施说明.md`。
 - `settings.py`：**2026-09 系统设置·可选项字典（新增）**。把「录入时可选项」统一成
   **选项组（group）+ 选项项（item）**，对路由/前端屏蔽两类存储的差异：
   `option_items`（machine/weld_method/source/product/dataset_task）与
@@ -454,8 +474,13 @@
   - **唯一键竞态**：`_flush_or_conflict` 在 flush 撞唯一约束（两管理员同时新增同名项）时
     `rollback()` + 抛 `OptionConflict`（→409），避免预检查通过后落成 500；该 rollback 是
     本模块唯一的例外（写操作本身即事务的全部内容，路由在其后才写审计）。
+  - **2026-09-22 第 7 组 `defect_category`**（分段样本段级标注的主缺陷词表）：**不新建表**，直接落
+    `option_items`，所以 `_serialize`/`_query`/`_find`/`create_item`/`update_item`/`delete_item` 全部零改动；
+    唯一的差异是 **`reference_count` 收行对象而不是值**——其它分组按字符串列统计引用
+    （`data_records.machine` 等），本组按**外键 id** 统计（`sample_annotations.defect_category_id`），
+    只拿值查不出引用、改名后更查不出。出厂 7 项由迁移 `0020` 与 `core/seed.py` 双写入。
   - 消费方：`api/v1/settings.py`（CRUD）、`annotation.list_label_categories`（带 active）、
-    `annotation.pretag_sample`（只抽启用类别）。
+    `annotation.pretag_sample`（只抽启用类别）、`sample_annotation`（只读本组渲染候选）。
 
 ## 坑/限制
 

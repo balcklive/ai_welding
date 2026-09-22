@@ -5,7 +5,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 ## 脚本
 
 - `__init__.py`：空包。
-- `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 11 个域 router（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports/labelstudio/settings）。新增域时在此追加 import + include_router。
+- `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 12 个域 router（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports/labelstudio/settings/sample_annotations）。新增域时在此追加 import + include_router。
 - `auth.py`：**Task 5 已实现**。router `prefix="/auth"`（完整路径 `/api/v1/auth/login`、`/api/v1/auth/me`）。`POST /login` body `{username,password}` → 查 `users` 表校验 → `ok({access_token, token_type:"bearer", user:{id,username,display_name,role,avatar}})`；用户名/密码错 → `err(40100, "用户名或密码错误", status=401)`。**防时序用户枚举（Task 5 修复）**：用户不存在时仍对模块级 `_DUMMY_HASH`（argon2，导入时算一次）跑一次 `verify_password`，使未知/已知用户名两条路径耗时相当；返回体一致。**Task 4 修复**：按用户名做失败登录限速（60s 窗口内失败 ≥5 次进入 300s cooldown，返回 `42900`），成功登录会清空失败桶/冷却状态。`GET /me`（依赖 `api.deps.get_current_user`）→ `ok(user)`。`user_payload(user)` 暴露对外字段。
 - `dashboard.py`：**Task 8 已实现**。router `prefix="/dashboard"`（完整路径 `/api/v1/dashboard/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点
@@ -229,6 +229,24 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - `GET /labelstudio/tasks/{task_id}`：LS 同步状态（`task_id` 兼容 job_uid），**挂 JWT**；`POST /labelstudio/sync`：手动对账（挂 JWT）。
   - 业务逻辑在 `app.services.annotation_ls`；错误码 40100（secret 无效）/40401(任务不存在)/50000。**坑：本 router 刻意不沿用其它域的 router 级 `Depends(get_current_user)`（webhook 例外），手动端点单独挂。**
 
+- `sample_annotations.py`：**分段样本段级标注（段级分类，2026-09-22）**。契约 `docs/API接口清单.md` §3.9，
+  业务逻辑在 `app.services.sample_annotation`，设计见 `docs/分段样本标注设计与实施说明.md`。
+  - `GET /welds/{weld_id}/segment-annotation-tasks`（工作台入口：该焊缝**已完成 + v3** 的分段任务 + 标注进度）、
+    `GET /split-tasks/{task_id}/annotation-samples`（分页样本 + 进度 + `filter=unannotated`）、
+    `GET …/annotation-samples/{sample_id}`（当前结论；**未标注是 `annotation=null` 不是 404**）、
+    `PUT …/annotation-samples/{sample_id}`（**upsert**，一个样本恒一行）、
+    `DELETE …/annotation-samples/{sample_id}`（撤销）、
+    `GET …/annotation-export`（版本化导出，顶层 `schema_version`）、
+    `GET /segment-annotation/categories`（主缺陷词表只读；`include_inactive=1` 含停用项）。
+  - **样本的三模态细节不在这里**——复用既有的 `GET /split-tasks/{task_id}/samples/{sample_id}`
+    （§3.4）：列表只给导航/进度字段，媒体字节按对象键走预签名，各有其主人。
+  - **前置条件**：非 v3（`rules_version<=2`）或未成功完成的分段任务一律 `40000`；样本不属于该任务 `40401`。
+  - **归属**：沿用**分段域**的 owner 口径（`forbid_unless_record_owned`，同 `POST …/split-tasks`）——
+    与 `analysis_annotations.py` 那条旧标注线刻意不同（后者没有 owner 校验）。
+  - 词表增删改**不在这里**：走 `/settings/options/defect_category`（写仅管理员）。
+  - **坑**：`{task_id}` 兼容 job_uid 与 `split_tasks` DB id（`resolve_split_task` 双解析），
+    前端一律传 job_uid；**审计 resource_type 是 `sample_annotation`**（不是 `annotation`），
+    与旧几何标注线区分开。
 - `settings.py`：**2026-09 系统设置·可选项字典（新增，实现原预留 `GET/PUT /settings` 的字典部分）**。
   契约 `docs/API接口清单.md` §3.8，业务逻辑在 `app.services.settings`：
   - `GET /settings/options`（登录即可）：全部选项组 + 选项（**含停用项**，各带 `active`），
@@ -243,6 +261,9 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
   - **坑**：`{group_key}` 是字符串分组键不是路径参数白名单外的自由值，
     非法分组由服务层抛 `OptionGroupNotFound` 统一转 40410；`label_category` 组落在
     `label_categories` 表（见 `services/settings.py`），改这里时别假设只有一张表。
+  - **2026-09-22 第 7 组 `defect_category`**（分段样本段级标注的主缺陷词表）：落 `option_items`
+    （与 machine/weld_method 同存储），前端设置页按后端返回的 `groups` 渲染，**新增一组无需改前端**。
+    它与 `label_category` 是两套词表（模型口径 vs 段级口径），勿合并。
 
 ## 坑/限制
 

@@ -1,6 +1,6 @@
 """模型包：导出全部 SQLModel 表类。
 
-`from app.models import *` 会导入 26 张表，供 Alembic env.py 绑定 `SQLModel.metadata`。
+`from app.models import *` 会导入 27 张表，供 Alembic env.py 绑定 `SQLModel.metadata`。
 """
 
 from .analysis import (
@@ -11,6 +11,7 @@ from .analysis import (
     FeatureExtraction,
     LabelCategory,
     Sample,
+    SampleAnnotation,
     SignalIngest,
     SplitTask,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "AlignmentTask",
     "SplitTask",
     "Sample",
+    "SampleAnnotation",
     "AnnotationTask",
     "Annotation",
     "LabelCategory",

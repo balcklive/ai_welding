@@ -92,16 +92,32 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
         if sample.id is None:
             continue
         # 冻结快照优先；缺失则回退现查（见上面的 needs_live_annotations）
-        if item.annotations is None:
-            categories = [a.category for a in by_sample.get(sample.id, [])]
-        else:
-            categories = [str(entry.get("category")) for entry in item.annotations]
-        # 缺陷白名单折叠：只认白名单内的类别为缺陷；熔池/正常等非缺陷剔除（决策 6）。
-        label_name = "缺陷" if any(category in DEFECT_LABELS for category in categories) else "正常"
+        entries = (
+            [{"category": a.category} for a in by_sample.get(sample.id, [])]
+            if item.annotations is None
+            else item.annotations
+        )
+        # 段级标注（v3）在快照里直接带结论 `label`，**优先认它**；旧标注按类别白名单折叠
+        # （只认白名单内的类别为缺陷，熔池/正常等非缺陷剔除——决策 6）。
+        label_name = "缺陷" if any(_is_defect_entry(e) for e in entries) else "正常"
         examples.append(TrainingExample(sample.id, item.split, _features_from_sample(storage, sample, session, feature_cache), label_ids[label_name], label_name))
     if not examples:
         raise ValueError("数据集版本没有可训练的真实样本")
     return examples, label_names
+
+
+def _is_defect_entry(entry: dict) -> bool:
+    """快照条目是否代表缺陷。
+
+    段级标注（`sample_annotations`，kind=`segment_class`）带权威结论 `label`，
+    **直接采信**——词表里加一个自定义缺陷类别（名字不在 `DEFECT_LABELS` 里）时，
+    按名字折叠会把结论静默折反。旧标注（框/时序区间/多边形）没有 `label`，仍按
+    `DEFECT_LABELS` 白名单折叠。
+    """
+    label = entry.get("label")
+    if label in ("defect", "normal"):
+        return label == "defect"
+    return str(entry.get("category")) in DEFECT_LABELS
 
 
 def _features_from_sample(storage, sample: Sample, session: Session, cache: dict[str, tuple[float, ...]]) -> tuple[float, ...]:

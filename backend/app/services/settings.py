@@ -8,6 +8,10 @@
 2. `label_categories`（既有表，LS 集成与标注校验依赖）——承载 label_category，
    仅在迁移 0015 补 `active` + `sort_order`，不搬家、不改存储语义。
 
+`defect_category`（分段样本段级标注的主缺陷词表，迁移 0020）**落在 `option_items` 上**
+——同一套"分组 + 软删 + 排序"设施，只是分组语义不同，故存储分支与 1 相同，
+不新增第三张表；唯一的差异在 `reference_count`（按 id 引用而非字符串列）。
+
 设计规则（与用户确认的范围一致）：
 - **停用即删减**：`DELETE` 时若该值已被业务数据引用（`data_records.machine` 等），
   执行软删（`active=False`）——历史数据仍按原字符串展示，录入候选里不再出现；
@@ -30,10 +34,19 @@ from datetime import datetime, timezone
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
-from app.models.analysis import Annotation, LabelCategory
+from app.models.analysis import Annotation, LabelCategory, SampleAnnotation
 from app.models.data import DataRecord
 from app.models.datasets import Dataset
 from app.models.settings import OptionItem
+
+#: label_categories 的分组键（存储表与其它组不同）。
+LABEL_CATEGORY_GROUP = "label_category"
+
+#: 分段样本缺陷词表的分组键。落在 `option_items` 上（存储与 machine/weld_method 等相同），
+#: 只是**语义上**与「标注缺陷类别」分属两套词表：后者是模型口径（LS 集成与
+#: `POST …/labels` 校验依赖），前者是段级分类的主缺陷类别。`sample_annotations` 通过
+#: `defect_category_id` 引用本组的 `option_items.id`（稳定 ID），并存名称快照。
+DEFECT_CATEGORY_GROUP = "defect_category"
 
 #: 选项组定义（顺序即前端设置页展示顺序）。
 #: `color` = 该项是否支持颜色（仅标注类别需要）；`free_text` = 录入页是否允许手工填写
@@ -82,13 +95,17 @@ OPTION_GROUPS: tuple[dict, ...] = (
         "color": True,
         "free_text": False,
     },
+    {
+        "key": DEFECT_CATEGORY_GROUP,
+        "label": "分段样本缺陷词表",
+        "description": "分段样本标注（段级分类）选「缺陷」时的主缺陷类别；停用后新建标注不可选、历史标注仍按当时名称显示。与「标注缺陷类别」是两套词表。",
+        "color": False,
+        "free_text": False,
+    },
 )
 
 #: 合法分组键（供路由/测试直接断言）。
 OPTION_GROUP_KEYS: tuple[str, ...] = tuple(group["key"] for group in OPTION_GROUPS)
-
-#: label_categories 的分组键（存储表与其它组不同）。
-LABEL_CATEGORY_GROUP = "label_category"
 
 
 class OptionGroupNotFound(ValueError):
@@ -194,10 +211,20 @@ def _flush_or_conflict(session: Session, value: str) -> None:
         raise OptionConflict(f"该分组已存在选项：{value}") from exc
 
 
-def reference_count(session: Session, group_key: str, value: str) -> int:
-    """该选项值在业务表中的引用条数（决定删除走软删还是物理删）。"""
+def reference_count(session: Session, group_key: str, row) -> int:
+    """该选项在业务表中的引用条数（决定删除走软删还是物理删）。
+
+    取**行对象**而不是值：多数分组按字符串列引用（`data_records.machine` 等），
+    但 `defect_category` 是按**外键 id** 引用（`sample_annotations.defect_category_id`）
+    ——只拿值查不出引用，改名后更查不出。行对象两种都够用。
+    """
+    value = _value_of(row)
+
     def _count(column) -> int:
         return int(session.exec(select(func.count(column)).where(column == value)).one())
+
+    def _count_id(column) -> int:
+        return int(session.exec(select(func.count(column)).where(column == row.id)).one())
 
     if group_key == "machine":
         return _count(DataRecord.machine)
@@ -211,6 +238,8 @@ def reference_count(session: Session, group_key: str, value: str) -> int:
         return _count(Dataset.task)
     if group_key == LABEL_CATEGORY_GROUP:
         return _count(Annotation.category)
+    if group_key == DEFECT_CATEGORY_GROUP:
+        return _count_id(SampleAnnotation.defect_category_id)
     raise OptionGroupNotFound(f"未知的选项分组：{group_key}")
 
 
@@ -333,7 +362,7 @@ def delete_item(session: Session, group_key: str, item_id: int) -> dict:
     get_group(group_key)
     row = _find(session, group_key, item_id)
     value = _value_of(row)
-    references = reference_count(session, group_key, value)
+    references = reference_count(session, group_key, row)
     if references > 0:
         row.active = False
         if not isinstance(row, LabelCategory):

@@ -136,6 +136,49 @@ class LabelCategory(SQLModel, table=True):
     active: bool = Field(default=True)
 
 
+class SampleAnnotation(SQLModel, table=True):
+    """§3.27 sample_annotations 分段样本的**段级标注**（迁移 `0020`）。
+
+    一期只做段级分类：一个 `Sample`（v3 多模态样本 = 一个时间窗）只有**一个主结论**，
+    没有框/点/掩膜、没有两级精度，故 `sample_id` 唯一、每样本至多一行（PUT 即 upsert）。
+
+    缺陷词表的稳定 ID 落在 `option_items`（`group_key='defect_category'`，见
+    `services/settings.OPTION_GROUPS`）——**不新建词表表**，直接复用系统设置那套
+    "分组 + 软删 + 排序"的字典设施；`defect_category_id` 指向它，冗余的
+    `defect_category_name` 是**当时名称快照**：类别改名/停用后历史标注与数据集快照
+    仍按原名展示、可追溯（与 `annotations.category` 存字符串快照同一取舍）。
+
+    `review_status` 为**未来复核流程预留**（默认 `approved`）。一期 UI 不暴露该流程，
+    但它必须是可空/有默认的——否则将来加复核态要改表。
+    """
+
+    __tablename__ = "sample_annotations"
+
+    id: int | None = Field(default=None, primary_key=True)
+    sample_id: int = Field(foreign_key="samples.id", unique=True)
+    #: `normal`（正常）| `defect`（缺陷）。正常时 `defect_*` 必须为空。
+    label: str = Field(max_length=16, index=True)
+    defect_category_id: int | None = Field(
+        default=None, foreign_key="option_items.id", index=True
+    )
+    defect_category_name: str | None = Field(default=None, max_length=32)
+    note: str | None = Field(default=None, max_length=512)
+    #: 标注数据 schema 版本（`services.sample_annotation.SCHEMA_VERSION`）。数据集构建
+    #: 消费它时必须先认这个版本号，否则将来换 schema 会静默读错。
+    schema_version: int = Field(default=1)
+    review_status: str | None = Field(default="approved", max_length=16, index=True)
+    annotator: str | None = Field(default=None, max_length=64)
+    annotator_id: int | None = Field(
+        default=None, foreign_key="users.id", index=True
+    )
+    created_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    updated_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
 class FeatureExtraction(SQLModel, table=True):
     """§3.13 feature_extractions 特征提取"""
 

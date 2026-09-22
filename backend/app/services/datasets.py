@@ -1738,23 +1738,35 @@ def _assign_splits(group_keys: list) -> dict[object, str]:
 def _annotation_snapshots(
     session: Session, sample_ids: list[int]
 ) -> dict[int, list[dict]]:
-    """样本 → 标注快照（T16.1）：一次查询取全部标注，按样本分组。
+    """样本 → 标注快照（T16.1 + 段级标注 2026-09-22）：一次查询取全部标注，按样本分组。
 
     只留训练/追溯需要的字段（category 决定"正常/缺陷"折叠，confidence 与 kind 便于复核），
     不复制整行——快照是**冻结输入**，不是标注的第二份真相。
+
+    **两条标注线合并**：`annotations`（旧流程：框/时序区间/多边形，按 `kind` 区分）与
+    `sample_annotations`（v3 段级分类，`kind="segment_class"` 且另带 `label`）。段级标注的
+    `label`（`defect`/`normal`）是权威结论——训练侧优先认它，这样词表里加一个自定义缺陷
+    类别也不会按名字被折反。同一样本两条线都有时都留着，由消费方按 `kind` 自取。
     """
     if not sample_ids:
         return {}
+    out: dict[int, list[dict]] = defaultdict(list)
     rows = session.exec(
         select(Annotation)
         .where(Annotation.sample_id.in_(sample_ids))
         .order_by(Annotation.id)
     ).all()
-    out: dict[int, list[dict]] = defaultdict(list)
     for row in rows:
         out[row.sample_id].append(
             {"category": row.category, "confidence": row.confidence, "kind": row.kind}
         )
+    # 延迟导入：`sample_annotation` 依赖 `splitting`/`settings`，模块级 import 会绕圈
+    from app.services import sample_annotation as sample_annotation_svc
+
+    for sample_id, entries in sample_annotation_svc.snapshot_for_samples(
+        session, sample_ids
+    ).items():
+        out[sample_id].extend(entries)
     return dict(out)
 
 
@@ -1802,14 +1814,17 @@ def _compute_quality(
             for sample_id in group:
                 failures[sample_id].add("repeat")
 
-    # ② 空标注切片
-    annotated: set[int] = set()
-    for sample_id in session.exec(
-        select(Annotation.sample_id).where(
-            Annotation.sample_id.in_([s.id for s in samples])
-        )
-    ).all():
-        annotated.add(sample_id)
+    # ② 空标注切片（**两条标注线都算**：旧 `annotations` + 段级 `sample_annotations`，
+    #    与 `_annotation_snapshots` 同一口径——否则快照里明明有结论的切片会被记成空标注）
+    sample_ids = [s.id for s in samples]
+    annotated: set[int] = set(
+        session.exec(
+            select(Annotation.sample_id).where(Annotation.sample_id.in_(sample_ids))
+        ).all()
+    )
+    from app.services import sample_annotation as sample_annotation_svc
+
+    annotated |= sample_annotation_svc.annotated_sample_ids(session, sample_ids)
     for s in samples:
         if s.id not in annotated:
             failures[s.id].add("empty_label")
