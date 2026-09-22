@@ -36,7 +36,14 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   （真实信号事件 + ffmpeg 视频探测/关键帧 + 真实产物 CSV/JPG/tracks.json，部分成功语义；
   自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
 - **分析产物版本幂等（T16.3/R7，2026-09-14）**：`split.py` 与 `features.py` 生成「样本分段」/「特征提取」版本时统一走 `services.welds.reuse_or_create_version`——**同一个产物只产生一个版本**（幂等身份 = action + note + object_keys：note 里带任务 id/维度、object_keys 里带产物键，所以"同任务重入复用、换参数重跑新建"）。`features.py` 的产物键另带**提取参数的短哈希**（`features/{version_id}-{params_tag}.json`），否则"同源版本换归一化/输出格式重跑"会互相覆盖同一个文件。**对齐不接入**（产物键与 note 都不带任务身份）。
-- `split.py`：**Task 14 + T10**。`handle(job_id, session)`（`@register_handler("split")`）→
+- `split.py`：**Task 14 + T10 + v3 分流（2026-09-22）**。`handle(job_id, session)` 按 `rules`
+  的 `rules_version` 分流：**`>= 3` 走 `_run_v3`**（秒级窗口 + `splitting.map_window_to_modalities`
+  产出多模态样本包 + `samples.start_time/end_time` 真列 + `samples/{index:06d}.json` +
+  任务级 `manifest.json` + **焊缝图片按 ROI 投影裁切**——`_crop_seam_image` 任何失败只告警、
+  样本照常成立，图片是增强模态）；**`<= 2` 走 `_run_legacy`**，行为逐字保留，好让历史
+  `failed` 任务仍能重试（不能拿 v3 去重切历史口径）。Job **不做任何时间换算**——换算全在
+  `splitting.map_window_to_modalities`，且预览走同一个函数。历史 `_run_legacy` 口径：
+  `handle(job_id, session)`（`@register_handler("split")`）→
   `simulate_split(session, task, job)`（**领域逻辑直接在本模块**，任务清单未规划 split service）：
   读 `window_seconds`/`stride_seconds`（**秒**，T10 起）；历史任务没有这两个键时用 `_rule_seconds`
   按旧口径换算（`fixed_rate`/`stride` 是采样点数 → `点数 ÷ 采样率`，结果与旧实现一致，不重跑）

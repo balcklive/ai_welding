@@ -307,6 +307,18 @@ def test_video_anchor_never_becomes_a_dataset_member(api, db, storage, run_job):
 # ── 场景 2：只有最近一次成功分段任务的切片进版本（D16-A 前置） ──────────
 
 
+def _split(api, record: dict, **rules):
+    """**预览 → 用返回的 token 建任务**（v3 契约：创建只接受 preview_token）。
+
+    分两步是刻意的——"所见即所得"要求客户端拿服务端算出来的窗口去建任务，
+    不能再自己拼一套规则。返回 `(preview, job_uid)`。
+    """
+    url = f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}"
+    preview = _ok(api.post(f"{url}/split-preview", json=rules))
+    created = _ok(api.post(f"{url}/split-tasks", json={"preview_token": preview["preview_token"]}))
+    return preview, created["job_id"]
+
+
 def test_build_keeps_only_the_latest_succeeded_split_slices(api, db, storage, run_job):
     """导入 → 第一次分段 → 构建（6 切片）→ 第二次分段 → 再构建（12 切片，旧切片留在历史版本）。"""
     dataset_id = _create_dataset(api, "E2E 分段数据集", "时序分类")
@@ -320,19 +332,12 @@ def test_build_keeps_only_the_latest_succeeded_split_slices(api, db, storage, ru
     ingest = _run(db, run_job, _latest_job_uid(db, "signal_ingest"))
     assert ingest.status == "succeeded", ingest.error
 
-    # T10/D15：这个样本只有 CSV、没有视频 → 必须按**秒**切（unit="second"），
-    # 0.1 秒窗口 @2kHz = 200 采样点，与旧口径的 200 采样点等价。
-    split_body = {
-        "unit": "second",
-        "keep_event_buffer": 0,
-        "task_format": "时序分类",
-        "event_start": ARC,
-        "event_end": TAIL,
+    # v3：**秒是唯一切分单位**（按帧入口已废弃）。0.1 秒窗口 @2kHz = 200 采样点。
+    split_rules = {
+        "window_seconds": 0.1, "stride_seconds": 0.1,
+        "keep_event_buffer": 0, "event_start": ARC, "event_end": TAIL,
     }
-    _ok(api.post(
-        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-tasks",
-        json={**split_body, "fixed_rate": 0.1, "stride": 0.1},
-    ))
+    _split(api, record, **split_rules)
     first_split = _run(db, run_job, _latest_job_uid(db, "split"))
     assert first_split.status == "succeeded", first_split.error
     first_slices = first_split.result["sample_count"]
@@ -345,10 +350,7 @@ def test_build_keeps_only_the_latest_succeeded_split_slices(api, db, storage, ru
     assert _quality(api, dataset_id, first_version.id)["repeat_rate"] == 0.0
 
     # 重新分段（不同规则 → 切片数不同），再挂一个文件触发第二次构建
-    _ok(api.post(
-        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-tasks",
-        json={**split_body, "fixed_rate": 0.05, "stride": 0.05},
-    ))
+    _split(api, record, **{**split_rules, "window_seconds": 0.05, "stride_seconds": 0.05})
     second_split = _run(db, run_job, _latest_job_uid(db, "split"))
     assert second_split.status == "succeeded", second_split.error
     second_slices = second_split.result["sample_count"]
@@ -372,11 +374,11 @@ def test_build_keeps_only_the_latest_succeeded_split_slices(api, db, storage, ru
 
 
 def test_invalid_split_window_is_rejected_and_does_not_feed_members(api, db, storage, run_job):
-    """窗口放不下的切分请求在**创建阶段就被拒**（400），且不会留下任何切片。
+    """窗口放不下的切分请求在**预览阶段就被拒**（400），且不会留下任何切片。
 
-    T10 起 `POST …/split-tasks` 会先按同一套规则试算一遍窗口（预览/执行共用
-    `splitting.resolve_rule_seconds` + `build_windows`），放不下就 fail fast——比"建个任务
-    让它在后台失败"更早给出原因。这里同时确认它不会污染数据集成员。
+    v3 的预览与执行共用 `splitting.build_time_windows`，放不下就 fail fast——比"建个任务
+    让它在后台失败"更早给出原因；创建接口根本拿不到 token，也就无从建任务。
+    这里同时确认它不会污染数据集成员。
     """
     dataset_id = _create_dataset(api, "E2E 非法切分窗口", "时序分类")
     record = _register(api, dataset_id, "E2E 非法窗口样本")
@@ -387,13 +389,11 @@ def test_invalid_split_window_is_rejected_and_does_not_feed_members(api, db, sto
 
     # 窗口比整段有效区间（0.602 秒）还长 → 一个完整窗口都放不下
     rejected = api.post(
-        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-tasks",
+        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-preview",
         json={
-            "unit": "second",
-            "fixed_rate": 5.0,
-            "stride": 5.0,
+            "window_seconds": 5.0,
+            "stride_seconds": 5.0,
             "keep_event_buffer": 0,
-            "task_format": "时序分类",
             "event_start": ARC,
             "event_end": TAIL,
         },
@@ -569,68 +569,48 @@ def test_dataset_list_pagination_search_and_options(api, db):
 # ── 场景 8：切分单位（T10）── 帧与采样率必须分开 ─────────────────────
 
 
-def test_frame_unit_split_uses_video_fps_and_drops_the_tail(api, db, storage, run_job):
-    """T10 验收：25 fps + 10 kHz + 83 秒有效区间 + 每切片 10 帧 → **207 个切片**、每个 4000 采样点。
+def test_v3_second_windows_preview_matches_execution_and_drops_the_tail(api, db, storage, run_job):
+    """§9.1 验收：秒级窗口在预览与执行之间**完全一致**，且默认丢弃尾片。
 
-    改造前把"帧"当成采样点：10 帧 = 10 个采样点 = 1 毫秒 → 同一区间会切出 ~8 万个切片。
-    有效区间用 `event_start/end` 显式给（0–83 秒），避免依赖启发式事件检测的边界取整。
-    视频帧率取自对齐产物里的元数据（真实链路是 ffmpeg 探测后写进 `tracks`）。
+    10 kHz + 83 秒有效区间 + 2 秒窗口/2 秒步长 → 41 个完整窗口
+    （`1 + (830000-20000)//20000`），不足 2 秒的尾片不生成。有效区间用 `event_start/end`
+    显式给（0–83 秒），避免依赖启发式事件检测的边界取整。
     """
-    dataset_id = _create_dataset(api, "E2E 帧单位切分", "时序分类")
-    record = _register(api, dataset_id, "E2E 帧单位样本", sample_rate="10 kHz")
+    dataset_id = _create_dataset(api, "E2E v3 秒级窗口", "时序分类")
+    record = _register(api, dataset_id, "E2E v3 样本", sample_rate="10 kHz")
     storage.put("raw/e2e-83s.csv", synthetic_signal_csv(fs=10000, seconds=83.0))
     _attach(api, record["id"], ["raw/e2e-83s.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
-    # 对齐产物里带视频帧率（真实链路：ffmpeg 探测 → tracks[].metadata.fps）
-    alignment_job = Job(job_uid=f"job_{uuid4().hex[:8]}", type="alignment", status="succeeded")
-    db.add(alignment_job)
-    db.flush()
-    db.add(
-        AlignmentTask(
-            job_id=alignment_job.id,
-            version_id=record["latest_version_id"],
-            tracks=[{"channel": "video", "metadata": {"fps": 25.0}}],
-        )
-    )
-    db.commit()
-
-    body = {
-        "unit": "frame",
-        "fixed_rate": 10,
-        "stride": 10,
-        "keep_event_buffer": 0,
-        "task_format": "时序分类",
-        "event_start": 0.0,
-        "event_end": 83.0,
+    rules = {
+        "window_seconds": 2.0, "stride_seconds": 2.0,
+        "keep_event_buffer": 0, "event_start": 0.0, "event_end": 83.0,
     }
-    preview = _ok(api.post(
-        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-preview", json=body
-    ))
-    summary = preview["summary"]
-    assert summary["sample_count"] == 207, summary  # 1 + (830000-4000)//4000，尾片丢弃
-    assert summary["window_seconds"] == 0.4, summary  # 10 帧 ÷ 25 fps
-    assert summary["window_samples"] == 4000, summary  # 0.4 秒 × 10 kHz
-    assert summary["window_frames"] == 10, summary
-    assert preview["input"]["video_fps"] == 25.0
+    preview, job_uid = _split(api, record, **rules)
 
-    # 执行：切片数与预览必须一致，且每个时序切片的 CSV 都是 4000 数据行
-    _ok(api.post(
-        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-tasks", json=body
-    ))
-    job = _run(db, run_job, _latest_job_uid(db, "split"))
+    assert preview["window_seconds"] == 2.0 and preview["stride_seconds"] == 2.0
+    assert preview["overlap_seconds"] == 0.0 and preview["tail_policy"] == "drop"
+    assert preview["sample_count"] == 41, preview["sample_count"]
+    assert len(preview["windows"]) == 41
+    head = preview["windows"][0]
+    assert head["start"] == 0.0 and head["end"] == 2.0
+    assert head["signal"]["start_index"] == 0 and head["signal"]["end_index"] == 20000
+
+    job = _run(db, run_job, job_uid)
     assert job.status == "succeeded", job.error
-    assert job.result["sample_count"] == 207 == summary["sample_count"]
+    assert job.result["sample_count"] == 41 == preview["sample_count"]
+    assert job.result["rules_version"] == 3 and job.result["schema_version"] == 3
 
     task = db.exec(select(SplitTask).order_by(SplitTask.id.desc())).first()
+    assert task.task_format is None, "v3 起 task_format 废弃（§3.4）"
     first = db.exec(
         select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
     ).first()
-    csv_key = next(key for key in first.object_keys if key.endswith(".csv"))
-    lines = storage.objects[csv_key].decode("utf-8").strip().splitlines()
-    assert len(lines) == 4001, len(lines)  # 1 行表头 + 4000 数据行
-    assert first.meta["window_seconds"] == 0.4
-    assert first.meta["rules_version"] == 2
+    # 时间窗落成真列（迁移 0019），不再只塞进 meta
+    assert first.start_time == 0.0 and first.end_time == 2.0
+    assert first.meta["schema_version"] == 3
+    assert first.meta["time_range"] == {"start": 0.0, "end": 2.0, "duration": 2.0}
+    assert first.meta["source"]["mapping_hash"] == job.result["mapping_hash"]
 
     # T16：分段成功后自动生成「样本分段」数据版本，object_keys = 源版本文件 ∪ 产物清单
     versions = _ok(api.get(f"{API}/welds/{record['weld_id']}/versions"))
@@ -640,39 +620,57 @@ def test_frame_unit_split_uses_video_fps_and_drops_the_tail(api, db, storage, ru
     assert manifest_key in split_version["object_keys"], split_version["object_keys"]
     assert "raw/e2e-83s.csv" in split_version["object_keys"], "必须合并源版本文件，否则读原始信号会断链"
     manifest = json.loads(storage.objects[manifest_key].decode("utf-8"))
-    assert manifest["sample_count"] == 207 and manifest["rules_version"] == 2
-    assert len(manifest["slices"]) == 207
+    assert manifest["rules_version"] == 3 and manifest["schema_version"] == 3
+    assert manifest["sample_count"] == 41 and len(manifest["samples"]) == 41
+    assert manifest["mapping"]["schema_version"] == 1
 
 
-def test_second_unit_split_works_without_video(api, db, storage, run_job):
-    """D15：没有视频的数据按**秒**切；按帧则明确报错（不猜默认帧率）。"""
-    dataset_id = _create_dataset(api, "E2E 秒单位切分", "时序分类")
-    record = _register(api, dataset_id, "E2E 秒单位样本", sample_rate="2 kHz")
+def test_v3_split_without_video_marks_modality_unavailable(api, db, storage, run_job):
+    """§4.6：没有视频**不阻止分段**，但 manifest 与预览必须如实标记不可用与原因。"""
+    dataset_id = _create_dataset(api, "E2E 无视频分段", "时序分类")
+    record = _register(api, dataset_id, "E2E 无视频样本", sample_rate="2 kHz")
     storage.put("raw/e2e-2k.csv", synthetic_signal_csv())
     _attach(api, record["id"], ["raw/e2e-2k.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
-    base = {
-        "keep_event_buffer": 0,
-        "task_format": "时序分类",
-        "event_start": ARC,
-        "event_end": TAIL,
-    }
-    # 按帧：这个版本没有视频 → 400 且说明原因
-    by_frame = api.post(
-        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-preview",
-        json={**base, "unit": "frame", "fixed_rate": 10, "stride": 10},
-    ).json()
-    assert by_frame["code"] == 40000 and "帧率" in by_frame["message"], by_frame
+    preview, job_uid = _split(api, record, **{
+        "window_seconds": 0.1, "stride_seconds": 0.1,
+        "keep_event_buffer": 0, "event_start": ARC, "event_end": TAIL,
+    })
+    assert preview["sample_count"] == 6
+    assert preview["modalities"]["video"]["available"] is False
+    assert preview["modalities"]["video"]["reason"], "不可用必须带原因，不能只是空白"
+    assert any("视频模态不可用" in item for item in preview["warnings"]), preview["warnings"]
 
-    # 按秒：0.1 秒窗口 @2kHz = 200 采样点 → 与旧口径等价
-    by_second = _ok(api.post(
+    job = _run(db, run_job, job_uid)
+    assert job.status == "succeeded", job.error
+    sample = db.exec(select(Sample).order_by(Sample.id)).first()
+    assert sample.meta["signal"]["available"] is True
+    assert sample.meta["video"]["available"] is False and sample.meta["video"]["reason"]
+    assert sample.meta["seam_image"]["available"] is False and sample.meta["seam_image"]["reason"]
+
+
+def test_v3_tail_policy_keep_preserves_the_partial_window(api, db, storage, run_job):
+    """§2.3：尾片默认 `drop`；显式 `keep` 才保留不等长尾片，并给出 warning。"""
+    dataset_id = _create_dataset(api, "E2E 尾片策略", "时序分类")
+    record = _register(api, dataset_id, "E2E 尾片样本", sample_rate="2 kHz")
+    storage.put("raw/e2e-tail.csv", synthetic_signal_csv())
+    _attach(api, record["id"], ["raw/e2e-tail.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    base = {"window_seconds": 0.25, "stride_seconds": 0.25,
+            "keep_event_buffer": 0, "event_start": ARC, "event_end": TAIL}
+    dropped = _ok(api.post(
         f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-preview",
-        json={**base, "unit": "second", "fixed_rate": 0.1, "stride": 0.1},
+        json={**base, "tail_policy": "drop"},
     ))
-    assert by_second["summary"]["window_samples"] == 200
-    assert by_second["summary"]["sample_count"] == 6
-    assert by_second["summary"]["window_frames"] is None  # 没有 fps 就不编一个帧数
+    kept = _ok(api.post(
+        f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-preview",
+        json={**base, "tail_policy": "keep"},
+    ))
+    assert kept["sample_count"] == dropped["sample_count"] + 1
+    assert kept["windows"][-1]["duration"] < 0.25, "尾片是不等长的"
+    assert any("尾片" in item for item in kept["warnings"]), kept["warnings"]
 
 
 # ── 场景 9：数据集版本冻结标注快照（T16.1） ──────────────────────────
@@ -944,16 +942,7 @@ def test_repeated_split_task_generates_one_version(api, db, storage, run_job):
     _attach(api, record["id"], ["raw/e2e-idem.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
-    body = {
-        "weld_id": record["weld_id"],
-        "version_id": record["latest_version_id"],
-        "fixed_rate": 0.1,
-        "stride": 0.1,
-        "unit": "second",
-        "task_format": "时序分类",
-    }
-    created = _ok(api.post(f"{API}/welds/{record['weld_id']}/versions/{record['latest_version_id']}/split-tasks", json=body))
-    job_uid = created["job_id"]
+    _preview, job_uid = _split(api, record, window_seconds=0.1, stride_seconds=0.1)
     assert _run(db, run_job, job_uid).status == "succeeded"
 
     def _split_versions():

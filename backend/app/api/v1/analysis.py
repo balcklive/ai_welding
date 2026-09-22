@@ -47,6 +47,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, Request
 from loguru import logger
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -59,11 +60,12 @@ from app.core.db import get_session
 from app.models.analysis import (
     AlignmentTask,
     FeatureExtraction,
+    Sample,
     SplitTask,
 )
 from app.models.data import User
-from app.schemas.common import err, ok
-from app.services import alignment, dsp, features, signal_ingest, signals, splitting
+from app.schemas.common import err, ok, paginate
+from app.services import alignment, annotation, dsp, features, signal_ingest, signals, splitting
 from app.services import welds as svc
 from app.services.jobs import (
     _iso_utc,
@@ -82,6 +84,8 @@ _DEFAULT_SAMPLE_RATE = 1000
 _NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
 _FORMATS = {"NPY", "CSV", "JSON", "PT"}
 #: 切分任务格式白名单（契约 §3.4）。
+#: **v3 起已废弃**（设计 §3.4）：切分不再产出"目标检测/时序分类"的二选一产物，新任务
+#: `split_tasks.task_format` 写 NULL。历史任务仍按原值读取（见 `jobs/split._run_legacy`）。
 _SPLIT_FORMATS = {"目标检测", "时序分类"}
 
 
@@ -121,67 +125,30 @@ class CalibrationUpdate(BaseModel):
 
 
 class SplitTaskCreate(BaseModel):
-    """POST …/welds/{weld_id}/versions/{version_id}/split-tasks 请求体（契约 §3.4）。
+    """POST …/welds/{weld_id}/versions/{version_id}/split-tasks 请求体（契约 §5.4）。
 
-    `fixed_rate` 是**窗口长度**、`stride` 是**步长**，单位由 `unit` 决定（T10：
-    `unit="frame"` 按视频帧、`unit="second"` 按秒；默认 frame 以兼容旧前端）；
-    `keep_event_buffer`(±s) 默认 0；`task_format` 默认目标检测。
+    **只接受预览令牌**。禁止客户端另交一套规则或标定——服务端用 token 里签过的规则与
+    映射哈希重建窗口，否则"所见即所得"失效（客户端可以显示一套、实际切另一套）。
     """
 
-    fixed_rate: float
-    stride: float | None = None
-    #: 切分单位（T10）：`frame`（帧，默认）/ `second`（秒）。无视频时只能用 `second`（D15）。
-    unit: str = "frame"
-    keep_event_buffer: float = 0.0
-    task_format: str = "目标检测"
+    preview_token: str
+
+
+class SplitPreviewRequest(BaseModel):
+    """POST …/split-preview 请求体（契约 §5.3 / §2.3）。
+
+    **秒是唯一切分单位**（按帧入口已废弃，设计 §2.3）；默认 2.0 秒时长 / 2.0 秒步长，
+    即默认不重叠。**不含任何标定参数**——映射恒从源版本 `calibration` 与对齐产物读取，
+    标定只能在对齐页修改（§4.3）。
+    """
+
+    window_seconds: float = splitting.DEFAULT_WINDOW_SECONDS
+    stride_seconds: float = splitting.DEFAULT_STRIDE_SECONDS
     event_start: float | None = None
     event_end: float | None = None
-
-
-class SplitPreviewRequest(SplitTaskCreate):
-    """生产样本分段预览参数。"""
-
-
-def _version_video_fps(session: Session, record: DataRecord, version: DataVersion) -> float | None:
-    """该版本可用的**视频帧率**（T10），拿不到返回 None。
-
-    优先读多模态对齐时 ffmpeg 探测并存下的元数据（`alignment_tasks.tracks[].metadata.fps`）——
-    避免每次预览都下载视频跑一遍 ffmpeg；没有对齐产物时才实时探测（受 200MB 上限保护）。
-    **不猜默认帧率**：拿不到就让上层禁用"按帧"（D15：无视频时"帧"没有意义）。
-    """
-    from app.models.analysis import AlignmentTask
-
-    tasks = session.exec(
-        select(AlignmentTask)
-        .where(AlignmentTask.version_id == version.id)
-        .order_by(AlignmentTask.id.desc())
-    ).all()
-    for task in tasks:
-        for track in task.tracks or []:
-            metadata = (track or {}).get("metadata") or {}
-            fps = metadata.get("fps")
-            if isinstance(fps, (int, float)) and fps > 0:
-                return float(fps)
-
-    video_key = next(
-        (key for key in (version.object_keys or []) if str(key).lower().endswith(svc._VIDEO_EXTS)),
-        None,
-    )
-    if not video_key:
-        return None
-    try:
-        from app.storage import get_storage
-        from app.services.media_probe import MAX_VIDEO_PROBE_BYTES, analyze_video
-
-        payload = get_storage().get_object(video_key)
-        if not payload or len(payload) > MAX_VIDEO_PROBE_BYTES:
-            return None
-        metadata, _frames = analyze_video(payload, [])
-    except Exception as exc:  # noqa: BLE001 - 探测失败只是没有帧率，不该让预览整体失败
-        logger.warning("Video fps probe failed for {}: {}", video_key, exc)
-        return None
-    fps = (metadata or {}).get("fps")
-    return float(fps) if isinstance(fps, (int, float)) and fps > 0 else None
+    keep_event_buffer: float = 0.0
+    #: 尾片策略：`drop`（默认，不生成不足一个完整时长的末尾窗口）/ `keep`（保留不等长尾片）。
+    tail_policy: str = "drop"
 
 
 # ── 分析候选 ──────────────────────────────────────────────────────────
@@ -852,61 +819,49 @@ def preview_split_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """使用生产规则计算预览；不创建任务、不写入样本。"""
-    if body.task_format not in _SPLIT_FORMATS:
-        return err(40000, f"task_format 需为 {'/'.join(sorted(_SPLIT_FORMATS))}", status=400)
+    """按秒级规则计算预览（契约 §5.3）：**只读**，不创建任务、不写入任何产物。
+
+    预览与正式生成共用 `splitting.build_time_windows`，保证边界、数量、尾片处理完全一致。
+    返回的 `preview_token` 是创建任务的**唯一凭证**——客户端不能另交一套规则。
+    """
     resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
     record = svc.get_record_by_weld_id(session, weld_id)
     version = svc.get_version(session, version_id)
     assert record is not None and version is not None
-    stride_value = body.stride or body.fixed_rate
     try:
+        window_seconds, stride_seconds, tail_policy = splitting.validate_rules(
+            window_seconds=body.window_seconds,
+            stride_seconds=body.stride_seconds,
+            tail_policy=body.tail_policy,
+        )
         bundle = splitting.load_input(session, record, version)
-        fps = _version_video_fps(session, record, version)
-        window_seconds, stride_seconds = splitting.resolve_rule_seconds(
-            unit=body.unit,
-            window_value=body.fixed_rate,
-            stride_value=stride_value,
-            video_fps=fps,
-            sample_rate=bundle.sample_rate,
+        mapping = splitting.resolve_coordinate_mapping(session, record, version, bundle)
+        effective_range = splitting.resolve_effective_range(
+            bundle, body.event_start, body.event_end, body.keep_event_buffer
         )
-        bounds = splitting.event_bounds(
-            bundle, body.event_start, body.event_end,
-            body.keep_event_buffer,
-        )
-        windows = splitting.build_windows(
+        windows = splitting.build_time_windows(
             duration=bundle.duration,
             sample_rate=bundle.sample_rate,
             window_seconds=window_seconds,
             stride_seconds=stride_seconds,
-            event_bounds=bounds,
+            event_bounds=(effective_range["start"], effective_range["end"]),
+            tail_policy=tail_policy,
         )
+        return ok(splitting.build_preview(
+            bundle=bundle,
+            mapping=mapping,
+            rules=_split_rules(
+                body, window_seconds, stride_seconds, tail_policy, bundle
+            ),
+            windows=windows,
+            effective_range=effective_range,
+            weld_id=weld_id,
+            version_id=version_id,
+        ))
     except splitting.SplitInputError as exc:
         return err(40000, str(exc), status=400)
-    return ok({
-        "input": {
-            "version_id": version.id,
-            "duration": bundle.duration,
-            "sample_rate": bundle.sample_rate,
-            "source": "real",
-            "video_fps": fps,
-        },
-        "events": {**(bundle.events or {}), "weld_segment": list(bounds)},
-        "summary": {
-            "sample_count": len(windows),
-            "effective_start": bounds[0],
-            "effective_end": bounds[1],
-            # T10：秒是唯一基准；帧值只在能拿到 fps 时给出（两者都给，便于界面双口径展示）
-            "window_seconds": window_seconds,
-            "stride_seconds": stride_seconds,
-            "window_frames": round(window_seconds * fps) if fps else None,
-            "stride_frames": round(stride_seconds * fps) if fps else None,
-            "window_samples": max(1, round(window_seconds * bundle.sample_rate)),
-        },
-        "windows": [window.__dict__ for window in windows[:100]],
-    })
 
 
 @router.post("/welds/{weld_id}/versions/{version_id}/split-tasks")
@@ -917,75 +872,80 @@ def create_split_task(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """提交数据切分任务（**异步**，契约 §3.4）：建 pending Job + `split_tasks` 行。
+    """提交分段任务（**异步**，契约 §5.4）：**只接受预览令牌**。
 
-    同事务 commit，返回 `{job_id}`。成功后（后台执行器）按规则在 `samples` 表生成样本，
-    回填 `SplitTask.sample_count` 与 Job.result（`{sample_count, samples:[...]}`）。
+    服务端用 token 里签过的规则与映射哈希**重建**窗口。token 绑定焊缝/版本，并校验规则、
+    有效事件区间与标定/映射自预览以来**是否已变更**——变更即 409 要求重新预览。否则
+    客户端屏幕上的一套边界与实际切出来的会不一致，"所见即所得"失效。
     """
-    if body.task_format not in _SPLIT_FORMATS:
-        return err(
-            40000,
-            f"task_format 需为 {'/'.join(sorted(_SPLIT_FORMATS))}",
-            status=400,
-        )
     resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
     if resolved is not None:
         return resolved
-
     record = svc.get_record_by_weld_id(session, weld_id)
     assert record is not None  # resolved above
     version = svc.get_version(session, version_id)
     assert version is not None  # resolved above
     if msg := _split_input_error(record, version):
         return err(40000, msg, status=400)
-    stride_value = body.stride or body.fixed_rate
+
     try:
+        token = splitting.verify_preview_token(body.preview_token)
+    except splitting.SplitInputError as exc:
+        return err(40000, str(exc), status=400)
+    if str(token.get("weld_id")) != weld_id or str(token.get("version_id")) != str(version_id):
+        return err(40000, "预览令牌与当前焊缝/版本不匹配，请重新预览", status=400)
+
+    rules = dict(token.get("rules") or {})
+    try:
+        window_seconds, stride_seconds, tail_policy = splitting.validate_rules(
+            window_seconds=rules.get("window_seconds"),
+            stride_seconds=rules.get("stride_seconds"),
+            tail_policy=rules.get("tail_policy", "drop"),
+        )
         bundle = splitting.load_input(session, record, version)
-        fps = _version_video_fps(session, record, version)
-        window_seconds, stride_seconds = splitting.resolve_rule_seconds(
-            unit=body.unit,
-            window_value=body.fixed_rate,
-            stride_value=stride_value,
-            video_fps=fps,
-            sample_rate=bundle.sample_rate,
+        mapping = splitting.resolve_coordinate_mapping(session, record, version, bundle)
+        effective_range = splitting.resolve_effective_range(
+            bundle,
+            rules.get("event_start"),
+            rules.get("event_end"),
+            float(rules.get("keep_event_buffer") or 0.0),
         )
-        bounds = splitting.event_bounds(
-            bundle, body.event_start, body.event_end,
-            body.keep_event_buffer,
-        )
-        # 预览与执行共用同一套规则：这里只算一遍数量，确认区间放得下至少一个完整窗口
-        splitting.build_windows(
+        windows = splitting.build_time_windows(
             duration=bundle.duration,
             sample_rate=bundle.sample_rate,
             window_seconds=window_seconds,
             stride_seconds=stride_seconds,
-            event_bounds=bounds,
+            event_bounds=(effective_range["start"], effective_range["end"]),
+            tail_policy=tail_policy,
         )
     except splitting.SplitInputError as exc:
         return err(40000, str(exc), status=400)
 
-    # T10 规则：**秒是唯一基准**（`window_seconds`/`stride_seconds`），帧值只在能拿到 fps 时附带；
-    # `rules_version` 参与幂等键——单位口径变了就是另一套规则，不能命中旧任务的 request_key。
-    rules = {
+    # ── "所见即所得"闸门：预览之后源数据/标定变了就不能照切 ─────────────
+    if splitting.rules_hash(rules) != token.get("rules_hash"):
+        return err(40900, "切分规则已变更，请重新预览后再创建任务", status=409)
+    if splitting.mapping_hash(mapping) != token.get("mapping_hash"):
+        return err(40900, "标定或坐标映射已变更，请重新预览后再创建任务", status=409)
+    token_bounds = [round(float(x), 6) for x in (token.get("event_bounds") or [])]
+    if token_bounds != [round(effective_range["start"], 6), round(effective_range["end"], 6)]:
+        return err(40900, "有效事件区间已变更，请重新预览后再创建任务", status=409)
+
+    stored_rules = {
+        **rules,
         "rules_version": splitting.RULES_VERSION,
-        "unit": body.unit,
         "window_seconds": window_seconds,
         "stride_seconds": stride_seconds,
-        "window_frames": round(window_seconds * fps) if fps else None,
-        "stride_frames": round(stride_seconds * fps) if fps else None,
-        "video_fps": fps,
-        "signal_sample_rate": bundle.sample_rate,
-        "requested_value": body.fixed_rate,
-        "requested_stride": stride_value,
-        "keep_event_buffer": body.keep_event_buffer,
-        "event_bounds": list(bounds),
-        "event_start": body.event_start,
-        "event_end": body.event_end,
+        "tail_policy": tail_policy,
+        "event_bounds": [effective_range["start"], effective_range["end"]],
+        "effective_range_source": effective_range["source"],
+        "mapping_hash": splitting.mapping_hash(mapping),
         "sample_rate": bundle.sample_rate,
         "duration": bundle.duration,
+        "sample_count": len(windows),
     }
-    request_key = _split_request_key(version_id, rules, body.task_format)
-    existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
+    # `task_format` 对 v3 无意义（§3.4 废弃），故传 None；幂等键随之只依赖版本 + 规则。
+    request_key = _split_request_key(version_id, stored_rules, None)
+    existing_split = _existing_split_job_uid(session, version_id, stored_rules, None)
     if existing_split is not None:
         return ok({"job_id": existing_split})
     _release_failed_split_claims(session, version_id, request_key)
@@ -998,8 +958,8 @@ def create_split_task(
             version_id=version_id,
             request_key=request_key,
             active_request_key=request_key,
-            rules=rules,
-            task_format=body.task_format,
+            rules=stored_rules,
+            task_format=None,
         )
         session.add(task)
         write_audit(
@@ -1011,16 +971,18 @@ def create_split_task(
             {
                 "weld_id": weld_id,
                 "version_id": version_id,
+                "rules_version": splitting.RULES_VERSION,
                 "window_seconds": window_seconds,
                 "stride_seconds": stride_seconds,
-                "unit": body.unit,
-                "task_format": body.task_format,
+                "tail_policy": tail_policy,
+                "sample_count": len(windows),
+                "mapping_hash": stored_rules["mapping_hash"],
             },
         )
         session.commit()
     except IntegrityError:
         session.rollback()
-        existing_split = _existing_split_job_uid(session, version_id, rules, body.task_format)
+        existing_split = _existing_split_job_uid(session, version_id, stored_rules, None)
         if existing_split is not None:
             return ok({"job_id": existing_split})
         raise
@@ -1029,7 +991,12 @@ def create_split_task(
 
 @router.get("/split-tasks/{task_id}")
 def get_split_task(task_id: str, session: Session = Depends(get_session)) -> dict:
-    """切分任务状态/结果（契约 §3.4，轮询 Job 结构）：result 内嵌 `sample_count`/`samples`。"""
+    """切分任务状态/结果（契约 §5.5，轮询 Job 结构）。
+
+    `result` 额外给出 `rules_version` / `schema_version` / `mapping_hash`，供前端区分 v3 与
+    历史（≤2）任务——**历史任务只在"历史切分任务"里只读展示，不在新页面伪装成新格式**
+    （设计 §3.4）。
+    """
     job = get_job_by_uid(session, task_id)
     if job is None:
         return err(40401, "任务不存在", status=404)
@@ -1037,11 +1004,71 @@ def get_split_task(task_id: str, session: Session = Depends(get_session)) -> dic
     task = session.exec(
         select(SplitTask).where(SplitTask.job_id == job.id)
     ).first()
-    # 域字段以 split_tasks 行的 sample_count 为准（seed 与 handler 都写这里），合并进 result。
-    if task is not None and task.sample_count is not None:
+    # 域字段以 split_tasks 行为准（seed 与 handler 都写这里），合并进 result。
+    if task is not None:
         result = dict(payload.get("result") or {})
+        rules = dict(task.rules or {})
         result["sample_count"] = task.sample_count
+        result["rules_version"] = rules.get("rules_version", 1)
+        result["schema_version"] = 3 if rules.get("rules_version") == splitting.RULES_VERSION else None
+        result["mapping_hash"] = rules.get("mapping_hash")
         payload["result"] = result
+    return ok(payload)
+
+
+@router.get("/split-tasks/{task_id}/samples")
+def list_split_samples(
+    task_id: str,
+    page: int = 1,
+    page_size: int = 20,
+    session: Session = Depends(get_session),
+) -> dict:
+    """任务样本分页（契约 §5.5）。
+
+    **不返回完整高频时序数组或大尺寸图片**——列表只给时间窗与各模态**摘要**，否则几百个
+    切片时首屏必然失控。高频数据与完整 manifest 走单样本详情端点按需取。
+    """
+    task = annotation.resolve_split_task(session, task_id)
+    if task is None:
+        return err(40401, "任务不存在", status=404)
+    page = max(1, int(page))
+    page_size = max(1, min(100, int(page_size)))
+    total = session.exec(
+        select(func.count()).select_from(Sample).where(Sample.split_task_id == task.id)
+    ).one()
+    rows = session.exec(
+        select(Sample)
+        .where(Sample.split_task_id == task.id)
+        # 按时间窗排序（v3 的 `start_time` 就是窗口起点）；历史任务该列为 NULL，回落到 id
+        .order_by(Sample.start_time, Sample.id)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ok(paginate(
+        [_split_sample_payload(row) for row in rows], int(total), page, page_size
+    ))
+
+
+@router.get("/split-tasks/{task_id}/samples/{sample_id}")
+def get_split_sample(
+    task_id: str,
+    sample_id: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    """单样本详情（契约 §5.5）：时间窗、各模态摘要、**该窗内的时序局部数据**。
+
+    高频时序只在这里按需返回且已降采样（≤600 点/通道）；切片产物（图片/CSV）只给对象键，
+    由前端换预签名 URL 按需下载——**不把媒体字节塞进 JSON**。
+    """
+    task = annotation.resolve_split_task(session, task_id)
+    if task is None:
+        return err(40401, "任务不存在", status=404)
+    sample = session.get(Sample, sample_id)
+    if sample is None or sample.split_task_id != task.id:
+        return err(40401, "样本不存在或不属于该任务", status=404)
+    payload = _split_sample_payload(sample)
+    payload["meta"] = sample.meta
+    payload["time_series"] = _sample_time_series(session, task, sample)
     return ok(payload)
 
 
@@ -1248,7 +1275,7 @@ def _existing_split_job_uid(
     session: Session,
     version_id: int,
     rules: dict,
-    task_format: str,
+    task_format: str | None,
 ) -> str | None:
     request_key = _split_request_key(version_id, rules, task_format)
     rows = session.exec(
@@ -1285,13 +1312,99 @@ def _alignment_request_key(version_id: int) -> str:
 
 
 
-def _split_request_key(version_id: int, rules: dict, task_format: str) -> str:
+def _split_request_key(version_id: int, rules: dict, task_format: str | None) -> str:
     import hashlib
     import json
 
     payload = {"version_id": version_id, "rules": rules, "task_format": task_format}
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# ── 分段：规则 / 样本载荷 ────────────────────────────────────────────
+
+#: 单样本详情里的时序局部数据上限（点/通道）。
+_SAMPLE_DETAIL_POINTS = 600
+
+
+def _split_rules(
+    body: SplitPreviewRequest,
+    window_seconds: float,
+    stride_seconds: float,
+    tail_policy: str,
+    bundle,
+) -> dict:
+    """进 `preview_token` 与 `split_tasks.rules` 的规则原文（**秒是唯一基准**）。"""
+    return {
+        "rules_version": splitting.RULES_VERSION,
+        "window_seconds": window_seconds,
+        "stride_seconds": stride_seconds,
+        "tail_policy": tail_policy,
+        "keep_event_buffer": float(body.keep_event_buffer or 0.0),
+        "event_start": body.event_start,
+        "event_end": body.event_end,
+        "sample_rate": bundle.sample_rate,
+        "duration": float(bundle.duration),
+    }
+
+
+def _split_sample_payload(sample) -> dict:
+    """样本摘要（供列表）。**不含完整 `meta`**——几百条切片带完整 manifest 会撑爆列表响应。"""
+    meta = sample.meta or {}
+    schema_version = meta.get("schema_version")
+    payload = {
+        "id": sample.id,
+        "frame_no": sample.frame_no,
+        "start_time": sample.start_time,
+        "end_time": sample.end_time,
+        "schema_version": schema_version,
+        "object_keys": list(sample.object_keys or []),
+        "modalities": {},
+    }
+    # v3 才有统一的多模态结构；历史样本（≤2）的 meta 是旧形状，不硬套
+    if schema_version == 3:
+        payload["modalities"] = {
+            key: {
+                "available": bool((meta.get(key) or {}).get("available")),
+                "calibrated": bool((meta.get(key) or {}).get("calibrated")),
+                "reason": (meta.get(key) or {}).get("reason"),
+            }
+            for key in ("signal", "video", "seam_image", "audio")
+        }
+    return payload
+
+
+def _sample_time_series(session: Session, task, sample) -> list[dict]:
+    """该窗口内的时序局部数据（降采样，≤`_SAMPLE_DETAIL_POINTS` 点/通道）。
+
+    读不到信号时返回空列表——详情页仍应能打开，只是明确标出波形不可用。
+    """
+    if sample.start_time is None or sample.end_time is None:
+        return []
+    version = session.get(DataVersion, task.version_id)
+    record = session.get(DataRecord, version.record_id) if version is not None else None
+    if record is None:
+        return []
+    try:
+        bundle = splitting.load_input(session, record, version)
+    except splitting.SplitInputError as exc:
+        logger.warning("Split sample detail: signal unavailable: {}", exc)
+        return []
+    fs = int(bundle.sample_rate)
+    i0 = max(0, math.ceil(float(sample.start_time) * fs))
+    i1 = max(i0, math.floor(float(sample.end_time) * fs))
+    tracks = []
+    for channel in bundle.channels:
+        values = channel.values[i0:i1]
+        idx = signals.downsample_indices(values, _SAMPLE_DETAIL_POINTS) if len(values) else []
+        tracks.append({
+            "id": channel.id,
+            "name": channel.name,
+            "unit": channel.unit,
+            "times": [round((i0 + int(i)) / fs, 6) for i in idx],
+            "values": [round(float(values[int(i)]), 6) for i in idx],
+        })
+    return tracks
 
 
 def _filter_error(filter_type: str | None, cutoff: float | None, cutoff2: float | None) -> str | None:

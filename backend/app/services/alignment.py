@@ -197,10 +197,14 @@ def build_coordinate_mapping(
     video_key: str | None,
     video_meta: dict | None,
     seam_image_key: str | None,
+    video_reason: str | None = None,
 ) -> dict:
     """构建统一坐标系与各模态映射（设计 §3.1）。
 
     标定缺失**不阻断**——对应模态记 `calibrated=false` + reason，分段照常进行但如实标记。
+
+    `video_reason`：有视频文件但拿不到元信息时的原因（如分段预览为了避免下载视频而不探测），
+    缺省回落"无可用视频文件"——别让"没探测"被读成"没有视频"。
     """
     seg = events.get("weld_segment") or [0.0, 0.0]
     bounds = (float(seg[0]), float(seg[1]))
@@ -236,7 +240,7 @@ def build_coordinate_mapping(
         maps["video"] = {
             "type": "linear", "available": False, "calibrated": False,
             "offset_seconds": None, "fps": None, "duration": None,
-            "reason": "无可用视频文件",
+            "reason": video_reason or "无可用视频文件",
         }
 
     # ── 焊缝图片：arc_length（沿焊缝长度按比例切分） ─────────────────
@@ -342,6 +346,21 @@ def anchored_calibration(
 def resolve_calibration(session: Session, record: DataRecord) -> dict:
     """读该焊缝的权威标定（v1.0 归属）。"""
     return anchored_calibration(session, record)[1]
+
+
+def latest_alignment_mapping(session: Session, record: DataRecord) -> dict | None:
+    """该焊缝**最近一次成功对齐**产出的坐标映射（可能为 None）。
+
+    分段侧靠它拿视频元信息（fps/duration）——那样每次预览都不必下载视频跑一遍 ffmpeg。
+    取的是"最近有 mapping 的那次"，与任务版本无关：映射描述的是源数据本身的坐标关系。
+    """
+    row = session.exec(
+        select(AlignmentTask)
+        .join(DataVersion, DataVersion.id == AlignmentTask.version_id)
+        .where(DataVersion.record_id == record.id, AlignmentTask.mapping.is_not(None))
+        .order_by(AlignmentTask.id.desc())
+    ).first()
+    return row.mapping if row is not None else None
 
 
 def calibration_offset_seconds(calibration: dict) -> float:

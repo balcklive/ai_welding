@@ -6,7 +6,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import JSON, Column, DateTime, Double, Numeric, UniqueConstraint
+from sqlalchemy import JSON, Column, DateTime, Double, Index, Numeric, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -41,7 +41,9 @@ class SplitTask(SQLModel, table=True):
     request_key: str | None = Field(default=None, max_length=64)
     active_request_key: str | None = Field(default=None, max_length=64, unique=True)
     rules: dict = Field(sa_column=Column(JSON))
-    task_format: str = Field(max_length=32)
+    #: **已废弃**（设计 §3.4）：v3 起不再有"目标检测/时序分类"的二选一产物，新任务写 NULL。
+    #: 历史任务保留原值、产物口径不变；迁移 `0019` 放开 NOT NULL。
+    task_format: str | None = Field(default=None, max_length=32)
     sample_count: int | None = Field(default=None)
 
 
@@ -49,6 +51,9 @@ class Sample(SQLModel, table=True):
     """§3.9 samples 切分样本"""
 
     __tablename__ = "samples"
+    __table_args__ = (
+        Index("ix_samples_split_task_start", "split_task_id", "start_time"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     split_task_id: int | None = Field(
@@ -59,6 +64,10 @@ class Sample(SQLModel, table=True):
     )
     frame_no: int | None = Field(default=None)
     object_keys: list = Field(default_factory=list, sa_column=Column(JSON))
+    # v3 时间窗（秒，统一时间轴，迁移 `0019`）。落成**真列**而不是只塞 `meta`：
+    # 按时间筛选切片走索引，避免对 JSON 全表扫描（设计 §6.2）。历史样本为 NULL。
+    start_time: float | None = Field(default=None, sa_column=Column(Double))
+    end_time: float | None = Field(default=None, sa_column=Column(Double))
     meta: dict | None = Field(default=None, sa_column=Column(JSON))
 
 

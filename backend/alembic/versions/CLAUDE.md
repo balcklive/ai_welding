@@ -21,6 +21,7 @@ Alembic 迁移脚本目录（逐版本推进，全部由 `alembic revision` 生�
 - `0015_option_items.py`：**2026-09 系统设置·可选项字典**——新建 `option_items` 表 + `label_categories` 补 `sort_order`/`active`。
 - `0016_dataset_item_annotations.py`：**T16.1 冻结标注快照**——`dataset_items` 加 `annotations` JSON。
 - `0017_split_current_voltage.py`：**T4b/D7**——`data_records` 增 `current_a`/`voltage_v` 并从旧列解析回填。
+- `0019_sample_time_range.py`：**v3 样本时间窗落列（2026-09-22）**——`samples` 增 `start_time`/`end_time`（`Double`，秒、统一时间轴）与复合索引 `ix_samples_split_task_start (split_task_id, start_time)`，并把 `split_tasks.task_format` 放开为 nullable（§3.4 废弃，v3 新任务写 NULL）。历史样本两列为 NULL（`rules_version <= 2` 的时间语义不同——那时的 `frame_no` 是采样点下标，硬填会伪造错误时间窗）。**`downgrade` 先把 NULL 补成历史默认值再收紧 NOT NULL**，否则加不回约束。
 - `0018_calibration_mapping.py`：**多模态统一坐标系（2026-09-22）**——`data_versions` 增 `calibration` JSON（人工标定：视频 `offset_seconds` + 焊缝图片 `roi`）、`alignment_tasks` 增 `mapping` JSON（算出的可执行映射：`linear` 视频 offset / `arc_length` 焊缝图片弧长）。纯 expand，两列均 nullable，老代码不读新列，新代码对 NULL 兜底（未标定 → `aligned=false` + reason，不阻断分段）。见 `docs/多模态时间统一样本分段重构设计方案.md` §3.1。
 
 ## 调用链

@@ -55,7 +55,28 @@
   查同焊缝重复加工版本，配合 `data_versions.request_key` 唯一约束兜底并发重复请求，供路由返回 40900。
   **T4b（2026-09-14，R1/R6）**：`NUMBER_RANGES` + `normalize_number`（厚度/送丝/焊接速度三个"以字符串存的数字"字段的**统一归一化入口**，越界抛 `ValueError`）、`normalize_fields`、`parse_current_voltage` / `format_current_voltage`（旧列 `180 A / 22 V` 与拆分列的互转，与迁移 `0017` 同一套规则）、`_record_current_voltage`（核验读登记电流电压：新列优先、解析旧列回退）。`registration_request_key` **不再包含旧列**，电流电压取**解析后的新值**的规范数字（`180`/`180.0`/`180A/22V` 得到同一个键）；`create_registration` 写入只写新列（`current_voltage` 恒为 NULL）。
   **`reuse_or_create_version`（T16.3/R7）**：分析产物版本的幂等入口——`(action, note, object_keys)` 已存在则**复用**，否则建；并发撞 `data_versions` 唯一约束时**只回滚到 SAVEPOINT**（`begin_nested`，不能回滚整个任务事务，否则同一任务里已落库的切片/特征行会被一起丢掉），随后把 `latest_version_id` 指回已存在的那个版本。消费方：`jobs/split.py`（样本分段）、`jobs/features.py`（特征提取）。**对齐不接入**：它的产物键与 note 都不带任务身份，接入会把两次不同的对齐误判成重复。
-- `splitting.py`：**T10（2026-09-14）改为「秒是唯一基准」**。
+- `splitting.py`：**v3「时间统一的多模态样本」（2026-09-22，设计 §6.1）**。本模块是**预览接口
+  与异步执行器共用的唯一规则入口**，按无副作用组件拆开：
+  - `build_time_windows(*, duration, sample_rate, window_seconds, stride_seconds, event_bounds, tail_policy)`：
+    **唯一的秒级窗口算法**（`window_i.start = E_start + i×S`，仅 `end <= E_end` 出完整窗口；
+    `tail_policy="keep"` 才补一个截到 `E_end` 的不等长尾片）。采样点由 `ceil(秒 × 采样率)`
+    **派生**（§3.2），不是切分规则本身。
+  - `resolve_effective_range(bundle, override_start, override_end, buffer)`：事件边界 + 人工修正
+    + 缓冲 → **可审计**有效区间（含 `source`=detected/manual 与 `buffer_seconds`）。
+  - `map_window_to_modalities(window, *, mapping, sample_rate, weld_id, version_id, crop_key)`：
+    **唯一把"秒"换算到各模态坐标的地方**（§3.3 schema_version=3）。视频按
+    `t_video = t_signal - offset` 换算帧号；焊缝图片按弧长比例投影像素区间；任一模态越界记
+    `available=false` + reason，**不伪造**。**预览与 Job 共用它**，所以"预览 == 产物"。
+  - `resolve_coordinate_mapping(session, record, version, bundle)`：分段侧取映射——**不下载视频**，
+    fps/duration 读该焊缝最近一次对齐产物；从未对齐则视频模态不可用并给原因（不阻断分段）。
+    标定每次从 v1.0 权威标定现读，所以改完标定下次预览即生效、不必先重跑对齐。
+  - `build_preview(...)` / `sign_preview_token` / `verify_preview_token`：预览响应与**短期令牌**
+    （HMAC-SHA256 无状态，15 分钟）。token 自带完整规则 + 规则哈希 + 映射哈希 + 有效区间，
+    客户端改不了——这是"所见即所得"的技术基础（§5.4）。进程内 60s 预览缓存（§6.4）。
+  - `validate_rules(...)`：秒级规则校验。**按帧入口已废弃**（§2.3），故 `resolve_rule_seconds`
+    已删除；`event_bounds`/`build_windows` 改名并升级为上表的函数。
+  历史（`rules_version <= 2`）口径的读取在 `jobs/split.py::_run_legacy`，本模块只负责 v3。
+- `splitting.py` 旧文档（T10 时期，已被上面取代）：**T10（2026-09-14）改为「秒是唯一基准」**。
   - `RULES_VERSION = 2`（1 = 旧口径「帧 = 采样点」，历史任务的 `rules` 里没有该键）；写进 `rules`
     与切片 `meta`，供 D16-A 区分新旧切片。
   - `resolve_rule_seconds(unit, window_value, stride_value, video_fps, sample_rate)`：把界面上的

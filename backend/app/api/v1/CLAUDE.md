@@ -63,6 +63,22 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `arc_length` 焊缝图片弧长），供分段任务换算，见设计文档 §3.1；assets 为真实产物（时序 CSV/
     关键帧 JPG/mapping.json/tracks.json）经 `files.getFileUrl` 下载，视频播放 raw 原始对象
     （`track.object_key`）；未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
+  - `POST /welds/{weld_id}/versions/{version_id}/split-preview`（**v3 分段预览，只读**）：
+    按**秒级**规则算窗口并返回 `preview_token` + `windows[]` + `timeline`（统一轴分层数据）
+    + `modalities`（含 `calibrated`）+ `warnings[]`。**请求体不含标定**——映射恒从源版本
+    `calibration` 与对齐产物经 `splitting.resolve_coordinate_mapping` 读取（不下载视频）。
+    预览**不建 Job、不写任何产物**。`GET/PUT …/calibration` 见上。
+  - `POST /welds/{weld_id}/versions/{version_id}/split-tasks`（**v3**）：请求体**只有
+    `{preview_token}`**——服务端用 token 里签过的规则重建窗口（禁止客户端另交一套，否则
+    "所见即所得"失效）。校验 token 的焊缝/版本/规则哈希/**映射哈希**/有效区间，任一变更
+    **409**；新任务 `rules_version=3`、`task_format=None`。幂等键只依赖版本 + 规则
+    （`task_format` 对 v3 无意义）。
+  - `GET /split-tasks/{task_id}`：`result` 额外给出 `rules_version`/`schema_version`/`mapping_hash`，
+    供前端区分 v3 与历史（≤2）任务。
+  - `GET /split-tasks/{task_id}/samples`（分页）与 `…/samples/{sample_id}`（详情）：前者**只给
+    时间窗与模态摘要**，后者才给完整 `meta` 与该窗**降采样**局部时序（≤600 点/通道）。
+    **坑**：`list_split_samples` 用 `func.count()` + `Sample` —— `Sample` 必须从
+    `app.models.analysis` 导入（漏了会在运行时 NameError，测试已覆盖）。
   - `POST /welds/{weld_id}/versions/{version_id}/split-tasks` + `GET /split-tasks/{task_id}`
     （**Task 14 切分**）：异步 Job（type=split）+ `split_tasks` 行 → `{job_id}`；body
     `{fixed_rate(窗口长度，T10 起配 `unit`=frame/second), keep_event_buffer(±s), task_format(白名单 目标检测/图像分类/

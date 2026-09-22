@@ -1,15 +1,24 @@
 """生产样本分段任务。
 
-任务只消费成功导入的真实时序信号；目标检测额外消费真实视频并抽取窗口中点帧。
-预览和执行共用 ``app.services.splitting`` 的窗口规则，避免数量和边界漂移。
+只消费成功导入的真实时序信号。**按 `rules_version` 分流**（设计 §3.4）：
+
+- `>= 3`：时间统一的多模态样本——秒级窗口 + 经坐标映射派生各模态引用（`_run_v3`）。
+  产物是**多模态样本包**，不再有"目标检测/时序分类"的二选一。
+- `<= 2`：历史口径（`_run_legacy`）。保留是为了**让失败的旧任务仍能重试**——
+  历史任务不自动重算，但重试时必须按它当时的规则产出，不能拿 v3 去重切。
+
+预览与执行共用 `app.services.splitting` 的窗口算法（`build_time_windows`），
+保证"预览 207、执行也是 207"。
 """
 
 from __future__ import annotations
 
 import io
 import json
+import math
 
 from loguru import logger
+from PIL import Image
 from sqlmodel import Session, select
 
 from app.jobs.executor import register_handler
@@ -21,13 +30,16 @@ from app.services.jobs import mark_succeeded
 from app.services.welds import reuse_or_create_version
 from app.storage import get_storage
 
+#: 旧口径的视频扩展名（v3 的取键在 `splitting.resolve_coordinate_mapping` 里）
+_VIDEO_EXTS = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
 
 def _rule_seconds(rules: dict, sample_rate: int) -> tuple[float, float]:
-    """规则里的窗口长度与步长（**秒**，T10）。
+    """**旧口径专用**：规则里的窗口长度与步长（秒）。
 
-    T10 起规则以秒为准（`window_seconds` / `stride_seconds`）；历史任务（没有这两个键）按**旧口径**
-    解释——那时 `fixed_rate` / `stride` 是"采样点"数，换算成秒 = `点数 ÷ 采样率`，结果与旧实现
-    一致，所以旧任务不重跑也不会改变分片结果。
+    `rules_version >= 2` 的任务规则以秒为准（`window_seconds`/`stride_seconds`）；更早的
+    任务（没有这两个键）按"采样点数 ÷ 采样率"换算，结果与当时的实现一致，所以旧任务
+    重试不会改变分片结果。
     """
     window_seconds = rules.get("window_seconds")
     stride_seconds = rules.get("stride_seconds")
@@ -52,27 +64,211 @@ def handle(job_id: int, session: Session) -> None:
     if record is None or version is None:
         raise ValueError("Split task input version does not exist")
 
-    bundle = splitting.load_input(session, record, version)
     rules = dict(task.rules or {})
-    bounds = splitting.event_bounds(
+    if int(rules.get("rules_version") or 1) >= splitting.RULES_VERSION:
+        _run_v3(session, task, job, record, version, rules)
+    else:
+        _run_legacy(session, task, job, record, version, rules)
+
+
+# ── v3：时间统一的多模态样本 ─────────────────────────────────────────
+
+
+def _run_v3(session: Session, task: SplitTask, job: Job, record: DataRecord,
+            version: DataVersion, rules: dict) -> None:
+    """按 v3 规则切窗并生成多模态样本包（设计 §6.1/§6.3）。
+
+    Job 只负责编排：建 `Sample` 行、上传产物、更新进度、失败回滚；**不做任何时间换算**
+    ——换算全在 `splitting.map_window_to_modalities` 里，且预览走的是同一个函数。
+    """
+    bundle = splitting.load_input(session, record, version)
+    mapping = splitting.resolve_coordinate_mapping(session, record, version, bundle)
+    if rules.get("mapping_hash") and rules["mapping_hash"] != splitting.mapping_hash(mapping):
+        # 建任务之后标定又变了。**照常按当时 token 的规则切**（任务已受理），但如实告警：
+        # 这批切片的模态引用与用户确认预览时看到的不完全一致。
+        logger.warning(
+            "Split task {}: mapping changed after preview ({} -> {}); cutting with current mapping",
+            task.id, rules["mapping_hash"], splitting.mapping_hash(mapping),
+        )
+    bounds = tuple(float(x) for x in (rules.get("event_bounds") or []))
+    windows = splitting.build_time_windows(
+        duration=bundle.duration,
+        sample_rate=bundle.sample_rate,
+        window_seconds=float(rules["window_seconds"]),
+        stride_seconds=float(rules["stride_seconds"]),
+        event_bounds=bounds,
+        tail_policy=str(rules.get("tail_policy") or "drop"),
+    )
+    storage = get_storage()
+    base = f"processed/{record.weld_id}/split/{task.id}"
+    uploaded: list[str] = []
+    try:
+        for window in windows:
+            crop_key = _crop_seam_image(storage, record, task, window, mapping)
+            if crop_key:
+                uploaded.append(crop_key)
+            manifest = splitting.map_window_to_modalities(
+                window,
+                mapping=mapping,
+                sample_rate=bundle.sample_rate,
+                weld_id=record.weld_id,
+                version_id=version.id,
+                crop_key=crop_key,
+            )
+            object_keys = [crop_key] if crop_key else []
+            # 单样本 JSON 让一个切片能独立读取（设计 §6.3），与 manifest.json 的清单互为冗余
+            sample_json_key = f"{base}/samples/{window.index:06d}.json"
+            sample_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            storage.upload_stream(
+                sample_json_key, io.BytesIO(sample_json), len(sample_json), "application/json"
+            )
+            uploaded.append(sample_json_key)
+            session.add(Sample(
+                split_task_id=task.id,
+                frame_no=window.index,
+                start_time=window.start,
+                end_time=window.end,
+                object_keys=[*object_keys, sample_json_key],
+                meta=manifest,
+            ))
+            if window.index % 20 == 0 or window.index == len(windows):
+                job.progress = round(window.index / len(windows) * 100)
+                session.commit()
+    except Exception:
+        for key in reversed(uploaded):
+            try:
+                storage.delete_object(key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to clean split artifact {}: {}", key, exc)
+        raise
+
+    task.sample_count = len(windows)
+    task.rules = {**rules, "event_bounds": list(bounds), "sample_count": len(windows)}
+    session.add(task)
+
+    slice_rows = session.exec(
+        select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
+    ).all()
+    manifest_key = f"{base}/manifest.json"
+    manifest = {
+        "schema_version": 3,
+        "task_id": task.id,
+        "rules_version": splitting.RULES_VERSION,
+        "rules": task.rules,
+        "source_version_id": version.id,
+        "mapping_hash": splitting.mapping_hash(mapping),
+        "mapping": mapping,
+        "sample_count": len(windows),
+        "samples": [
+            {
+                "sample_id": row.id,
+                "sample_index": row.frame_no,
+                "start_time": row.start_time,
+                "end_time": row.end_time,
+                "object_keys": row.object_keys,
+            }
+            for row in slice_rows
+        ],
+    }
+    manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    storage.upload_stream(
+        manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json"
+    )
+
+    source_keys = list(version.object_keys or [])
+    segmentation_version, created = reuse_or_create_version(
+        session,
+        record,
+        action="样本分段",
+        note=f"分段任务 #{task.id} 自动生成（{len(windows)} 个多模态样本，规则版本 {splitting.RULES_VERSION}）",
+        object_keys=[*source_keys, *([manifest_key] if manifest_key not in source_keys else [])],
+        operator="算法任务",
+    )
+    if not created:
+        logger.info("Split task {} reused existing 样本分段 version {}", task.id, segmentation_version.version_no)
+
+    mark_succeeded(session, job, {
+        "sample_count": len(windows),
+        "rules_version": splitting.RULES_VERSION,
+        "schema_version": 3,
+        "rules": task.rules,
+        "mapping_hash": splitting.mapping_hash(mapping),
+        "manifest_key": manifest_key,
+    })
+
+
+def _crop_seam_image(storage, record: DataRecord, task: SplitTask, window, mapping: dict) -> str | None:
+    """按 ROI 投影裁出本窗的焊缝图片条带，返回对象键；**任何失败只告警返回 None**。
+
+    焊缝图片是增强模态——信号段才是样本主体，缺了它样本仍然成立，故这里刻意不抛：
+    让一次图片解码失败把整个分段任务打成 failed，是把可降级的问题升级成了不可用（设计 §6.1）。
+    """
+    seam = (mapping.get("mappings") or {}).get("seam_image") or {}
+    roi = seam.get("roi")
+    if not seam.get("available") or not roi:
+        return None
+    manifest = splitting.map_window_to_modalities(
+        window, mapping=mapping, sample_rate=1, weld_id=record.weld_id, version_id=0
+    )
+    span = manifest["seam_image"].get("spatial_range")
+    if not span:
+        return None
+    roi_x, roi_y = float(roi["x"]), float(roi["y"])
+    roi_w, roi_h = float(roi["w"]), float(roi["h"])
+    left = max(int(math.floor(min(span["start_px"], span["end_px"]))), int(roi_x))
+    right = min(int(math.ceil(max(span["start_px"], span["end_px"]))), int(roi_x + roi_w))
+    if right - left < 1:
+        return None
+    try:
+        data = storage.get_object(seam["object_key"])
+        with Image.open(io.BytesIO(data)) as image:
+            crop = image.convert("RGB").crop((left, int(roi_y), right, int(roi_y + roi_h)))
+            buffer = io.BytesIO()
+            crop.save(buffer, format="JPEG", quality=88)
+        payload = buffer.getvalue()
+    except Exception as exc:  # noqa: BLE001 - 图片是增强模态，失败不阻断样本
+        logger.warning("Seam image crop failed, sample kept without image: {}", exc)
+        return None
+    key = f"processed/{record.weld_id}/split/{task.id}/samples/{window.index:06d}.jpg"
+    try:
+        storage.upload_stream(key, io.BytesIO(payload), len(payload), "image/jpeg")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Seam image upload failed, sample kept without image: {}", exc)
+        return None
+    return key
+
+
+# ── <=2：历史口径（保留以便旧任务重试） ──────────────────────────────
+
+
+def _run_legacy(session: Session, task: SplitTask, job: Job, record: DataRecord,
+                version: DataVersion, rules: dict) -> None:
+    """历史任务（`rules_version <= 2`）的原有口径，行为**逐字保留**。
+
+    历史任务不自动重算，但 `failed` 的任务允许重试（executor 会清 `active_request_key`）——
+    重试必须按它当时的规则产出，不能拿 v3 的多模态样本去覆盖。
+    """
+    bundle = splitting.load_input(session, record, version)
+    bounds = splitting.resolve_effective_range(
         bundle,
         rules.get("event_start"),
         rules.get("event_end"),
         float(rules.get("keep_event_buffer") or 0),
     )
     window_seconds, stride_seconds = _rule_seconds(rules, bundle.sample_rate)
-    windows = splitting.build_windows(
+    windows = splitting.build_time_windows(
         duration=bundle.duration,
         sample_rate=bundle.sample_rate,
         window_seconds=window_seconds,
         stride_seconds=stride_seconds,
-        event_bounds=bounds,
+        event_bounds=(bounds["start"], bounds["end"]),
     )
     storage = get_storage()
-    video_key = next((key for key in version.object_keys or [] if key.lower().endswith((".mp4", ".mov", ".avi", ".mkv", ".webm"))), None)
+    video_key = next(
+        (key for key in version.object_keys or [] if str(key).lower().endswith(_VIDEO_EXTS)), None
+    )
     video_bytes = storage.get_object(video_key) if task.task_format == "目标检测" and video_key else None
-    # 统一坐标：视频零点取该焊缝 v1.0 的标定，走与对齐服务**同一个 resolver**——
-    # 两处各读一次就会漂移，"分段侧用哪个 offset"只有这一处来源。
+    # 统一坐标：视频零点取该焊缝 v1.0 的标定，走与对齐服务**同一个 resolver**
     seek_offset = alignment.calibration_offset_seconds(
         alignment.resolve_calibration(session, record)
     )
@@ -83,14 +279,13 @@ def handle(job_id: int, session: Session) -> None:
                 "sample_index": index,
                 "window_start": window.start,
                 "window_end": window.end,
-                # 注意：这两个是**信号采样点下标**（历史字段名），视频帧号见下面的 video_frame_no
+                # 注意：这两个是**信号采样点下标**（历史字段名），视频帧号见 video_frame_no
                 "frame_start": window.frame_start,
                 "frame_end": window.frame_end,
                 "window_seconds": window.window_seconds,
                 "source_version_id": version.id,
                 "task_format": task.task_format,
                 # T11/D16-A：标出产出这条切片的规则版本，供"新旧切片共存"时区分口径。
-                # 1 = 旧口径（帧 = 采样点，T10 之前）；2 = 秒为唯一基准。
                 "rules_version": rules.get("rules_version", 1),
             }
             # T10：视频帧号取**窗口中点**对应的帧（窗口本身按秒算；没有 fps 就不记）。
@@ -143,13 +338,9 @@ def handle(job_id: int, session: Session) -> None:
         raise
 
     task.sample_count = len(windows)
-    task.rules = {**rules, "event_bounds": list(bounds)}
+    task.rules = {**rules, "event_bounds": [bounds["start"], bounds["end"]]}
     session.add(task)
 
-    # T16：任务成功后自动生成「样本分段」数据版本。
-    # object_keys = **源版本文件 ∪ 切分产物清单**（合并源版本是必须的，只挂产物会让"读原始
-    # 信号"的后续流程断链，见 T16.2/D18）。**只挂清单、不挂逐个切片键**：切片可能有几百个，
-    # 全塞进 object_keys 会把数据详情页的媒体预览（按扩展名扫描）变成几百张切帧图。
     slice_rows = session.exec(
         select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
     ).all()
@@ -168,9 +359,6 @@ def handle(job_id: int, session: Session) -> None:
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
     storage.upload_stream(manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json")
     source_keys = list(version.object_keys or [])
-    # T16.3/R7：**同一个分段任务只生成一个「样本分段」版本**。幂等身份含任务 id（note 与
-    # manifest 键里都带），所以"同一任务重入（执行器重试 / run_job 手工再跑）"复用已有版本，
-    # 而"换规则重新分段"是新任务、新产物，仍会建新版本。
     segmentation_version, created = reuse_or_create_version(
         session,
         record,
