@@ -609,13 +609,20 @@ export interface Calibration {
 
 export interface SplitResult {
   sample_count: number;
-  rules: { fixed_rate: number; stride?: number; keep_event_buffer: number; event_bounds?: [number, number] };
-  task_format: string;
-  samples: {
+  rules: SplitRules & { rules_version?: number; event_bounds?: [number, number] };
+  /** v3 起废弃（§3.4）：新任务为 `null`，历史任务保留原值。 */
+  task_format?: string | null;
+  /** 3 = v3 多模态样本；`null` = 历史任务（≤2），不在新页面伪装成新格式（§3.4）。 */
+  schema_version?: number | null;
+  rules_version?: number;
+  /** 产出这批样本时用的坐标映射摘要；与预览不一致说明标定变过。 */
+  mapping_hash?: string | null;
+  manifest_key?: string | null;
+  samples?: {
     id: number;
     frame_no: number;
     object_keys: string[];
-    annotation_task_id: number | null;
+    annotation_task_id?: number | null;
   }[];
 }
 
@@ -669,24 +676,101 @@ export interface SignalQuery {
   end?: number;
 }
 
+/** 分段规则（v3 / §2.3）：**秒是唯一切分单位**，按帧入口已废弃。 */
 export interface SplitRules {
-  /** 窗口长度；单位由 `unit` 决定（T10：`frame` 按视频帧 / `second` 按秒）。 */
-  fixed_rate: number;
-  stride?: number;
-  /** 切分单位（T10）：`frame`（默认，需视频帧率）/ `second`（无视频时的唯一选择，D15）。 */
-  unit?: 'frame' | 'second';
-  keep_event_buffer?: number;
-  task_format?: string;
+  /** 窗口时长（秒），默认 2.0。 */
+  window_seconds?: number;
+  /** 步长（秒），默认 2.0（= 不重叠）。 */
+  stride_seconds?: number;
   event_start?: number;
   event_end?: number;
+  keep_event_buffer?: number;
+  /** 尾片策略：`drop`（默认）/ `keep`。 */
+  tail_policy?: 'drop' | 'keep';
+}
+
+/** 单个窗口在某个模态上的摘要（§3.3）。`available=false` 时 `reason` 必有值。 */
+export interface SplitModalitySlot {
+  available: boolean;
+  calibrated?: boolean;
+  reason?: string | null;
+  object_key?: string | null;
+  /** 视频：`start_frame`/`end_frame`/`offset_seconds`/`fps`/`keyframes[{at}]`。 */
+  start_frame?: number;
+  end_frame?: number;
+  offset_seconds?: number;
+  fps?: number;
+  keyframes?: { at: number }[];
+  /** 焊缝图片：`roi` 与沿 ROI 长边的像素区间。 */
+  roi?: { x: number; y: number; w: number; h: number } | null;
+  spatial_range?: { start_px: number; end_px: number };
+  speed_source?: string | null;
+  crop_key?: string | null;
+}
+
+export interface SplitPreviewWindow {
+  index: number;
+  start: number;
+  end: number;
+  duration: number;
+  signal: SplitModalitySlot & { sample_rate?: number; start_index?: number; end_index?: number };
+  video: SplitModalitySlot;
+  seam_image: SplitModalitySlot;
+}
+
+export interface SplitTimelineTrack {
+  id: string;
+  name: string;
+  unit: string;
+  times: number[];
+  values: number[];
 }
 
 export interface SplitPreview {
-  input: { version_id: number; duration: number; sample_rate: number; source: 'real'; video_fps?: number | null };
-  events: WeldEvent;
-  /** T10：秒是唯一基准；`window_frames`/`stride_frames` 只在能拿到视频帧率时给出。 */
-  summary: { sample_count: number; effective_start: number; effective_end: number; window_seconds: number; stride_seconds: number; window_frames?: number | null; stride_frames?: number | null; window_samples?: number };
-  windows: { index: number; start: number; end: number; frame_start: number; frame_end: number }[];
+  /** 创建任务的**唯一凭证**（§5.4）：屏幕上的边界与真正切出来的由它绑定。 */
+  preview_token: string;
+  rules: SplitRules;
+  rules_hash: string;
+  mapping_hash: string;
+  effective_range: { start: number; end: number };
+  window_seconds: number;
+  stride_seconds: number;
+  overlap_seconds: number;
+  overlap_ratio: number;
+  tail_policy: 'drop' | 'keep';
+  sample_count: number;
+  windows: SplitPreviewWindow[];
+  timeline: {
+    duration: number;
+    events: WeldEvent;
+    signal: { sample_rate: number; tracks: SplitTimelineTrack[] };
+    video_thumbnail_times: number[];
+    seam_image_projection: {
+      available: boolean;
+      object_key: string | null;
+      roi: { x: number; y: number; w: number; h: number } | null;
+      speed_source: string | null;
+      reason: string | null;
+    };
+  };
+  /** 各模态的可用性与**标定状态**（分段页只读展示，不可在此编辑）。 */
+  modalities: Record<string, { available: boolean; calibrated: boolean; reason: string | null; speed_source?: string | null }>;
+  warnings: string[];
+}
+
+export interface SplitSample {
+  id: number;
+  frame_no: number | null;
+  start_time: number | null;
+  end_time: number | null;
+  schema_version: number | null;
+  object_keys: string[];
+  modalities: Record<string, { available: boolean; calibrated: boolean; reason: string | null }>;
+}
+
+export interface SplitSampleDetail extends SplitSample {
+  meta: Record<string, unknown> | null;
+  time_series: SplitTimelineTrack[];
 }
 
 export interface FeatureExtractRequest {

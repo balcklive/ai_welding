@@ -10,10 +10,10 @@
 - `hooks/`：前端 React 钩子层（Task 20 起）。`useJob.ts` 通用异步任务轮询（消费 `api/jobs.getJob`）、`usePagedWelds.ts` 样本候选分页搜索（2026-09-14 R5）、`useIngestStatus.ts` 登记链路状态（2026-09-14 R2）、`useLabelStudioTask.ts` LS 同步态。详见 `hooks/CLAUDE.md`。
 - `pages/`：前端页面层（Task 20 起）。`Login.tsx` 最小登录页（登录成功写 token+user 到 localStorage 并通知外层）。详见 `pages/CLAUDE.md`。
 - `app/`：应用级路由与导航配置（Task 21 重构）。`navigation.ts` 定义 `Route` 联合类型 + `navStructure` 侧边栏树 + `workspaceHeaders` 页头文案，是 App.tsx 导航的单一来源。详见 `app/CLAUDE.md`。
-- `features/`：按业务域拆分的工作区页面（2026-08-29 重构自 App.tsx）。overview/datasets/registration/validation/versions/analysis/annotation/alignment/models/features/data-context/**settings** 各一目录，由 App.tsx `WorkspaceFrame` 懒加载。详见 `features/CLAUDE.md` 及各子目录。
+- `features/`：按业务域拆分的工作区页面（2026-08-29 重构自 App.tsx）。overview/datasets/registration/validation/versions/analysis/annotation/alignment/models/features/data-context/**settings** 各一目录，由 App.tsx `WorkspaceFrame` 懒加载。**2026-09-22（v3）**：样本分段从 `alignment/AlignmentWorkspace` 的 `splitOnly` 形态**整体拆出**为独立工作台 `features/alignment/split/`（`split/SplitWorkspace`），路由 `analysis/split` 指向它；`AlignmentWorkspace` 只保留标定层。详见 `features/CLAUDE.md` 及各子目录。
 - `shared/`：跨 feature 复用件。`components/`（Toolbar/PageIntro/StatusPill/InfoRow/TextDialog）+ `lib/`（formatting）。详见 `shared/CLAUDE.md`。
 - `components/`：业务组件。`annotation/AnnotoriousImageEditor.tsx` 统一图像/视频帧标注编辑器（Annotorious 适配层，坐标按原始像素）。详见 `components/CLAUDE.md`。
-- `App.buffer-regression.test.mjs`：Node 内置测试；静态断言 `Alignment` 切分页暴露 `bufferSeconds` 可编辑输入，且 `createSplitTask` 不再把 `keep_event_buffer` 硬编码为 `0.2`。
+- `App.buffer-regression.test.mjs`：Node 内置测试；静态断言分段页（`features/alignment/split/`）暴露 `bufferSeconds` 可编辑输入、`draftToRules` 按准确数值产出 `keep_event_buffer`，且**创建任务只提交 `preview_token`**（前端不再把规则对象交给创建接口）。
 - `vite-base-regression.test.mjs`：Node 内置测试；静态断言生产构建使用根路径 `/`，避免部署在 FastAPI 根挂载点时生成错误的 `/ai_welding/assets/` 资源路径。
 - `App.routing-regression.test.mjs`（阶段一 2026-09-14）：Node 内置测试；**直接 import `app/route-url.ts` 跑真实换算断言**（`routeToHash`↔`parseHashRoute` 往返一致、容忍书写差异、非法输入回落 `null`、`Route` 联合类型与 `ROUTE_SEGMENTS` 一一对应），再静态断言 `App.tsx` 的 `pushState`/`replaceState`/`popstate`/`hashchange` 装配与「同路由不新增历史条目」。全部回归测试跑法：`npm test`（= `node --test "src/*.test.mjs"`）。
 - `App.analysis-filter-regression.test.mjs`（2026-09-15）：Node 内置测试；静态断言起收弧识别页的截止频率**不再把归一化频率 ×1000 当 Hz**（改用 `data.sample_rate` 换算）、三种滤波类型都写出通带阈值、带通在前端就保证 `cutoff < cutoff2`、且滤波只作用于目标通道并同时画出原始/滤波后波形。

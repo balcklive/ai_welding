@@ -11,7 +11,7 @@
 - `versions/`：`VersionDetailDrawer` 版本详情抽屉（数据版本 / 数据集版本两种 mode；T1 已改称呼）。
 - `analysis/`：分析与标注·起收弧识别（`AdvancedWeldAnalysis` + 六种图表 + `signals/chartData` 演示坐标系工具）。
 - `annotation/`：分析与标注·数据标注（图像/时序/视频三模式，基于 Annotorious）。
-- `alignment/`：分析与标注·多模态对齐 + 数据切分（`AlignmentWorkspace`，`splitOnly` 双形态）。
+- `alignment/`：分析与标注·多模态对齐（`AlignmentWorkspace`，标定层）+ `alignment/split/`（样本分段工作台 v3，独立组件树）。
 - `models/`：模型中心（训练数据准备/模型资产/新建训练/测试评估/推理验证）。
 - `features/`：分析与标注·特征提取（`FeatureExtractionPage`）。
 - `data-context/`：全局「先选数据」上下文（选择器/选择引导/数据集两级选择/版本面板），由 `App.tsx` 复用。

@@ -28,6 +28,8 @@ import type {
   SplitResult,
   SplitPreview,
   SplitRules,
+  SplitSample,
+  SplitSampleDetail,
 } from './types';
 
 /** 均匀抽稀：等距下标取样到 ≤n 点；长度 ≤n（含 0/1 点）原样返回。 */
@@ -140,20 +142,34 @@ export async function getAnalysisResult(
 }
 
 /** 提交数据切分任务（异步）。 */
+/** 创建分段任务（v3，§5.4）：**只接受预览令牌**——服务端凭它重建窗口，客户端不能另交规则。 */
 export async function createSplitTask(
   weldId: string,
   versionId: string,
-  rules: SplitRules,
+  previewToken: string,
 ): Promise<{ job_id: string }> {
   return request<{ job_id: string }>(
     `/welds/${weldId}/versions/${versionId}/split-tasks`,
-    { method: 'POST', body: rules },
+    { method: 'POST', body: { preview_token: previewToken } },
   );
 }
 
 /** 切分任务状态/结果（轮询 Job 结构）。 */
 export async function getSplitTask(taskId: string): Promise<Job<SplitResult>> {
   return request<Job<SplitResult>>(`/split-tasks/${taskId}`);
+}
+
+/** 任务样本分页（§5.5）：列表只给时间窗与模态摘要，高频数据走单样本详情。 */
+export async function listSplitSamples(
+  taskId: string,
+  params: { page?: number; page_size?: number } = {},
+): Promise<Page<SplitSample>> {
+  return request<Page<SplitSample>>(`/split-tasks/${taskId}/samples`, { query: params });
+}
+
+/** 单样本详情（§5.5）：含该窗内的时序局部数据（已降采样）。 */
+export async function getSplitSample(taskId: string, sampleId: number): Promise<SplitSampleDetail> {
+  return request<SplitSampleDetail>(`/split-tasks/${taskId}/samples/${sampleId}`);
 }
 
 /** 缺陷标签类别（焊瘤/气孔/未熔合/咬边/正常，模型口径）。 */

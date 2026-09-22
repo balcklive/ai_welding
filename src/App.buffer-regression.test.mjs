@@ -8,15 +8,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const source = fs.readFileSync(path.join(__dirname, 'App.tsx'), 'utf8');
 const datasetSource = fs.readFileSync(path.join(__dirname, 'features/datasets/DatasetWorkspace.tsx'), 'utf8');
 const dataContextSource = fs.readFileSync(path.join(__dirname, 'features/data-context/DataContext.tsx'), 'utf8');
-const alignmentSource = fs.readFileSync(path.join(__dirname, 'features/alignment/AlignmentWorkspace.tsx'), 'utf8');
 const versionDrawerSource = fs.readFileSync(path.join(__dirname, 'features/versions/VersionDetailDrawer.tsx'), 'utf8');
+// v3 起分段页是独立工作台（设计 §7.1），不再是 AlignmentWorkspace 的 splitOnly 形态
+const splitPanelSource = fs.readFileSync(path.join(__dirname, 'features/alignment/split/SplitRulesPanel.tsx'), 'utf8');
+const splitWorkspaceSource = fs.readFileSync(path.join(__dirname, 'features/alignment/split/SplitWorkspace.tsx'), 'utf8');
+const splitTypesSource = fs.readFileSync(path.join(__dirname, 'features/alignment/split/splitTypes.ts'), 'utf8');
+const analysisApiSource = fs.readFileSync(path.join(__dirname, 'api/analysis.ts'), 'utf8');
 
-test('Alignment split panel exposes editable buffer seconds and wires them to split API', () => {
-  assert.match(alignmentSource, /bufferSeconds/);
-  assert.match(alignmentSource, /setBufferSeconds/);
-  assert.match(alignmentSource, /type="number"/);
-  assert.match(alignmentSource, /createSplitTask\([^\n]+keep_event_buffer:/s);
-  assert.doesNotMatch(alignmentSource, /createSplitTask\([^\n]+keep_event_buffer:\s*0\.2/s);
+test('分段页暴露可编辑的缓冲秒数，并按准确数值进规则', () => {
+  assert.match(splitPanelSource, /bufferSeconds/);
+  assert.match(splitPanelSource, /type="number"/);
+  // 关闭缓冲必须传 0、开启时传准确数值——不能像改造前那样硬编码常量
+  assert.match(splitTypesSource, /keep_event_buffer: draft\.keepEventBuffer \? draft\.bufferSeconds : 0/);
+});
+
+test('创建任务只提交 preview_token，规则由服务端从令牌重建（v3 §5.4）', () => {
+  assert.match(analysisApiSource, /body: \{ preview_token: previewToken \}/);
+  // 前端不得再把规则对象直接交给创建接口——那会让"所见即所得"失效
+  assert.doesNotMatch(splitWorkspaceSource, /createSplitTask\([^)]*keep_event_buffer/);
+  assert.doesNotMatch(splitWorkspaceSource, /createSplitTask\([^)]*window_seconds/);
 });
 
 test('version view buttons open the appropriate detail drawer', () => {
