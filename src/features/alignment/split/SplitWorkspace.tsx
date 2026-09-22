@@ -138,6 +138,8 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
   };
 
   const goToAlignment = () => { window.location.hash = '#/analysis/alignment'; };
+  // 分段成功后进入**段级标注**工作台：那边按同一个分段任务列样本、逐段给结论。
+  const goToAnnotation = () => { window.location.hash = '#/analysis/sample-annotation'; };
   const done = jobStatus === 'succeeded';
   const tone = inputError || createError || previewError || jobStatus === 'failed'
     ? 'red' : jobStatus === 'running' || jobStatus === 'pending' ? 'orange' : done ? 'green' : 'muted';
@@ -212,6 +214,7 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
           onDraft={(patch) => setDraft((prev) => ({ ...prev, ...patch }))}
           onCreate={handleCreate}
           onGoToAlignment={goToAlignment}
+          onGoToAnnotation={done ? goToAnnotation : undefined}
         />
       </div>
 

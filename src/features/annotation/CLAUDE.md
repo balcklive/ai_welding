@@ -2,6 +2,10 @@
 
 分析与标注·数据标注工作区（2026-08-29 重构自 App.tsx 抽出）。图像/时序/视频三模式。
 
+> **`segment/` 是同目录下的另一条标注线**（2026-09-22，路由 `analysis/sample-annotation`）：
+> 只做 v3 分段样本的**段级分类**（一段一个主结论），与这里的几何标注（框/区间/多边形）互不读写。
+> 见 `segment/CLAUDE.md`。
+
 ## 文件
 
 - `AnnotationWorkspace.tsx`：

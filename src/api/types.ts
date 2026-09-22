@@ -773,6 +773,99 @@ export interface SplitSampleDetail extends SplitSample {
   time_series: SplitTimelineTrack[];
 }
 
+// ── 分段样本段级标注（2026-09-22，见 `backend/app/api/v1/sample_annotations.py`） ──
+
+/** 段级结论：一个样本只有一个主结论（`normal` 正常 / `defect` 缺陷）。 */
+export type SegmentLabel = 'normal' | 'defect';
+
+/** 主缺陷词表项（`option_items` 的 `defect_category` 分组；`id` 是稳定 ID）。 */
+export interface SegmentCategory {
+  id: number;
+  value: string;
+  active: boolean;
+  sort_order: number;
+}
+
+/** 一个样本的段级标注。`defect_category_name` 是**写入当时**的名称快照——
+ *  类别改名/停用后历史标注仍按它展示，不要回查词表去"修正"。 */
+export interface SampleAnnotation {
+  sample_id: number;
+  label: SegmentLabel;
+  defect_category_id: number | null;
+  defect_category_name: string | null;
+  note: string | null;
+  /** 标注数据 schema 版本（数据集构建消费前先认它）。 */
+  schema_version: number;
+  /** 复核态（一期 UI 不暴露；默认 approved）。 */
+  review_status: string | null;
+  annotator: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** 标注工作台列表行（**轻量**：只有导航与进度需要的字段，不带 meta/媒体对象键）。 */
+export interface SegmentSampleRow {
+  id: number;
+  frame_no: number | null;
+  start_time: number | null;
+  end_time: number | null;
+  annotated: boolean;
+  label: SegmentLabel | null;
+  defect_category_name: string | null;
+}
+
+/** 标注进度（工作台顶部与数据集构建的覆盖率口径）。 */
+export interface SegmentProgress {
+  total: number;
+  annotated: number;
+  unannotated: number;
+  normal: number;
+  defect: number;
+  progress: number;
+  defect_distribution: { name: string; count: number }[];
+}
+
+export type SegmentSamplePage = Page<SegmentSampleRow> & { progress: SegmentProgress };
+
+/** 可进入标注的分段任务（`GET /welds/{weld_id}/segment-annotation-tasks`）——只含
+ *  **已完成 + v3** 的任务，是标注工作台的入口列表。 */
+export interface SegmentAnnotatableTask {
+  /** job_uid：后续所有标注端点都用它寻址（与创建分段任务时拿到的一致）。 */
+  task_id: string;
+  split_task_id: number;
+  version_id: number;
+  version_no: string;
+  sample_count: number;
+  window_seconds: number | null;
+  stride_seconds: number | null;
+  /** 有效事件区间 [start, end]（秒）。 */
+  effective_range: number[] | null;
+  finished_at: string | null;
+  progress: Pick<SegmentProgress, 'total' | 'annotated' | 'unannotated' | 'progress'>;
+}
+
+/** 版本化导出（数据集构建消费的输入，**不含媒体字节**）。 */
+export interface SegmentAnnotationExport {
+  schema_version: number;
+  task_id: number;
+  weld_id: string | null;
+  source_version_id: number;
+  label_vocabulary: { id: number; name: string; active: boolean }[];
+  sample_count: number;
+  annotated_count: number;
+  items: {
+    sample_id: number;
+    sample_index: number | null;
+    start_time: number | null;
+    end_time: number | null;
+    label: SegmentLabel | null;
+    defect_category_id?: number | null;
+    defect_category_name?: string | null;
+    note?: string | null;
+    annotator?: string | null;
+  }[];
+}
+
 export interface FeatureExtractRequest {
   weld_id: string;
   version_id: number;

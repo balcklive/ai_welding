@@ -36,6 +36,7 @@ const ROUTE_SEGMENTS = {
   'analysis/alignment': 'analysis/alignment',
   'analysis/analysis': 'analysis/analysis',
   'analysis/split': 'analysis/split',
+  'analysis/sample-annotation': 'analysis/sample-annotation',
   'analysis/annotation': 'analysis/annotation',
   'analysis/features': 'analysis/features',
   'model-center/dataset-build': 'model-center/dataset-build',

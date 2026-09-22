@@ -10,6 +10,7 @@ export type Route =
   | 'analysis/alignment'
   | 'analysis/analysis'
   | 'analysis/split'
+  | 'analysis/sample-annotation'
   | 'analysis/annotation'
   | 'analysis/features'
   | 'model-center/dataset-build'
@@ -60,6 +61,7 @@ export const navStructure: {
     { route: 'analysis/alignment', label: '多模态对齐' },
     { route: 'analysis/analysis', label: '起收弧识别' },
     { route: 'analysis/split', label: '样本分段' },
+    { route: 'analysis/sample-annotation', label: '分段样本标注' },
     { route: 'analysis/annotation', label: '数据标注' },
     { route: 'analysis/features', label: '特征提取' },
   ] },

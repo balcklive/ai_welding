@@ -26,6 +26,8 @@ const FeatureExtractionPage = lazy(() => import('./features/features/FeatureExtr
 const AlignmentWorkspace = lazy(() => import('./features/alignment/AlignmentWorkspace').then((module) => ({ default: module.AlignmentWorkspace })));
 // v3 起分段页是独立工作台（设计 §7.1）：秒级窗口 + 服务端预览驱动，不再是 AlignmentWorkspace 的 splitOnly 形态
 const SplitWorkspace = lazy(() => import('./features/alignment/split/SplitWorkspace').then((module) => ({ default: module.SplitWorkspace })));
+// 分段样本的**段级标注**工作台（2026-09-22）：从已完成的分段任务进入，每段一个主结论
+const SampleAnnotationWorkspace = lazy(() => import('./features/annotation/segment/SampleAnnotationWorkspace').then((module) => ({ default: module.SampleAnnotationWorkspace })));
 const ModelRepository = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.ModelRepository })));
 const TrainingDataPreparation = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.TrainingDataPreparation })));
 const Training = lazy(() => import('./features/models/ModelCenter').then((module) => ({ default: module.Training })));
@@ -193,6 +195,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <SplitWorkspace dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/sample-annotation') content = selectedDatasetId != null && selectedDataId ? <SampleAnnotationWorkspace dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <AnnotationWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtractionPage embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'model-center/dataset-build') content = <TrainingDataPreparation />;

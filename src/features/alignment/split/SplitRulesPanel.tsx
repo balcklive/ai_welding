@@ -20,11 +20,13 @@ interface Props {
   onDraft: (patch: Partial<RulesDraft>) => void;
   onCreate: () => void;
   onGoToAlignment: () => void;
+  /** 样本已生成时给出「去标注」入口（段级标注工作台）；未生成时不传。 */
+  onGoToAnnotation?: () => void;
 }
 
 export function SplitRulesPanel({
   draft, fieldError, preview, previewError, previewing, stale, creating,
-  onDraft, onCreate, onGoToAlignment,
+  onDraft, onCreate, onGoToAlignment, onGoToAnnotation,
 }: Props) {
   const video = preview?.modalities.video;
   const seam = preview?.modalities.seam_image;
@@ -158,6 +160,13 @@ export function SplitRulesPanel({
         </button>
       </div>
       {stale && <p className="toolbar-error" role="status">规则已改动，正在重新预览——请等预览完成后再生成。</p>}
+      {onGoToAnnotation && (
+        <div className="split-action-row">
+          <button type="button" className="full-button studio-reset" onClick={onGoToAnnotation}>
+            去标注这批样本（分段样本标注）
+          </button>
+        </div>
+      )}
     </section>
   );
 }
