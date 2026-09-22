@@ -48,11 +48,14 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     旧任务会释放 `active_request_key`，下一次提交创建新的可执行 job；并发双击仍由
     `alignment_tasks.active_request_key` 唯一约束兜底。
   - `GET /alignment-tasks/{task_id}`（**Task 13，对齐真实化后 tracks 为扩展结构**）：Job 信封
-    （`task_id`=job_uid），成功时 `result` 内嵌 `events/event_source/tracks/assets`——tracks
+    （`task_id`=job_uid），成功时 `result` 内嵌 `events/event_source/tracks/**mapping**/assets`——tracks
     每条含 `channel/modality/availability(available|generated|unavailable)/source/aligned/
-    asset/object_key/metadata/reason`（部分成功语义）；assets 为真实产物（时序 CSV/
-    关键帧 JPG/tracks.json）经 `files.getFileUrl` 下载，视频播放 raw 原始对象（`track.object_key`）；
-    未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
+    asset/object_key/metadata/reason`（部分成功语义；**video 自 2026-09-22 起 `aligned` 由映射的
+    `calibrated` 推导**，未标定 offset 即 `false` + reason「时间零点未标定」，不再无条件声称已对齐）；
+    `mapping` 为**可执行坐标映射**（统一轴 + `identity` 时序 / `linear` 视频 offset /
+    `arc_length` 焊缝图片弧长），供分段任务换算，见设计文档 §3.1；assets 为真实产物（时序 CSV/
+    关键帧 JPG/mapping.json/tracks.json）经 `files.getFileUrl` 下载，视频播放 raw 原始对象
+    （`track.object_key`）；未执行/失败保持 result=null（契约 §1.5/§6.1）；未知 → 40401。
   - `POST /welds/{weld_id}/versions/{version_id}/split-tasks` + `GET /split-tasks/{task_id}`
     （**Task 14 切分**）：异步 Job（type=split）+ `split_tasks` 行 → `{job_id}`；body
     `{fixed_rate(窗口长度，T10 起配 `unit`=frame/second), keep_event_buffer(±s), task_format(白名单 目标检测/图像分类/

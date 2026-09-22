@@ -18,6 +18,10 @@ Alembic 迁移脚本目录（逐版本推进，全部由 `alembic revision` 生�
 - `0012_registration_fields.py`：`data_records` 新增 `wire_feed_speed`/`welding_speed`（单值工艺参数，可表单录入/导入稳态回填）与 `data_fields`（JSON 字段概览，CSV 导入自动写），三列均 nullable（多模态分析.csv 全字段导入配套）。
 - `0013_label_studio_integration.py`：**LS 集成（2026-09-05）**——`annotation_tasks` 新增 `ls_status`（VARCHAR(16) NOT NULL default `legacy`，存量回填 legacy）＋ 新表 `annotation_ls_sync`（§3.25，`(annotation_task_id, sample_id)` 复合唯一）。**坑**：用 `ADD COLUMN ... NOT NULL DEFAULT 'legacy'` 单条完成存量回填 + 新行默认 + 蓝绿 expand 兼容，勿拆成"可空列+UPDATE+contract"。
 - `0014_label_category_pool.py`：**LS 集成决策 4（2026-09-06）**——`label_categories` 补第 6 类「熔池」（颜色 `#f032e6` 对齐 LS 项目4），纯数据迁移（无表结构变更），`INSERT ... ON DUPLICATE KEY UPDATE` 幂等。
+- `0015_option_items.py`：**2026-09 系统设置·可选项字典**——新建 `option_items` 表 + `label_categories` 补 `sort_order`/`active`。
+- `0016_dataset_item_annotations.py`：**T16.1 冻结标注快照**——`dataset_items` 加 `annotations` JSON。
+- `0017_split_current_voltage.py`：**T4b/D7**——`data_records` 增 `current_a`/`voltage_v` 并从旧列解析回填。
+- `0018_calibration_mapping.py`：**多模态统一坐标系（2026-09-22）**——`data_versions` 增 `calibration` JSON（人工标定：视频 `offset_seconds` + 焊缝图片 `roi`）、`alignment_tasks` 增 `mapping` JSON（算出的可执行映射：`linear` 视频 offset / `arc_length` 焊缝图片弧长）。纯 expand，两列均 nullable，老代码不读新列，新代码对 NULL 兜底（未标定 → `aligned=false` + reason，不阻断分段）。见 `docs/多模态时间统一样本分段重构设计方案.md` §3.1。
 
 ## 调用链
 

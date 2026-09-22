@@ -23,6 +23,10 @@ class AlignmentTask(SQLModel, table=True):
     modalities: list = Field(default_factory=list, sa_column=Column(JSON))
     events: dict | None = Field(default=None, sa_column=Column(JSON))
     tracks: dict | None = Field(default=None, sa_column=Column(JSON))
+    # 可执行的坐标映射（迁移 0018）：统一轴 + 各模态 mapping，见
+    # docs/多模态时间统一样本分段重构设计方案.md §3.1。与 `tracks` 分离——`tracks` 供界面
+    # 展示可用性，`mapping` 供算法换算（分段任务据此定位视频帧/焊缝图像素）。
+    mapping: dict | None = Field(default=None, sa_column=Column(JSON))
     assets: dict | None = Field(default=None, sa_column=Column(JSON))
 
 

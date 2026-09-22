@@ -96,6 +96,9 @@ class DataVersion(SQLModel, table=True):
     note: str | None = Field(default=None, max_length=255)
     request_key: str | None = Field(default=None, max_length=64)
     object_keys: list | None = Field(default=None, sa_column=Column(JSON))
+    # 统一坐标系标定（迁移 0018）：`{video: {offset_seconds}, seam_image: {roi: {...}}}`。
+    # NULL = 未标定。挂在**源版本**上；对齐任务读它算映射，写进 `alignment_tasks.mapping`。
+    calibration: dict | None = Field(default=None, sa_column=Column(JSON))
     created_at: datetime | None = Field(
         default=None,
         sa_column=Column(DateTime(timezone=True), index=True),

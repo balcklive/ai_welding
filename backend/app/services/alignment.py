@@ -8,8 +8,15 @@
   `reason`——**部分成功语义**：缺失模态不阻塞任务，至少一个模态对齐成功即 succeeded
   （timeseries 兜底恒成立）；
 - `assets` = 真实产物对象键（`processed/{weld_id}/align/` 下时序 CSV×2 / 关键帧 JPG /
-  tracks.json），回填 `alignment_tasks.assets`，前端经 `GET /files/{key}/url` 下载。
+  mapping.json / tracks.json），回填 `alignment_tasks.assets`，前端经 `GET /files/{key}/url` 下载。
   不再产出 video.mp4/audio.wav 等占位字节——视频前端直接播放 raw 原始对象。
+
+**统一坐标系与模态映射（2026-09-22）**：本服务不再只产"轨道清单"，还产出**可执行的坐标映射**
+（`mapping.json` + `alignment_tasks.mapping`）——见 `build_coordinate_mapping`。基准轴是信号
+时间轴，视频走 `linear`（人工标定 offset）、焊缝图片走 `arc_length`（焊接速度积分到沿焊缝的
+长度比例）。`aligned = available && calibrated`：**未标定的模态不再声称已对齐**（此前视频轨
+硬编码 `aligned=True` 是无依据的声明，见设计文档 §1.1）。标定参数（人工）来自源版本的
+`data_versions.calibration`；本服务只消费，不写。
 
 信号版本回退解析（坑）：SignalIngest 挂在 v1.0（原始数据）版本上（`attach_raw_files`
 只挂 v1.0），而对齐任务可能在 latest 版本发起——`load_signal_bundle` 按 version_id 查，
@@ -33,6 +40,7 @@ import math
 import time
 from datetime import datetime, timezone
 
+import numpy as np
 from loguru import logger
 from sqlmodel import Session, select
 
@@ -62,6 +70,8 @@ _MODALITY_TRACKS: dict[str, list[str]] = {
     "timeseries": ["current", "voltage"],
     "audio": ["audio"],
     "infrared": ["infrared"],
+    # 焊缝宏观照片：空间模态，沿焊缝长度切分（2026-09-22 从 infrared 桶析出）
+    "seam_image": ["seam_image"],
 }
 
 #: 时序 CSV 的通道顺序（对齐 signal_ingest Parquet 列 schema `t,cur,vol,gas,wir`）。
@@ -69,6 +79,203 @@ _TS_CHANNEL_IDS: tuple[str, ...] = ("cur", "vol", "gas", "wir")
 
 #: 时序 CSV 单文件最大行数（真实 1kHz 长记录可达百万行，超限按步长抽稀）。
 _MAX_TS_ROWS = 100_000
+
+# ── 统一坐标系与模态映射（设计 §3.1） ─────────────────────────────────
+#
+# 基准轴 = 信号时间轴（首采样点为原点）。其他模态各持一条映射，把统一轴上的时刻换算到
+# 本模态坐标：视频走 `linear`（offset），焊缝图片走 `arc_length`（沿焊缝的弧长比例）。
+# `aligned = available && calibrated`——未标定的模态**不声称已对齐**。
+#
+# 标定参数（人工）存 `data_versions.calibration`；算出的映射存 `alignment_tasks.mapping`。
+
+#: 弧长折线降采样点数上限（内联进 mapping.json，供分段预览按 t 插值 r）。
+_ARC_PROFILE_POINTS = 256
+
+
+def _downsample_indices(n: int, limit: int) -> np.ndarray:
+    """`0..n-1` 的等距下标（含首尾）；`n <= limit` 时原样返回。"""
+    if n <= limit:
+        return np.arange(n)
+    return np.unique(np.linspace(0, n - 1, limit).astype(np.int64))
+
+
+def position_ratio_at(profile: list[list[float]], t: float) -> float:
+    """在弧长折线上线性插值取位置比例 `r(t)`（0..1）。
+
+    折线形如 `[[t, r], ...]`（t 升序）。区间外**钳制到端点、不外推**——窗口越界由调用方
+    按「该模态本窗缺失」处理，这里给端点值只是避免 NaN。
+    """
+    if not profile:
+        return 0.0
+    if t <= profile[0][0]:
+        return float(profile[0][1])
+    if t >= profile[-1][0]:
+        return float(profile[-1][1])
+    lo, hi = 0, len(profile) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if profile[mid][0] <= t:
+            lo = mid
+        else:
+            hi = mid
+    t0, r0 = profile[lo]
+    t1, r1 = profile[hi]
+    if t1 <= t0:
+        return float(r1)
+    return float(r0 + (r1 - r0) * (t - t0) / (t1 - t0))
+
+
+def arc_length_profile(
+    bundle, event_bounds: tuple[float, float], *, has_scalar_speed: bool
+) -> tuple[str, list[list[float]]]:
+    """有效焊接区间内的归一化位置比例折线，返回 `(speed_source, profile)`。
+
+    `speed_source` 三级降级（设计 §3.1.2）：
+
+    - `channel`：CSV 含 `weld_speed` 通道 → 积分弧长 `r(t) = L(t) / L_total`，`L(t)=∫v dτ`；
+    - `scalar`：无通道但有登记单值 `welding_speed`（稳态中位数）→ 恒速；
+    - `none`：两者皆无 → 纯时间比例。
+
+    **`scalar` 与 `none` 的折线完全相同**（都是恒速假设下的时间比例），区别只在如实标注
+    用了哪一级依据，故由调用方按数据可得性定 `speed_source`。
+    """
+    start, end = float(event_bounds[0]), float(event_bounds[1])
+    if end <= start:
+        # 无效有效区间：退化为零长折线，映射不可用（由调用方的 reason 表达）
+        return "none", [[round(start, 6), 0.0], [round(start, 6), 1.0]]
+
+    fs = int(bundle.sample_rate or 0)
+    channel = bundle.channel("weld_speed") if fs > 0 else None
+    if channel is not None:
+        values = np.asarray(channel.values, dtype=float)
+        i0 = max(0, math.ceil(start * fs))
+        i1 = min(len(values), math.floor(end * fs))
+        if i1 - i0 >= 2:
+            # 负速度（收弧回抽等）不计入弧长——物理上焊缝不会倒退
+            cum = np.cumsum(np.clip(values[i0:i1], 0.0, None)) / fs
+            # 平移到区间起点：cumsum 从**首个采样值**起算会让 r(t0)=v0/fs>0，
+            # 归零后 r 才是"自有效区间起点的累计弧长占比"（r(t0)=0、r(end)=1）
+            cum -= cum[0]
+            total = float(cum[-1])
+            if total > 0:
+                idx = _downsample_indices(len(cum), _ARC_PROFILE_POINTS)
+                return "channel", [
+                    [round(float(t), 6), round(float(r), 6)]
+                    for t, r in zip((i0 + idx) / fs, cum[idx] / total)
+                ]
+
+    return (
+        "scalar" if has_scalar_speed else "none",
+        [[round(start, 6), 0.0], [round(end, 6), 1.0]],
+    )
+
+
+def _normalize_roi(roi) -> dict | None:
+    """校验焊缝图片 ROI 形状（x/y/w/h 四个有限数、w/h > 0）；不合法返回 None。
+
+    ponytail: 只校验形状，**不**校验 ROI 是否落在图片范围内——后者要解码图片拿宽高，
+    留给标定接口 `PUT …/calibration` 做，那里才值得付这次下载成本。
+    """
+    if not isinstance(roi, dict):
+        return None
+    try:
+        x, y, w, h = (float(roi[k]) for k in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def build_coordinate_mapping(
+    *,
+    bundle,
+    events: dict,
+    calibration: dict | None,
+    has_scalar_speed: bool,
+    video_key: str | None,
+    video_meta: dict | None,
+    seam_image_key: str | None,
+) -> dict:
+    """构建统一坐标系与各模态映射（设计 §3.1）。
+
+    标定缺失**不阻断**——对应模态记 `calibrated=false` + reason，分段照常进行但如实标记。
+    """
+    seg = events.get("weld_segment") or [0.0, 0.0]
+    bounds = (float(seg[0]), float(seg[1]))
+    cal = calibration if isinstance(calibration, dict) else {}
+
+    maps: dict[str, dict] = {
+        # 基准轴自身：恒可用、恒已对齐
+        "timeseries": {
+            "type": "identity", "available": True, "calibrated": True, "reason": None,
+        },
+    }
+
+    # ── 视频：linear（t_unified = t_video + offset） ────────────────
+    video_cal = cal.get("video") if isinstance(cal.get("video"), dict) else {}
+    raw_offset = video_cal.get("offset_seconds")
+    calibrated = isinstance(raw_offset, (int, float)) and math.isfinite(float(raw_offset))
+    if video_key and video_meta:
+        maps["video"] = {
+            "type": "linear",
+            "available": True,
+            "calibrated": calibrated,
+            "offset_seconds": float(raw_offset) if calibrated else 0.0,
+            "fps": video_meta.get("fps"),
+            "duration": (
+                round(float(video_meta["duration"]), 6)
+                if isinstance(video_meta.get("duration"), (int, float))
+                else None
+            ),
+            "reason": None if calibrated
+            else "时间零点未标定：关键帧按视频与信号同零点的假设抽取",
+        }
+    else:
+        maps["video"] = {
+            "type": "linear", "available": False, "calibrated": False,
+            "offset_seconds": None, "fps": None, "duration": None,
+            "reason": "无可用视频文件",
+        }
+
+    # ── 焊缝图片：arc_length（沿焊缝长度按比例切分） ─────────────────
+    image_cal = cal.get("seam_image") if isinstance(cal.get("seam_image"), dict) else {}
+    roi = _normalize_roi(image_cal.get("roi"))
+    if seam_image_key:
+        speed_source, profile = arc_length_profile(
+            bundle, bounds, has_scalar_speed=has_scalar_speed
+        )
+        maps["seam_image"] = {
+            "type": "arc_length",
+            "available": True,
+            "calibrated": roi is not None,
+            "object_key": seam_image_key,
+            "roi": roi,
+            "speed_source": speed_source,
+            "arc_profile": profile,
+            "reason": None if roi else "焊缝图片未框选 ROI：无法建立长度↔时间映射",
+        }
+    else:
+        maps["seam_image"] = {
+            "type": "arc_length", "available": False, "calibrated": False,
+            "object_key": None, "roi": None, "speed_source": None, "arc_profile": None,
+            "reason": "无焊缝图片文件",
+        }
+
+    maps["audio"] = {
+        "type": "none", "available": False, "calibrated": False, "reason": "源未附加",
+    }
+
+    return {
+        "schema_version": 1,
+        "unified_axis": {
+            "unit": "second",
+            "origin": "signal_first_sample",
+            "duration": round(float(bundle.duration), 6),
+        },
+        "event_bounds": {"start": bounds[0], "end": bounds[1]},
+        "mappings": maps,
+    }
 
 
 def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
@@ -96,6 +303,10 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
 
     # ── 20%：输入清单 + 信号/事件 ────────────────────────────────────
     sources = _collect_sources(session, record, version)
+    # 焊缝图片恒入轨：它不参与「要不要跑」的模态选择（无需探测，只是一张参考图），
+    # 但用户必须看见它的标定状态——否则把它从 infrared 桶析出后就彻底不可见了。
+    if sources["seam_image"] and "seam_image" not in modalities:
+        modalities.append("seam_image")
     signal_version_id = _signal_version_id(session, record, task, version)
     bundle = signal_ingest.load_signal_bundle(session, record.weld_id, signal_version_id)
     events = _normalize_events(bundle.events)
@@ -119,12 +330,24 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
             logger.warning("Video alignment probe failed (marking unavailable): weld={} err={}", record.weld_id, exc)
     _advance(session, job, _PROGRESS_STEPS[1])
 
-    # ── 60%：轨道构建 + 产物字节 ─────────────────────────────────────
+    # ── 60%：坐标映射 + 轨道 + 产物字节 ──────────────────────────────
+    # 映射先于轨道建：视频轨的 aligned 由它推导（未标定 → false），保持单一事实来源。
+    # 标定读**源版本**（任务发起的那个版本）；写标定的接口落地时若改挂 v1.0，这里同步。
+    mapping = build_coordinate_mapping(
+        bundle=bundle,
+        events=events,
+        calibration=version.calibration,
+        has_scalar_speed=record.welding_speed is not None,
+        video_key=video_key,
+        video_meta=video_meta,
+        seam_image_key=sources["seam_image"][0] if sources["seam_image"] else None,
+    )
     tracks = _build_tracks(modalities, sources, bundle, video_key, video_meta,
-                           video_error, keyframes)
+                           video_error, keyframes, mapping)
     payloads = _build_asset_payloads(record.weld_id, bundle, events, tracks, keyframes,
                                      version_id=task.version_id,
-                                     source_version_id=signal_version_id)
+                                     source_version_id=signal_version_id,
+                                     mapping=mapping)
     _advance(session, job, _PROGRESS_STEPS[2])
 
     # ── 80%：上传（任一失败逆序清理后重抛） ──────────────────────────
@@ -180,6 +403,7 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
 
     task.events = events
     task.tracks = tracks
+    task.mapping = mapping
     task.assets = asset_keys
     session.add(task)
 
@@ -187,6 +411,7 @@ def run_alignment(session: Session, task: AlignmentTask, job: Job) -> dict:
         "events": events,
         "event_source": bundle.source,
         "tracks": tracks,
+        "mapping": mapping,
         "assets": asset_keys,
         "version": version_payload(aligned_version),
     }
@@ -225,11 +450,13 @@ def _collect_sources(
             seen.add(key)
             ordered.append(key)
 
-    buckets: dict[str, list[str]] = {"video": [], "timeseries": [], "audio": [], "infrared": []}
+    buckets: dict[str, list[str]] = {
+        "video": [], "timeseries": [], "audio": [], "seam_image": [], "infrared": [],
+    }
     for key in ordered:
         if "/align/" in key.lower():
             # 上次对齐产物（processed/{weld_id}/align/...）不是原始模态源：重复对齐
-            # 会把 keyframes/*.jpg 误归红外桶、align CSV 误归时序桶，故一律跳过。
+            # 会把 keyframes/*.jpg 误归图像桶、align CSV 误归时序桶，故一律跳过。
             continue
         low = key.lower()
         if low.endswith(_VIDEO_EXTS):
@@ -238,8 +465,13 @@ def _collect_sources(
             buckets["timeseries"].append(key)
         elif low.endswith(_AUDIO_EXTS):
             buckets["audio"].append(key)
-        elif "infrared" in low or low.endswith(_IMAGE_EXTS) or low.endswith((".seq", ".raw")):
-            # 图像（熔池/红外快照）与红外专有格式：无连续时间轴，仅登记元数据。
+        elif low.endswith(_IMAGE_EXTS):
+            # 焊缝宏观照片：**空间模态**（沿焊缝长度切分），既不是红外快照也不是视频帧。
+            # 2026-09-22 从 infrared 桶析出——此前把它判成"无连续时间轴，仅登记元数据"，
+            # 实际它有轴（长度），只是没接到时间轴上（设计 §3.1.2）。
+            buckets["seam_image"].append(key)
+        elif "infrared" in low or low.endswith((".seq", ".raw")):
+            # 红外专有格式：无连续时间轴，仅登记元数据。
             buckets["infrared"].append(key)
     return buckets
 
@@ -355,8 +587,16 @@ def _build_tracks(
     video_meta: dict | None,
     video_error: str | None,
     keyframes: list[dict],
+    mapping: dict | None = None,
 ) -> list[dict]:
-    """按任务模态构建轨道列表（保序去重；availability 语义见模块 docstring）。"""
+    """按任务模态构建轨道列表（保序去重；availability 语义见模块 docstring）。
+
+    `mapping` 给定时，视频轨的 `aligned` 由映射的 `calibrated` 推导（未标定 → `false`）；
+    缺省（无映射）按未标定处理。**视频轨不再无条件声称已对齐**。
+    """
+    video_calibrated = bool(
+        ((mapping or {}).get("mappings") or {}).get("video", {}).get("calibrated")
+    )
     tracks: list[dict] = []
     seen: set[str] = set()
     for mod in modalities:
@@ -367,7 +607,11 @@ def _build_tracks(
             if mod == "timeseries":
                 tracks.append(_timeseries_track(channel, sources, bundle))
             elif mod == "video":
-                tracks.append(_video_track(channel, video_key, video_meta, video_error, keyframes))
+                tracks.append(_video_track(channel, video_key, video_meta, video_error,
+                                           keyframes, video_calibrated))
+            elif mod == "seam_image":
+                seam_key = sources["seam_image"][0] if sources["seam_image"] else None
+                tracks.append(_seam_image_track(seam_key, mapping))
             elif mod == "audio":
                 tracks.append(_registry_track(channel, mod, sources["audio"], "音频"))
             elif mod == "infrared":
@@ -401,10 +645,16 @@ def _video_track(
     video_meta: dict | None,
     video_error: str | None,
     keyframes: list[dict],
+    calibrated: bool = False,
 ) -> dict:
     """视频轨道：探测+关键帧成功 → available/source=real；否则 unavailable + reason。
 
     asset 恒为 None——不产出对齐视频（不重编码），前端播放 raw 原始对象。
+
+    **`aligned` 由标定状态推导（2026-09-22）**：时间零点须由「分析 → 对齐」的标定产出
+    （`calibration.video.offset_seconds`）。未标定时 `aligned=false` + reason——关键帧实为按
+    `t_video ≡ t_signal` 假设抽取，实测两轴可差 1.1s（2 秒窗口下 = 55% 窗宽），此前硬编码
+    `aligned=True` 是无依据的声明（见 docs/多模态时间统一样本分段重构设计方案.md §1.1）。
     """
     base: dict = {
         "channel": channel,
@@ -421,8 +671,10 @@ def _video_track(
         return base
     base["availability"] = "available"
     base["source"] = "real"
-    base["aligned"] = True
-    base["reason"] = None
+    base["aligned"] = bool(calibrated)
+    base["reason"] = (
+        None if calibrated else "时间零点未标定：关键帧按视频与信号同零点的假设抽取"
+    )
     base["metadata"] = {
         "duration": round(float(video_meta["duration"]), 4),
         "fps": video_meta.get("fps"),
@@ -433,6 +685,30 @@ def _video_track(
         ],
     }
     return base
+
+
+def _seam_image_track(key: str | None, mapping: dict | None) -> dict:
+    """焊缝图片轨道：可用性与标定状态取自坐标映射的 `seam_image`。
+
+    与 `_registry_track`（音频/红外，恒 `aligned=false`）的区别在于**它有轴**——沿焊缝的
+    长度轴，经 `arc_length` 映射接到统一时间轴上，标定 ROI 后 `aligned=true`。
+    """
+    seam = ((mapping or {}).get("mappings") or {}).get("seam_image") or {}
+    if not key:
+        return {
+            "channel": "seam_image", "modality": "seam_image",
+            "availability": "unavailable", "source": None, "aligned": False,
+            "asset": None, "object_key": None, "metadata": None,
+            "reason": seam.get("reason") or "未上传焊缝图片文件",
+        }
+    return {
+        "channel": "seam_image", "modality": "seam_image",
+        "availability": "available", "source": "real",
+        "aligned": bool(seam.get("calibrated")),
+        "asset": None, "object_key": key,
+        "metadata": {"roi": seam.get("roi"), "speed_source": seam.get("speed_source")},
+        "reason": seam.get("reason"),
+    }
 
 
 def _registry_track(channel: str, modality: str, keys: list[str], label: str) -> dict:
@@ -473,6 +749,7 @@ def _build_asset_payloads(
     keyframes: list[dict],
     version_id: int,
     source_version_id: int,
+    mapping: dict | None = None,
 ) -> list[tuple[str, bytes, str]]:
     """构建真实产物 `(object_key, bytes, content_type)` 列表，tracks.json 恒在末尾。"""
     base = f"processed/{weld_id}/align"
@@ -494,6 +771,15 @@ def _build_asset_payloads(
             track["metadata"]["keyframes"] = [
                 {**kf, "asset": f"{base}/keyframes/{kf['event']}.jpg"} for kf in track["metadata"]["keyframes"]
             ]
+
+    # 坐标映射单独成文（设计 §6.3）：分段任务据它把时间窗换算到视频帧/焊缝图像素。
+    # 与 tracks.json 分开——tracks 是界面展示的可用性清单，mapping 是算法输入。
+    if mapping is not None:
+        payloads.append((
+            f"{base}/mapping.json",
+            json.dumps(mapping, ensure_ascii=False).encode("utf-8"),
+            "application/json",
+        ))
 
     doc = {
         "schema_version": "1",

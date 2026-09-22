@@ -105,29 +105,46 @@
   - 进度语义：20=输入清单+信号/事件 → 40=视频探测+关键帧 → 60=轨道/产物构建 →
     80=上传 → 100=mark_succeeded（逐次 `session.commit()` + 小睡，轮询可见）。
   - 输入清单 `_collect_sources`：raw 文件取 **v1.0**（`welds.get_v10_version`）+ 当前版本
-    object_keys 合并去重，按 `welds._VIDEO_EXTS/_TS_EXTS/_AUDIO_EXTS/_IMAGE_EXTS` 分桶
-    （图像归 infrared 桶——无连续时间轴仅登记）。**坑**：跳过 `/align/` 前缀键——上次
-    对齐产物（`processed/{weld_id}/align/...`）不是原始模态源，否则重复对齐会把
-    keyframes/*.jpg 误归红外桶、align CSV 误归时序桶。
+    object_keys 合并去重，按 `welds._VIDEO_EXTS/_TS_EXTS/_AUDIO_EXTS/_IMAGE_EXTS` 分桶。
+    **2026-09-22 图像从 infrared 桶析出为独立 `seam_image` 桶**——焊缝宏观照片是**空间模态**
+    （轴是沿焊缝的长度），既不是红外快照也不是视频帧，此前判成"无连续时间轴，仅登记元数据"
+    是错的；infrared 桶现在只剩 `.seq/.raw` 与文件名含 infrared 的键。
+    **坑**：跳过 `/align/` 前缀键——上次对齐产物（`processed/{weld_id}/align/...`）不是原始
+    模态源，否则重复对齐会把 keyframes/*.jpg 误归图像桶、align CSV 误归时序桶。
   - 信号/事件：`_signal_version_id` **版本回退解析**（task.version_id 有 succeeded
     SignalIngest 用之，否则回退 v1.0——SignalIngest 挂 v1.0 而对齐常在 latest 发起）→
     `signal_ingest.load_signal_bundle`（real/generated 如实标注 `event_source`）。
   - 视频：`media_probe.analyze_video`（ffmpeg 探测元数据 + 按事件时刻抽关键帧 JPG）；
     **部分成功语义**——视频不可读/超 200MB/探测失败/未上传 → 该轨道 `unavailable` + reason，
     不阻塞任务（读取逐模态 try/except，含 FakeStorage 无 `get_object` 的 AttributeError）。
+  - **统一坐标系与模态映射（2026-09-22，设计 §3.1）**：本服务不再只产"轨道清单"，还产
+    **可执行的坐标映射**。`arc_length_profile(bundle, bounds, has_scalar_speed=)` 把焊接速度
+    积分成"沿焊缝的归一化位置比例"折线（`weld_speed` 通道 → `channel`；无通道但有登记单值
+    `welding_speed` → `scalar`；皆无 → `none`；**后两级数学上都是恒速假设、折线相同**，区别
+    只在如实标注用了哪一级依据。负速度截零不计入弧长，折线平移到区间起点保证 `r(t0)=0`）。
+    `build_coordinate_mapping(...)` 组装统一轴 + 各模态映射：`identity`（时序）/ `linear`
+    （视频，`offset_seconds` 来自源版本 `data_versions.calibration`）/ `arc_length`（焊缝图片，
+    ROI 来自同一标定）。`position_ratio_at(profile, t)` 供下游按 `t` 插值取 `r`（区间外**钳制
+    不外推**）。**标定缺失不阻断任务**——对应模态记 `calibrated=false` + reason。
   - tracks 每条：`{channel, modality, availability(available|generated|unavailable),
     source, aligned, asset, object_key, metadata, reason}`；timeseries 恒对齐成功
-    （generated 如实标注）；audio/infrared 仅登记元数据（aligned=false）。
+    （generated 如实标注）；**video 的 `aligned` 由映射的 `calibrated` 推导（2026-09-22）**——
+    时间零点须由「分析 → 对齐」标定产出（`offset_seconds`），未标定即 `false` + reason；
+    此前硬编码 `aligned=True` 是无依据的声明（关键帧实为按 `t_video ≡ t_signal` 假设抽取，
+    实测两轴可差 1.1s，2 秒窗口下 = 55% 窗宽，见设计文档 §1.1）。`seam_image` 轨走
+    `_seam_image_track`（**有轴**，ROI 标定后 `aligned=true`）；audio/infrared 仅登记元数据
+    （恒 `aligned=false`）。焊缝图片**恒入轨**：不参与模态勾选（无需探测），否则从 infrared
+    桶析出后就彻底不可见。
   - 产物（全真实数据，不再产出 video.mp4/audio.wav 占位字节）：
     `timeseries.csv`（全时长 4 通道，>10 万行按步长抽稀）+ `timeseries_weld.csv`
-    （weld_segment 窗口切片）+ `keyframes/{event}.jpg` + `tracks.json`（恒末尾，
-    含 schema_version/events/event_source/tracks）。
+    （weld_segment 窗口切片）+ `keyframes/{event}.jpg` + `mapping.json`（坐标映射，2026-09-22）
+    + `tracks.json`（恒末尾，含 schema_version/events/event_source/tracks）。
     **内存友好（长记录可达千万点）**：不建全量时间轴/布尔掩码，采样率均匀时
     `t = i / fs`，焊接段窗口下标 `ceil(start*fs) .. floor(end*fs)` 直算
     （`_timeseries_csvs`/`_csv_bytes(channels, idxs, fs)`）。
   - 上传失败逆序 `delete_object` 清理后重抛；同事务新建「时间对齐」`DataVersion`
-    （v1.<n+1>、operator=算法任务）→ 回填 task.events/tracks/assets →
-    `mark_succeeded(job, {events, event_source, tracks, assets, version})`。
+    （v1.<n+1>、operator=算法任务）→ 回填 task.events/**tracks/mapping**/assets →
+    `mark_succeeded(job, {events, event_source, tracks, mapping, assets, version})`。
   **坑**：本服务里 `session.commit()` 是执行器专用 session 场景（非请求 session 的
   "只 flush 不 commit" 约定）；关键帧对超出视频时长/负时刻的事件直接跳过（EOF 附近
   `-ss` 抽不到帧，钳制会静默产出错误时刻的帧）。
