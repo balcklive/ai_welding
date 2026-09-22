@@ -268,6 +268,7 @@
 | `product` | 产品 / 项目信息 | 数据登记「关联产品信息」 | 输入框 + `<datalist>` 候选（保留自由填写） |
 | `dataset_task` | 数据集任务类型 | 新建数据集「任务类型」下拉；决定必需输入维度与适配检查项 | 下拉（严格候选） |
 | `label_category` | 标注缺陷类别 | 数据标注页标签调色板、AI 预标注抽样 | 标签调色板（仅启用项） |
+| `defect_category` | 分段样本缺陷词表 | 分段样本标注（段级分类）选「缺陷」时的主缺陷类别 | 下拉（严格候选，仅启用项） |
 
 > **录入页交互口径（2026-09-15 / S2）**：`free_text=true` 的组（`machine`/`weld_method`/`source`/`product`）
 > 在登记页是 **`<input list>` + `<datalist>`**——候选只作提示，预置项不足时可直接填新值；新值**原样入库**
@@ -291,6 +292,53 @@
 >
 > **§3.8 前端兜底**：登记页/数据集页在 `GET /settings/options` 失败时回落到字典化之前的
 > 出厂值（Fronius CMT 等），保证接口异常不影响登记与数据集创建。
+>
+> **§3.8 `defect_category`（2026-09-22 新增，第 7 组）**：分段样本**段级标注**的主缺陷词表。
+> 存储落 `option_items`（复用本节的"分组 + 软删 + 排序"设施，**不新建表**），出厂 7 项：
+> 气孔 / 未焊透 / 焊穿 / 咬边 / 裂纹 / 成形不良 / 其他（迁移 `0020` 与 `core/seed.py` 双写入）。
+> 与 `label_category`（§3.12，模型口径 6 类）是**两套词表**，勿混。**引用统计口径不同**：
+> 段级标注按 **id** 引用（`sample_annotations.defect_category_id`，§3.27），故本组的
+> `reference_count` 按 id 统计——被引用 → 停用，未引用 → 物理删；结论与其它组一致。
+
+### 3.9 🏷 分段样本标注（段级分类，2026-09-22）
+
+> **范围**：只面向**已完成且 `rules_version=3`** 的分段任务（§3.4 的 `split-tasks`）。
+> 一个标注对象 = 一个 `Sample`（一个时间窗 + 多模态样本包），每段**只有一个主结论**：
+> `normal`（正常）或 `defect`（缺陷 + 一个主缺陷类别）。不做框 / 点 / 掩膜，也不做两级精度
+> ——旧的 `/annotation-tasks/*/labels` 那套几何标注仍走 §3.4，两条线互不影响。
+>
+> **三模态**：时序 / 视频 / 焊缝图片共用该 Sample 的 `start_time`–`end_time`。样本的模态细节
+> （`meta` / 局部时序 / 产物对象键）**复用既有** `GET /split-tasks/{task_id}/samples/{sample_id}`
+> （§3.4），本节端点只负责"样本列表 + 结论"，不重复传媒体字节。
+>
+> **词表**：主缺陷类别走 `GET/POST/PATCH/DELETE /settings/options/defect_category`（§3.8，写仅管理员）；
+> 标注行同时存 `defect_category_id`（稳定 ID）与 `defect_category_name`（**写入当时**的名称快照）。
+
+| 方法 | 路径 | 功能 | 关键参数 / 请求体 |
+|---|---|---|---|
+| GET | `/api/v1/welds/{weld_id}/segment-annotation-tasks` | 该焊缝**可进入标注**的分段任务（已完成 + v3），带标注进度 | 需登录；response `{items: [{task_id(job_uid), version_no, sample_count, window_seconds, stride_seconds, effective_range, finished_at, progress{total,annotated,unannotated,progress}}]}`；焊缝不存在 40401 |
+| GET | `/api/v1/split-tasks/{task_id}/annotation-samples` | 可标注样本列表（分页，按时间窗排序）**+ 进度** | query `page`, `page_size`(≤200，默认 50), `filter`(`all`/`unannotated`)；行只含 `{id, frame_no, start_time, end_time, annotated, label, defect_category_name}`——**不含 `meta`/媒体键**；`progress.defect_distribution` 给缺陷分布 |
+| GET | `/api/v1/segment-annotation/categories` | 主缺陷词表（供工作台渲染候选） | query `include_inactive`(1 时含已停用项，供历史标注显示)；response `{categories:[{id,value,active,sort_order}], schema_version}` |
+| GET | `/api/v1/split-tasks/{task_id}/annotation-samples/{sample_id}` | 单样本的当前结论 | 未标注时 `annotation=null`（**不是 404**）；样本不属于该任务 → 40401 |
+| PUT | `/api/v1/split-tasks/{task_id}/annotation-samples/{sample_id}` | 保存段级结论（**upsert**，一个样本恒一行） | body `{label: "normal"/"defect", defect_category_id?, note?}`；defect 必须给类别、normal 必须为空、备注 ≤512；类别不存在/已停用 → 40000；response `{annotation, progress}` |
+| DELETE | `/api/v1/split-tasks/{task_id}/annotation-samples/{sample_id}` | 撤销结论（回到未标注） | 本来就没有标注 → 40401 |
+| GET | `/api/v1/split-tasks/{task_id}/annotation-export` | 版本化导出（数据集构建消费的输入，**不含媒体字节**） | response 顶层 `schema_version`(=1) + `label_vocabulary` + `items[]`（未标注样本也在，`label=null`） |
+
+> **`task_id` 寻址**：与 §3.4 的切分端点一致，兼容 `job_uid` 与 `split_tasks` 表 DB id；
+> 前端一律用创建分段任务时拿到的 `job_id`（= `job_uid`）。
+>
+> **前置条件**：非 v3（`rules_version<=2`）或未成功完成的分段任务 → `40000`——段级标注对历史
+> 口径的切片不成立（它们没有统一时间窗与多模态样本包）。
+>
+> **归属**：沿用分段域的 owner 口径（同 `POST …/split-tasks`），非管理员只能标注自己登记的
+> 焊缝，无权 → `40300`。
+>
+> **审计**：`update/sample_annotation`（保存）、`delete/sample_annotation`（撤销），
+> resource_id = `{task_id}/{sample_id}`，与业务写入同事务提交。
+>
+> **错误码**：`40401` = 焊缝/分段任务/样本不存在（或样本不属于该任务）；`40000` = 参数或前置条件不满足。
+>
+> **设计/实施说明**：见 `docs/分段样本标注设计与实施说明.md`。
 
 ---
 
