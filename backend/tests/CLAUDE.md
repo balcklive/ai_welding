@@ -111,11 +111,16 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 
 - `test_settings.py`（**2026-09 系统设置·可选项字典**）：服务层（内存 SQLite 直接调 `services.settings`）+
   端点层（StaticPool + 真实 TestClient + override `get_session`/`get_current_user`）。覆盖：
-  6 组齐全且出厂默认值与字典化前硬编码一致（machine/weld_method/dataset_task；`product` 出厂为空）；
+  9 组齐全且出厂默认值与字典化前硬编码一致（machine/weld_method/dataset_task；`product` 出厂为空；
+  `material`/`thickness` 为 2026-09-24 新增，**厚度候选断言为纯数字**——带 `mm` 会被 422 挡下）；
+  **取分组一律用本文件的 `_group(session, key)` 助手，不要写 `list_groups(session)[n]` 下标**
+  （加一组就全体错位，2026-09-24 加 material/thickness 时当场把 dataset_task 用例打红）；
   重名 409 / 未知分组 40410 / 空值 40000；改名、停用-启用往返（停用项仍在设置页可见）；
   上移下移**整组重排 sort_order**（含边界静默不动作、非法 direction 400）；
-  **删除语义**（未被引用 → 物理删 `mode=deleted`；被 `data_records.machine`/`datasets.task`/
-  `annotations.category` 引用 → 软删 `mode=deactivated` 且历史值保留）；
+  **删除语义**（未被引用 → 物理删 `mode=deleted`；被 `data_records.machine`/`material`/`thickness`/
+  `datasets.task`/`annotations.category` 引用 → 软删 `mode=deactivated` 且历史值保留；
+  `reference_count` 是**白名单式**的、末尾 `raise OptionGroupNotFound`——加新组却忘加分支的话
+  该组"删不掉也不说为什么"，故每组都要有用例）；
   `label_category` 落在 `label_categories` 表（不搬家）+ `GET /label-categories` 带 `active` +
   **AI 预标注只抽启用类别**；写操作非管理员 403（40300）、未登录读 401（40100）。
 - `test_dashboard_transition.py`（**2026-09-15 / S2**，内存 SQLite 直接调 `services.dashboard`）：总览「过渡类型」映射回归——已知焊法（MAG焊=短路过渡 / 埋弧焊=脉冲过渡）按映射归位；登记页放开自定义输入后，映射表外的焊法（如「激光-电弧复合焊」）统一计入 `UNKNOWN_TRANSITION = "未分类"`，**不再被静默算成「脉冲过渡」**（旧兜底会给出看起来正常、实则错误的结论），且原始焊法仍出现在 `welding_types`（不丢原文）。

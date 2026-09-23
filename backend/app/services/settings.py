@@ -82,6 +82,20 @@ OPTION_GROUPS: tuple[dict, ...] = (
         "free_text": True,
     },
     {
+        "key": "material",
+        "label": "板材材质",
+        "description": "数据登记页「板材材质」下拉的可选项；录入时仍可手工填写未列出的材质。出厂值为常见焊接板材牌号，按实际产线替换即可。",
+        "color": False,
+        "free_text": True,
+    },
+    {
+        "key": "thickness",
+        "label": "板材厚度",
+        "description": "数据登记页「板材厚度」下拉的可选项，单位 mm；录入时仍可手工填写未列出的厚度（0.1–200）。候选值只作提示——提交的是纯数字，加「mm」会进不了量程。",
+        "color": False,
+        "free_text": True,
+    },
+    {
         "key": "dataset_task",
         "label": "数据集任务类型",
         "description": "新建数据集时可选择的任务类型；决定该数据集的必需输入维度与模型适配检查项。",
@@ -234,6 +248,10 @@ def reference_count(session: Session, group_key: str, row) -> int:
         return _count(DataRecord.source)
     if group_key == "product":
         return _count(DataRecord.product)
+    if group_key == "material":
+        return _count(DataRecord.material)
+    if group_key == "thickness":
+        return _count(DataRecord.thickness)
     if group_key == "dataset_task":
         return _count(Dataset.task)
     if group_key == LABEL_CATEGORY_GROUP:

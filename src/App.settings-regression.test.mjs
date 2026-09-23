@@ -50,6 +50,18 @@ test('registration page reads options from the dictionary (no hardcoded fallback
   assert.match(registration, /isCustomValue\(optionValues\.machine, form\.machine\)/);
   assert.match(registration, /isCustomValue\(optionValues\.weld_method, form\.weld_method\)/);
   assert.match(registration, /custom-value-hint/);
+  // 板材材质/厚度（2026-09-24）：此前是纯文本框，同样接字典候选。
+  assert.match(registration, /pick\('material'\)/);
+  assert.match(registration, /pick\('thickness'\)/);
+  assert.match(registration, /<datalist id=\{MATERIAL_LIST_ID\}>/);
+  assert.match(registration, /<datalist id=\{THICKNESS_LIST_ID\}>/);
+  // 「下拉不明显」修复：`<input list>` 浏览器不画箭头、只在输入时提示，静置时和文本框一样。
+  // 六个候选输入一律带 .combo-input（CSS 补 chevron）并挂 showPicker（点击展开）——
+  // 漏一个就退回"看不出能选"，所以按数量钉死，且不许再出现裸的 `<input list=`。
+  assert.equal((registration.match(/<input className="combo-input"/g) ?? []).length, 6);
+  assert.equal((registration.match(/onClick=\{openCandidateList\}/g) ?? []).length, 6);
+  assert.match(registration, /showPicker\?\.\(\)/);
+  assert.doesNotMatch(registration, /<input list=\{/);
 });
 
 test('dataset creation takes task type from the dictionary', () => {

@@ -476,6 +476,10 @@ button { border: 0; cursor: pointer; }
 .required-mark { color:#e5484d; font-weight:700; }
 /* S2：候选之外的自定义值提示（登记页焊机型号 / 焊接方法等「下拉 + 可自定义」字段）。 */
 .custom-value-hint { color:#8a7a3f; font-size:12px; line-height:1.45; }
+/* 候选下拉输入（`<input list>` + `<datalist>`）：浏览器不给这类输入画箭头，静置时和普通
+   文本框长得一样，用户看不出这里能选（S2 把焊机型号/焊接方法从 `<select>` 降级后即如此）。
+   补一个 chevron + 右侧留位；点击展开由 JS 的 `showPicker()` 负责。 */
+.form-grid input.combo-input { padding-right:30px; background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5 11 1.5' fill='none' stroke='%237d9a9a' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 10px center; background-size:11px; }
 .native-select { width:100%; padding:11px 12px; border:1px solid #dce7e5; border-radius:6px; background:#fff; color:#45666b; font:inherit; }
 .native-select:focus { outline:0; border-color:#67cdb0; box-shadow:0 0 0 3px rgba(103,205,176,.15); }
 .training-dataset-options { display:grid; gap:8px; }

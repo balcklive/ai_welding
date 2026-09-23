@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ChangeEvent } from 'react';
+import type { ChangeEvent, MouseEvent } from 'react';
 import { AlertTriangle, CheckCircle2, ClipboardCheck, FileCheck2, RefreshCw, Upload } from 'lucide-react';
 import { listDatasetOptions } from '../../api/datasets';
 import { listOptionGroups } from '../../api/settings';
@@ -30,6 +30,8 @@ const MACHINE_LIST_ID = 'registration-machine-options';
 const WELD_METHOD_LIST_ID = 'registration-weld-method-options';
 const SOURCE_LIST_ID = 'registration-source-options';
 const PRODUCT_LIST_ID = 'registration-product-options';
+const MATERIAL_LIST_ID = 'registration-material-options';
+const THICKNESS_LIST_ID = 'registration-thickness-options';
 
 const UPLOAD_ZONES: { key: UploadZoneKey; label: string; accept: string; hint: string }[] = [
   { key: 'csv', label: '时序数据（CSV）', accept: '.csv', hint: '支持 .csv 时序信号' },
@@ -37,6 +39,17 @@ const UPLOAD_ZONES: { key: UploadZoneKey; label: string; accept: string; hint: s
   { key: 'video', label: '视频', accept: 'video/*', hint: '支持 mp4 / mov / avi 等' },
   { key: 'audio', label: '音频（WAV）', accept: '.wav,audio/wav', hint: '支持 .wav 音频' },
 ];
+
+/**
+ * 点一下展开候选：`<input list>` 原生只在**输入时**提示，静置时和普通文本框长得一样
+ * （S2 把焊机型号/焊接方法从 `<select>` 降级成 datalist 后，用户看不出这里能选）。
+ * `showPicker()` 让点击像 `<select>` 一样弹出候选；不支持 / 无用户手势的浏览器抛错，
+ * 吞掉即可——照旧手输，不阻塞录入。
+ */
+const openCandidateList = (event: MouseEvent<HTMLInputElement>) => {
+  const input = event.currentTarget as HTMLInputElement & { showPicker?: () => void };
+  try { input.showPicker?.(); } catch { /* 浏览器不支持：忽略 */ }
+};
 
 /** 当前本地时间 → datetime-local 输入值（YYYY-MM-DDTHH:mm），用于采集时间默认值。 */
 const toLocalInputValue = (d: Date) => {
@@ -164,7 +177,7 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
   const [form, setForm] = useState<RegistrationForm>({ dataset_id: inheritedDatasetId ?? 0, source: '', collected_at: toLocalInputValue(new Date()), weld_name: '', product: '', machine: '', weld_method: '', material: '', thickness: '', current_a: '', voltage_v: '', sample_rate: '', wire_feed_speed: '', welding_speed: '' });
   // 系统设置维护的可选项（只取启用项）。初始为空：加载期不闪现兜底值；
   // 拉取失败置 optionsError（页面内错误态 + 禁止提交），不再回落到硬编码值。
-  const [optionValues, setOptionValues] = useState<Record<'machine' | 'weld_method' | 'source' | 'product', string[]>>({ machine: [], weld_method: [], source: [], product: [] });
+  const [optionValues, setOptionValues] = useState<Record<'machine' | 'weld_method' | 'source' | 'product' | 'material' | 'thickness', string[]>>({ machine: [], weld_method: [], source: [], product: [], material: [], thickness: [] });
   // T4.2.1：哪些字段当前"仍是默认值"（供"默认"标记、提交前汇总确认、一键清除）。
   const [defaultValues, setDefaultValues] = useState<Partial<Record<DefaultableField, string>>>({});
   const [showDefaults, setShowDefaults] = useState(false);
@@ -272,14 +285,14 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
     listOptionGroups().then((groups) => {
       if (cancelled) return;
       const pick = (key: string) => groups.find((group) => group.key === key)?.items.filter((item) => item.active).map((item) => item.value) ?? [];
-      const next = { machine: pick('machine'), weld_method: pick('weld_method'), source: pick('source'), product: pick('product') };
+      const next = { machine: pick('machine'), weld_method: pick('weld_method'), source: pick('source'), product: pick('product'), material: pick('material'), thickness: pick('thickness') };
       setOptionValues(next);
       // T4.2.1 来源链：上次登记的值（来源 3）优先于字典首项（来源 4）；两者都只在字段为空时回填。
       applyDefaults({ ...loadLastValues(), machine: loadLastValues().machine || next.machine[0], weld_method: loadLastValues().weld_method || next.weld_method[0] });
     }).catch((err) => {
       if (cancelled) return;
       console.warn('[registration] option dictionary failed', err);
-      setOptionValues({ machine: [], weld_method: [], source: [], product: [] });
+      setOptionValues({ machine: [], weld_method: [], source: [], product: [], material: [], thickness: [] });
       setOptionsError(err);
     });
     return () => { cancelled = true; };
@@ -530,17 +543,17 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
         {Object.keys(defaultValues).length > 0 && <button className="default-clear" type="button" onClick={clearDefaults}>清除默认值（{Object.keys(defaultValues).length} 项）</button>}
         <div className="form-section-title"><span>基础信息</span><i /></div>
         <div className="form-grid">
-          <label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span>{defaultValues.source && <em className="default-mark">默认</em>}</span><input list={SOURCE_LIST_ID} placeholder="例如：产线相机 · 03号" value={form.source} onChange={setField('source')} /><datalist id={SOURCE_LIST_ID}>{optionValues.source.map((value) => <option key={value} value={value} />)}</datalist></label>
+          <label className={flash.source ? 'field-flash' : undefined}><span>数据来源<span className="required-mark"> *</span>{defaultValues.source && <em className="default-mark">默认</em>}</span><input className="combo-input" list={SOURCE_LIST_ID} placeholder="选择或填写，例如：产线相机 · 03号" value={form.source} onChange={setField('source')} onClick={openCandidateList} /><datalist id={SOURCE_LIST_ID}>{optionValues.source.map((value) => <option key={value} value={value} />)}</datalist></label>
           <label className={flash.collected_at ? 'field-flash' : undefined}><span>采集时间<span className="required-mark"> *</span></span><input type="datetime-local" value={form.collected_at ?? ''} onChange={setField('collected_at')} /></label>
           <label className={flash.weld_name ? 'field-flash' : undefined}><span>样本名称（焊缝 / 批次）<span className="required-mark"> *</span></span><input placeholder="输入样本名称（焊缝 / 批次）" value={form.weld_name ?? ''} onChange={setField('weld_name')} /></label>
-          <label>关联产品信息{defaultValues.product && <em className="default-mark">默认</em>}<input list={PRODUCT_LIST_ID} placeholder="产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} /><datalist id={PRODUCT_LIST_ID}>{optionValues.product.map((value) => <option key={value} value={value} />)}</datalist></label>
+          <label>关联产品信息{defaultValues.product && <em className="default-mark">默认</em>}<input className="combo-input" list={PRODUCT_LIST_ID} placeholder="选择或填写，示例：产品型号、零件编号" value={form.product ?? ''} onChange={setField('product')} onClick={openCandidateList} /><datalist id={PRODUCT_LIST_ID}>{optionValues.product.map((value) => <option key={value} value={value} />)}</datalist></label>
         </div>
         <div className="form-section-title"><span>采集与工艺参数</span><i /></div>
         <div className="form-grid">
-          <label className={flash.machine ? 'field-flash' : undefined}><span>焊机型号<span className="required-mark"> *</span>{defaultValues.machine && <em className="default-mark">默认</em>}</span><input list={MACHINE_LIST_ID} placeholder="选择或填写焊机型号" value={form.machine ?? ''} onChange={setField('machine')} /><datalist id={MACHINE_LIST_ID}>{withCurrent(optionValues.machine, form.machine).map((value) => <option key={value} value={value} />)}</datalist>{isCustomValue(optionValues.machine, form.machine) && <small className="custom-value-hint">新值：不在候选中，将按填写内容原样保存（可在「系统设置 → 数据厂家 / 焊机型号」补充为候选）</small>}</label>
-          <label className={flash.weld_method ? 'field-flash' : undefined}><span>焊接方法<span className="required-mark"> *</span>{defaultValues.weld_method && <em className="default-mark">默认</em>}</span><input list={WELD_METHOD_LIST_ID} placeholder="选择或填写焊接方法" value={form.weld_method ?? ''} onChange={setField('weld_method')} /><datalist id={WELD_METHOD_LIST_ID}>{withCurrent(optionValues.weld_method, form.weld_method).map((value) => <option key={value} value={value} />)}</datalist>{isCustomValue(optionValues.weld_method, form.weld_method) && <small className="custom-value-hint">新值：不在候选中，将按填写内容原样保存（可在「系统设置 → 焊接方法」补充为候选；总览只映射已知方法的过渡类型）</small>}</label>
-          <label className={flash.material ? 'field-flash' : undefined}><span>板材材质<span className="required-mark"> *</span>{defaultValues.material && <em className="default-mark">默认</em>}</span><input placeholder="例如：Q235B" value={form.material ?? ''} onChange={setField('material')} /></label>
-          <label className={flash.thickness ? 'field-flash' : undefined}><span>板材厚度（mm）<span className="required-mark"> *</span>{defaultValues.thickness && <em className="default-mark">默认</em>}</span><input inputMode="decimal" placeholder="例如：6" value={String(form.thickness ?? '')} onChange={setField('thickness')} /></label>
+          <label className={flash.machine ? 'field-flash' : undefined}><span>焊机型号<span className="required-mark"> *</span>{defaultValues.machine && <em className="default-mark">默认</em>}</span><input className="combo-input" list={MACHINE_LIST_ID} placeholder="选择或填写焊机型号" value={form.machine ?? ''} onChange={setField('machine')} onClick={openCandidateList} /><datalist id={MACHINE_LIST_ID}>{withCurrent(optionValues.machine, form.machine).map((value) => <option key={value} value={value} />)}</datalist>{isCustomValue(optionValues.machine, form.machine) && <small className="custom-value-hint">新值：不在候选中，将按填写内容原样保存（可在「系统设置 → 数据厂家 / 焊机型号」补充为候选）</small>}</label>
+          <label className={flash.weld_method ? 'field-flash' : undefined}><span>焊接方法<span className="required-mark"> *</span>{defaultValues.weld_method && <em className="default-mark">默认</em>}</span><input className="combo-input" list={WELD_METHOD_LIST_ID} placeholder="选择或填写焊接方法" value={form.weld_method ?? ''} onChange={setField('weld_method')} onClick={openCandidateList} /><datalist id={WELD_METHOD_LIST_ID}>{withCurrent(optionValues.weld_method, form.weld_method).map((value) => <option key={value} value={value} />)}</datalist>{isCustomValue(optionValues.weld_method, form.weld_method) && <small className="custom-value-hint">新值：不在候选中，将按填写内容原样保存（可在「系统设置 → 焊接方法」补充为候选；总览只映射已知方法的过渡类型）</small>}</label>
+          <label className={flash.material ? 'field-flash' : undefined}><span>板材材质<span className="required-mark"> *</span>{defaultValues.material && <em className="default-mark">默认</em>}</span><input className="combo-input" list={MATERIAL_LIST_ID} placeholder="选择或填写板材材质" value={form.material ?? ''} onChange={setField('material')} onClick={openCandidateList} /><datalist id={MATERIAL_LIST_ID}>{withCurrent(optionValues.material, form.material).map((value) => <option key={value} value={value} />)}</datalist></label>
+          <label className={flash.thickness ? 'field-flash' : undefined}><span>板材厚度（mm）<span className="required-mark"> *</span>{defaultValues.thickness && <em className="default-mark">默认</em>}</span><input className="combo-input" list={THICKNESS_LIST_ID} inputMode="decimal" placeholder="选择或填写，例如：6" value={String(form.thickness ?? '')} onChange={setField('thickness')} onClick={openCandidateList} /><datalist id={THICKNESS_LIST_ID}>{withCurrent(optionValues.thickness, String(form.thickness ?? '')).map((value) => <option key={value} value={value} />)}</datalist></label>
           <label className={flash.current_a ? 'field-flash' : undefined}><span>电流（A）<span className="required-mark"> *</span>{defaultValues.current_a && <em className="default-mark">默认</em>}</span><input inputMode="decimal" placeholder="例如：180" value={String(form.current_a ?? '')} onChange={setField('current_a')} /></label>
           <label className={flash.voltage_v ? 'field-flash' : undefined}><span>电压（V）<span className="required-mark"> *</span>{defaultValues.voltage_v && <em className="default-mark">默认</em>}</span><input inputMode="decimal" placeholder="例如：22" value={String(form.voltage_v ?? '')} onChange={setField('voltage_v')} /></label>
           <label className={flash.sample_rate ? 'field-flash' : undefined}><span>采样频率<span className="required-mark"> *</span>{defaultValues.sample_rate && <em className="default-mark">默认</em>}</span><input placeholder="10 kHz" value={String(form.sample_rate ?? '')} onChange={setField('sample_rate')} /></label>

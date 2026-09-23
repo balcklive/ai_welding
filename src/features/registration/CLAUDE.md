@@ -9,7 +9,7 @@
 ## 调用链
 
 - 被谁调用：`src/App.tsx`（`data-center/registration` 懒加载）。
-- 调用谁：`src/api/welds`（createRegistration/attachRawFiles/listWelds/reimportSignals）、`src/hooks/useIngestStatus`（登记链路状态）、`src/api/datasets`（listDatasets，默认取第一个）、`src/api/files`（presignUpload/putFileDirect/uploadFile）、`src/api/settings`（listOptionGroups，取 machine/weld_method/source/product 四组启用项）、`src/features/datasets/weldRows`（toWeldRow）、`src/app/navigation`（`Route`，三个出口跳转用）。
+- 调用谁：`src/api/welds`（createRegistration/attachRawFiles/listWelds/reimportSignals）、`src/hooks/useIngestStatus`（登记链路状态）、`src/api/datasets`（listDatasets，默认取第一个）、`src/api/files`（presignUpload/putFileDirect/uploadFile）、`src/api/settings`（listOptionGroups，取 machine/weld_method/source/product/material/thickness 六组启用项）、`src/features/datasets/weldRows`（toWeldRow）、`src/app/navigation`（`Route`，三个出口跳转用）。
 
 ## 关键规则/坑
 
@@ -24,6 +24,17 @@
 - PUT 后先查 `res.ok`，失败抛错丢弃 object_key；回调读 `regIdRef`/`pendingKeysRef` 修 stale-closure 竞态；file input 重选需清空。
 - 最近上传 ← `listWelds({tab:'recent'})`；采集时间用 `datetime-local`（默认当前本地时间）。
 - **可选项字典（2026-09）**：`optionValues` 初值**为空数组**（字典到达前不闪现兜底品牌），`listOptionGroups()` 单独发请求（失败不影响数据集/最近登记加载）。**T3.2/T3.3（2026-09-14）**：`FALLBACK_OPTIONS` 已删除——字典失败置 `optionsError`（页面内 `ErrorState` + 重试），且**字典不全时禁止提交**（按钮禁用 + 点击提示）。焊机型号/焊接方法默认值改为**字典首个启用项**（原写死 `Fronius CMT`/`MAG焊`），只在用户未填时回填。`withCurrent()` 会把当前值补进候选——这样某型号被停用后，**编辑老数据仍能回显与提交**，不会因字典变更丢失既有值。
-- **S2（2026-09-15）：录入控件统一为「下拉候选 + 可自定义输入」**：焊机型号 / 焊接方法从**严格 `<select>`** 改为 **`<input list>` + `<datalist>`**（与数据来源 / 关联产品信息同一形态，4 个 datalist 的 `id` 常量：`MACHINE_LIST_ID`/`WELD_METHOD_LIST_ID`/`SOURCE_LIST_ID`/`PRODUCT_LIST_ID`）。字典仍是**候选来源**（`listOptionGroups()` 只取 `active` 项，`withCurrent()` 保证停用/历史值仍可回显），但**不再是强约束**——现场清单里没有的型号/方法可以直接填，`isCustomValue()` 判定后给 `.custom-value-hint`「新值」提示并引导到「系统设置」补候选。**为什么**：预置项不足时严格下拉只有两种结局——填不进去（阻塞作业）或随手挑一个（污染台账）。**边界**：① 新值**原样入库**（后端 `machine`/`weld_method` 本就是 1–64/1–32 的普通字符串，不校验候选）；② 后端 `OPTION_GROUPS` 的 `free_text` 已同步为 `true`（契约 §3.8），设置页据此说明"可手工填写"；③ 总览的「厂商比重/词云」按 `machine` 首个词统计、`weld_method` 只映射已知方法（其它计入「未分类」，见 `backend/app/services/dashboard.py`），所以自由输入会带来**同义异写**风险——这是提示文案要求"补进候选"的原因，不是可选项。④ 必填语义不变：两者仍在 `missingFields` 里（现补了 `*` 星标与点击闪烁）。**未做**（另议）：板材材质/厚度没有字典组（材质为纯文本、厚度为数值），批次目前不是独立字段（混在「样本名称（焊缝 / 批次）」里，要做下拉需加列 + 迁移）。
+- **S2（2026-09-15）：录入控件统一为「下拉候选 + 可自定义输入」**：焊机型号 / 焊接方法从**严格 `<select>`** 改为 **`<input list>` + `<datalist>`**（与数据来源 / 关联产品信息同一形态，4 个 datalist 的 `id` 常量：`MACHINE_LIST_ID`/`WELD_METHOD_LIST_ID`/`SOURCE_LIST_ID`/`PRODUCT_LIST_ID`）。字典仍是**候选来源**（`listOptionGroups()` 只取 `active` 项，`withCurrent()` 保证停用/历史值仍可回显），但**不再是强约束**——现场清单里没有的型号/方法可以直接填，`isCustomValue()` 判定后给 `.custom-value-hint`「新值」提示并引导到「系统设置」补候选。**为什么**：预置项不足时严格下拉只有两种结局——填不进去（阻塞作业）或随手挑一个（污染台账）。**边界**：① 新值**原样入库**（后端 `machine`/`weld_method` 本就是 1–64/1–32 的普通字符串，不校验候选）；② 后端 `OPTION_GROUPS` 的 `free_text` 已同步为 `true`（契约 §3.8），设置页据此说明"可手工填写"；③ 总览的「厂商比重/词云」按 `machine` 首个词统计、`weld_method` 只映射已知方法（其它计入「未分类」，见 `backend/app/services/dashboard.py`），所以自由输入会带来**同义异写**风险——这是提示文案要求"补进候选"的原因，不是可选项。④ 必填语义不变：两者仍在 `missingFields` 里（现补了 `*` 星标与点击闪烁）。**未做**（另议）：批次目前不是独立字段（混在「样本名称（焊缝 / 批次）」里，要做下拉需加列 + 迁移）。
+- **2026-09-24：板材材质 / 厚度接字典 + 六个候选输入全部「看得出来能选」**。① 后端加 `material`/`thickness`
+  两组（契约 §3.8 第 5/6 组），登记页这两个字段从纯文本框改为 `<input list>` + `<datalist>`
+  （`MATERIAL_LIST_ID`/`THICKNESS_LIST_ID`，与其余四个同形态；出厂候选见 `backend/app/core/seed.py`）。
+  **`thickness` 的候选必须是纯数字**——提交时 `String(form.thickness).replace(/mm$/i,'')` 剥单位后按
+  数字校验 `0.1–200`，候选带 `mm` 等于让用户点一下下拉就填进一个过不了校验的值。② **「下拉不明显」的
+  根因是 `<input list>` 原生不画箭头**（S2 把焊机型号/焊接方法从 `<select>` 降级成 datalist 后出现的观感
+  退化），故六个候选输入统一加 `className="combo-input"`（`index.css` 用 background-image 补 chevron）
+  并挂 `onClick={openCandidateList}`（`input.showPicker?.()`，把点击变成 `<select>` 的手感；不支持/
+  无用户手势的浏览器抛错直接吞掉，照旧手输）。**新增候选输入时两样都要带上**，
+  `src/App.settings-regression.test.mjs` 按**数量**钉死（6 个 `.combo-input`、6 个 `onClick`，
+  且不许出现裸的 `<input list=`）——漏一个就退回"看不出能选"。
 - **2026-09-15（小改）**：板材厚度 / 电流 / 电压 / 采样频率的必填星号原先是 `<label>` 的**独立栅格子项**（`display:grid` 下会折到下一行）；改为与数据来源一致的 `<span>字段名<span className="required-mark"> *</span>…</span>` 写法，星号与「默认」标记回到标题行内。
 - **三块数据各自独立失败态（T3.2）**：数据集下拉（`datasetsError`）、最近登记（`recentError`）、可选项字典（`optionsError`）分别请求、分别报错；`retry()` 递增 `reloadKey` 重跑全部。最近登记徽标显示真实 `quality`（原固定显示"已登记"，S10）。

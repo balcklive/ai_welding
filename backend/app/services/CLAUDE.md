@@ -506,14 +506,14 @@
     是消费方要认的常量。设计与范围见 `docs/分段样本标注设计与实施说明.md`。
 - `settings.py`：**2026-09 系统设置·可选项字典（新增）**。把「录入时可选项」统一成
   **选项组（group）+ 选项项（item）**，对路由/前端屏蔽两类存储的差异：
-  `option_items`（machine/weld_method/source/product/dataset_task）与
+  `option_items`（machine/weld_method/source/product/material/thickness/dataset_task/defect_category）与
   `label_categories`（label_category，LS 集成/标注校验依赖，不搬家）。
-  - `OPTION_GROUPS`：6 组的 key/label/description/`color`/`free_text`（顺序即设置页顺序）；
+  - `OPTION_GROUPS`：9 组的 key/label/description/`color`/`free_text`（顺序即设置页顺序）；
     `get_group` / `list_groups` / `list_active_values`。
   - `create_item` / `update_item`（value/color/active 均为 PATCH 语义，空值不改）/
     `move_item`（与相邻项交换后**整组按 10 递增重排**，避免 sort_order 并列导致"上移没反应"）。
   - `delete_item`：**软删优先**——`reference_count` 查业务列引用
-    （`data_records.machine/weld_method/source/product`、`datasets.task`、`annotations.category`），
+    （`data_records.machine/weld_method/source/product/material/thickness`、`datasets.task`、`annotations.category`），
     有引用 → `active=False` 返回 `mode="deactivated"`（历史台账按原字符串展示），
     无引用 → 物理删返回 `mode="deleted"`。
   - 改名/停用**只影响后续录入**，不回填历史数据（业务列存的是字符串快照）。
@@ -527,6 +527,13 @@
     唯一的差异是 **`reference_count` 收行对象而不是值**——其它分组按字符串列统计引用
     （`data_records.machine` 等），本组按**外键 id** 统计（`sample_annotations.defect_category_id`），
     只拿值查不出引用、改名后更查不出。出厂 7 项由迁移 `0020` 与 `core/seed.py` 双写入。
+  - **2026-09-24 新增 `material` / `thickness` 两组**（登记页「板材材质」「板材厚度」的候选，此前是纯文本）：
+    仍是「`OPTION_GROUPS` 加一条 dict + `reference_count` 加一个 `_count(DataRecord.xxx)` 分支」，
+    **没有任何结构性改动**——但**漏掉 `reference_count` 那支就会 40410**（它是白名单式的，
+    末尾 `raise OptionGroupNotFound`），`tests/test_settings.py::test_material_and_thickness_reference_checks` 钉住这条。
+    出厂值（材质 6 项 / 厚度 9 项）**只写在 `core/seed.py`**，不配迁移：它是 `DEFAULT_OPTION_ITEMS` 的纯数据追加，
+    seed 每次启动幂等执行，已部署库重启即生效（与 `defect_category` 当时的双写入不同，那次是新表要一起建）。
+    **`thickness` 候选必须是纯数字**——前端提交前剥 `mm`、后端按 0.1–200 校验数字。
   - 消费方：`api/v1/settings.py`（CRUD）、`annotation.list_label_categories`（带 active）、
     `annotation.pretag_sample`（只抽启用类别）、`sample_annotation`（只读本组渲染候选）。
 

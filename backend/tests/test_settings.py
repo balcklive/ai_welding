@@ -23,7 +23,7 @@ from app.api.deps import get_current_user
 from app.core.db import get_session
 from app.core.seed import seed_all
 from app.main import app
-from app.models import Annotation, AnnotationTask, DataRecord, LabelCategory, Sample, User
+from app.models import Annotation, AnnotationTask, DataRecord, LabelCategory, OptionItem, Sample, User
 from app.services import annotation as annotation_svc
 from app.services import settings as svc
 from app.services.jobs import create_job
@@ -47,6 +47,12 @@ def _seed_annotations_session(session: Session, *, category: str, task_no: str):
 
 client = TestClient(app)
 OPTIONS_PATH = "/api/v1/settings/options"
+
+
+def _group(session: Session, key: str) -> dict:
+    """按 key 取分组——**不要用 `list_groups(session)[n]` 下标**：加一组就全体错位
+    （2026-09-24 新增 material/thickness 时把 dataset_task 从 4 挪到 6，下标写法当场全红）。"""
+    return next(group for group in svc.list_groups(session) if group["key"] == key)
 
 
 # ── 服务层 ───────────────────────────────────────────────────────────
@@ -76,6 +82,12 @@ def test_default_groups_match_former_hardcoded_options(session: Session) -> None
     # 产品/项目信息无既有取值，出厂为空，由管理员在设置页维护。
     assert values("product") == []
     assert values("label_category") == ["焊瘤", "气孔", "未熔合", "咬边", "正常", "熔池"]
+    # 板材材质 / 厚度（2026-09-24）：登记页这两个字段此前是纯文本。
+    assert values("material")[0] == "Q235B" and "304 不锈钢" in values("material")
+    # **厚度候选必须是纯数字**——提交时前端剥 `mm`、后端按数字校验 0.1–200，
+    # 写成「6 mm」会被 422 挡下（用户点一下下拉就填进去的值，不能是过不了校验的值）。
+    assert values("thickness") == ["3", "4", "5", "6", "8", "10", "12", "16", "20"]
+    assert all(value.replace(".", "", 1).isdigit() for value in values("thickness"))
 
 
 def test_create_rejects_duplicate_and_unknown_group(session: Session) -> None:
@@ -107,7 +119,7 @@ def test_update_rename_and_deactivate_roundtrip(session: Session) -> None:
     assert off["active"] is False
     assert "激光焊（试点）" not in svc.list_active_values(session, "weld_method")
     # 停用项仍在设置页可见（active=False），不会从管理界面消失。
-    assert "激光焊（试点）" in [i["value"] for i in svc.list_groups(session)[1]["items"]]
+    assert "激光焊（试点）" in [i["value"] for i in _group(session, "weld_method")["items"]]
 
     on = svc.update_item(session, "weld_method", item["id"], active=True)
     session.commit()
@@ -116,7 +128,7 @@ def test_update_rename_and_deactivate_roundtrip(session: Session) -> None:
 
 
 def test_move_item_reorders_within_group(session: Session) -> None:
-    machine = svc.list_groups(session)[0]["items"]
+    machine = _group(session, "machine")["items"]
     first_id = machine[0]["id"]
 
     reordered = svc.move_item(session, "machine", first_id, "down")
@@ -155,7 +167,7 @@ def test_delete_referenced_falls_back_to_deactivate(session: Session) -> None:
     ))
     session.commit()
 
-    machine = svc.list_groups(session)[0]["items"]
+    machine = _group(session, "machine")["items"]
     target = next(item for item in machine if item["value"] == "Panasonic YD-500")
     result = svc.delete_item(session, "machine", target["id"])
     session.commit()
@@ -166,20 +178,44 @@ def test_delete_referenced_falls_back_to_deactivate(session: Session) -> None:
     assert "Panasonic YD-500" not in svc.list_active_values(session, "machine")
 
 
+def test_material_and_thickness_reference_checks(session: Session) -> None:
+    """板材材质/厚度按 `data_records` 同名列统计引用。
+
+    `reference_count` 是**白名单式**的，末尾 `raise OptionGroupNotFound`——新加一组却忘了
+    加分支的话，这一组删除永远 40410（前端表现为"删不掉，也没说为什么"）。
+    """
+    session.add(DataRecord(
+        weld_id="WLD-OPT-002", registration_no="REG-OPT-002",
+        source="产线相机 · 03号", machine="Fronius CMT",
+        material="Q235B", thickness="6", dataset_id=None,
+    ))
+    session.commit()
+
+    referenced = next(i for i in _group(session, "material")["items"] if i["value"] == "Q235B")
+    assert svc.delete_item(session, "material", referenced["id"])["mode"] == "deactivated"
+    session.commit()
+    row = session.get(OptionItem, referenced["id"])
+    assert row is not None and row.active is False
+
+    unused = next(i for i in _group(session, "thickness")["items"] if i["value"] == "12")
+    assert svc.delete_item(session, "thickness", unused["id"])["mode"] == "deleted"
+    session.commit()
+
+
 def test_dataset_task_and_label_category_reference_checks(session: Session) -> None:
     """数据集任务类型与标注类别同样按引用情况决定软删/物理删。"""
     from app.services.datasets import create_dataset
 
     dataset = create_dataset(session, "任务类型引用测试集", "语义分割")
     session.commit()
-    task_item = next(item for item in svc.list_groups(session)[4]["items"] if item["value"] == "语义分割")
+    task_item = next(item for item in _group(session, "dataset_task")["items"] if item["value"] == "语义分割")
     assert svc.delete_item(session, "dataset_task", task_item["id"])["mode"] == "deactivated"
     session.commit()
     assert dataset.task == "语义分割"
 
     _seed_annotations_session(session, category="气孔", task_no="AN-OPT-001")
 
-    pore = next(item for item in svc.list_groups(session)[5]["items"] if item["value"] == "气孔")
+    pore = next(item for item in _group(session, "label_category")["items"] if item["value"] == "气孔")
     assert svc.delete_item(session, "label_category", pore["id"])["mode"] == "deactivated"
     session.commit()
     # 类别行走的仍是 label_categories（未搬家），停用只是 active=false。

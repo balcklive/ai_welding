@@ -259,7 +259,7 @@
 | POST | `/api/v1/settings/options/{group_key}/{item_id}/move` | 上移 / 下移一位 | **仅管理员**；body: `direction`(up/down) |
 | DELETE | `/api/v1/settings/options/{group_key}/{item_id}` | 删除选项 | **仅管理员**；见下方删除语义 |
 
-`group_key` 取值（固定 6 组，顺序即设置页顺序）：
+`group_key` 取值（固定 9 组，顺序即设置页顺序）：
 
 | group_key | 展示名 | 消费方 | 录入页交互 |
 |---|---|---|---|
@@ -267,14 +267,28 @@
 | `weld_method` | 焊接方法 | 数据登记「焊接方法」；总览熔滴过渡类型映射（**映射表外的值计入「未分类」**） | 输入框 + `<datalist>` 候选（保留自由填写，`free_text=true`） |
 | `source` | 数据来源 | 数据登记「数据来源」 | 输入框 + `<datalist>` 候选（保留自由填写） |
 | `product` | 产品 / 项目信息 | 数据登记「关联产品信息」 | 输入框 + `<datalist>` 候选（保留自由填写） |
+| `material` | 板材材质 | 数据登记「板材材质」 | 输入框 + `<datalist>` 候选（保留自由填写） |
+| `thickness` | 板材厚度 | 数据登记「板材厚度」（mm） | 输入框 + `<datalist>` 候选（保留自由填写；**候选值须为纯数字**） |
 | `dataset_task` | 数据集任务类型 | 新建数据集「任务类型」下拉；决定必需输入维度与适配检查项 | 下拉（严格候选） |
 | `label_category` | 标注缺陷类别 | 数据标注页标签调色板、AI 预标注抽样 | 标签调色板（仅启用项） |
 | `defect_category` | 分段样本缺陷词表 | 分段样本标注（段级分类）选「缺陷」时的主缺陷类别 | 下拉（严格候选，仅启用项） |
 
-> **录入页交互口径（2026-09-15 / S2）**：`free_text=true` 的组（`machine`/`weld_method`/`source`/`product`）
-> 在登记页是 **`<input list>` + `<datalist>`**——候选只作提示，预置项不足时可直接填新值；新值**原样入库**
-> （后端 `machine`/`weld_method` 只校验 1–64 / 1–32 长度，不校验候选），界面给「新值」提示并引导补进字典。
-> `free_text=false` 的组（`dataset_task`/`label_category`）仍是严格候选。
+> **录入页交互口径（2026-09-15 / S2）**：`free_text=true` 的组（`machine`/`weld_method`/`source`/`product`/
+> `material`/`thickness`）在登记页是 **`<input list>` + `<datalist>`**——候选只作提示，预置项不足时可直接填新值；
+> 新值**原样入库**（后端 `machine`/`weld_method` 只校验 1–64 / 1–32 长度，不校验候选），界面给「新值」提示
+> 并引导补进字典。`free_text=false` 的组（`dataset_task`/`label_category`/`defect_category`）仍是严格候选。
+>
+> **§3.8 `material` / `thickness`（2026-09-24 新增，第 5/6 组）**：登记页「板材材质」「板材厚度」的候选下拉。
+> 这两个字段此前是纯文本输入，是登记页最后两个没有候选的录入项。出厂值见 `core/seed.py`
+> （材质 6 项：Q235B / Q345B / Q355B / 304 不锈钢 / 316L 不锈钢 / 6061-T6 铝合金；厚度 9 项：3–20 mm）。
+> **`thickness` 的候选值必须是纯数字**——提交时前端剥 `mm` 后缀、后端按数字校验 0.1–200，
+> 候选写成「6 mm」会让用户点一下下拉就填进一个过不了校验的值。引用统计按
+> `data_records.material` / `data_records.thickness` 同名列（§3.8 删除语义的白名单分支）。
+
+> **§3.8 候选下拉的可发现性（2026-09-24）**：`<input list>` 在浏览器里**不画下拉箭头**、且只在输入时
+> 才提示候选，静置时与普通文本框无法区分（S2 把焊机型号/焊接方法从 `<select>` 降级后即出现该观感问题）。
+> 前端统一给这类输入加 `.combo-input`（CSS 补 chevron 箭头）并挂 `showPicker()`（点击即展开候选）；
+> 不支持 `showPicker` 的浏览器静默回退为纯手输，不阻塞录入。
 
 > **§3.8 删除语义（软删优先）**：`DELETE` 先查该值是否被业务列引用
 > （`data_records.machine/weld_method/source/product`、`datasets.task`、`annotations.category`）。
@@ -284,7 +298,7 @@
 >
 > **§3.8 改名语义**：改名/停用只影响后续录入，**不回填历史数据**（业务列存字符串快照）。
 >
-> **§3.8 存储**：`machine/weld_method/source/product/dataset_task` 落新表 `option_items`（§3.24）；
+> **§3.8 存储**：`machine/weld_method/source/product/material/thickness/dataset_task/defect_category` 落新表 `option_items`（§3.24）；
 > `label_category` 仍落既有 `label_categories`（§3.12，LS 集成与标注校验依赖，不搬家），
 > 仅补 `active`/`sort_order` 两列。
 >
