@@ -178,6 +178,7 @@
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-preview` | 分段预览（**v3，只读**）：按秒级规则算窗口，**不建任务、不写产物**。返回 `preview_token`（创建任务的唯一凭证）+ `window_seconds`/`stride_seconds`/`overlap_seconds`/`tail_policy`/`sample_count` + `windows[]`（每窗各模态映射摘要）+ `timeline`（统一轴：事件、降采样时序 ≤1200 点/轨、视频缩略图时间点、焊缝图片投影）+ `modalities`（各模态 `available`/`calibrated`/`excluded`/`reason`）+ `warnings[]`（用户已选「焊缝图片不参与分段」时给相应提示、**不再提示去标定**）。**请求体不含标定参数**——映射恒从源版本 `calibration` 与对齐产物读取 | body: `window_seconds?`(默认 2.0), `stride_seconds?`(默认 2.0), `event_start?`, `event_end?`, `keep_event_buffer?`, `tail_policy?`(`drop`/`keep`) |
 | POST | `/api/v1/welds/{weld_id}/versions/{version_id}/split-tasks` | 提交分段任务（**v3 异步**）：**只接受 `preview_token`**，服务端用 token 里签过的规则与映射哈希**重建**窗口——客户端不能另交一套规则。token 绑定焊缝/版本；规则、有效事件区间或标定/映射自预览以来**已变更 → 409** 要求重新预览。新任务 `rules_version=3`、`task_format=null`（§3.4 废弃） | body: `{preview_token}` |
 | GET | `/api/v1/split-tasks/{task_id}` | 分段任务状态/结果：`result` 内嵌 `sample_count`/`rules_version`/`schema_version`/`mapping_hash`/`manifest_key`——前端据此区分 v3 与历史（≤2）任务，历史任务只在「历史切分任务」只读展示 | 轮询（Job 结构） |
+| DELETE | `/api/v1/split-tasks/{task_id}` | **删除分段任务**（2026-09-23）：级联删除它的样本 + 样本上的段级标注 + 对象存储里的产物（帧图 / 焊缝切片 / 单样本 JSON / manifest） | response `{deleted:true, deleted_samples, deleted_annotations, deleted_objects}`；**任务还在 `pending`/`running` 或样本已进数据集固定快照 → 40900 且一行不删**；任务不存在 40401；非管理员删他人登记的焊缝 40300。删除粒度：见下方说明 |
 | GET | `/api/v1/split-tasks/{task_id}/samples` | 任务样本分页（**v3**）：只给时间窗与各模态**摘要**，**不返回完整高频时序数组或大尺寸图片**（几百切片时首屏会失控） | query: `page`, `page_size`(≤100) |
 | GET | `/api/v1/split-tasks/{task_id}/samples/{sample_id}` | 单样本详情：完整 `meta`（§3.3 多模态样本包）+ **该窗内的时序局部数据**（降采样 ≤600 点/通道）；媒体走对象键按需换签名 URL | 需登录 |
 | GET | `/api/v1/label-categories` | 缺陷标签类别（焊瘤/气孔/未熔合/咬边/正常） | 需登录 |
@@ -331,6 +332,18 @@
 > 取不到即 `null`，**不按 `object_keys` 后缀猜**（那是分段 Job 的写入顺序，不是契约）；
 > ③ 波形读不回来时 `timeline=null` + `warnings[]` 写明原因，**窗口与标注态照常返回**——缺失模态只
 > 标记不阻断。该端点**不下载视频、不跑 ffmpeg、不写任何产物**，全量给的是索引与媒体地址而非字节。
+>
+> **为什么需要 DELETE /split-tasks（2026-09-23）**：分段任务的去重键是
+> `(version_id, rules, task_format)`——**改一次窗口参数就是一个新任务**，旧任务不会被复用。
+> 于是同一条焊缝会持续攒出好几批口径不同的样本，而在此之前没有任何删除入口。
+>
+> **删除粒度**：删的是**一个任务**及其全部样本与产物。**不含** `processed/{weld}/split-preview/`
+> 下的预览帧——那批键按（焊缝, 映射哈希, 段号）复用，是分段页的缓存而不是某个任务的产物，
+> 跟着删会让"规则不同但映射相同"的另一个任务白跑一次 ffmpeg。
+>
+> **执行顺序**：**先提交事务，再删对象**。存储删除不可回滚，反过来做的话事务一旦回滚，
+> 就会留下一批指向不存在对象的样本行。产物清理是 best-effort（DB 行删掉即算成功），
+> 删不掉的键只记日志——`deleted_objects` 是成功删掉的键数。
 >
 > **`task_id` 寻址**：与 §3.4 的切分端点一致，兼容 `job_uid` 与 `split_tasks` 表 DB id；
 > 前端一律用创建分段任务时拿到的 `job_id`（= `job_uid`）。

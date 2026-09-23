@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, select
 
@@ -76,6 +76,13 @@ class FakeStorage:
     def delete_object(self, object_key: str) -> None:
         self.objects.pop(object_key, None)
 
+    def delete_objects(self, object_keys) -> list[str]:
+        """批次删除（真实实现走一次 HTTP；假存储只需要删掉并回"没删掉的"）。
+        对象不存在算成功——与 S3/minio 的语义一致。"""
+        for key in object_keys:
+            self.objects.pop(key, None)
+        return []
+
     def presign_get(self, object_key: str, expires: int = 3600) -> str:
         return f"https://fake-minio.local/{object_key}?expires={expires}"
 
@@ -117,6 +124,16 @@ def engine():
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
     )
+    # **打开外键校验**：SQLite 默认 `foreign_keys=OFF`，级联删除的先后顺序错了也照样绿——
+    # 而生产 MySQL 会直接 `1451 Cannot delete a parent row`。删分段任务的用例就踩了这个：
+    # `SampleAnnotation` 与 `Sample` 之间只有裸外键列、没有 `relationship()`，SQLAlchemy 推不出
+    # 先后，把 samples 的 DELETE 排在了 sample_annotations 前面——离线全绿、线上 500。
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_fk(dbapi_connection, _record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     SQLModel.metadata.create_all(engine)
     yield engine
     engine.dispose()
@@ -856,3 +873,130 @@ def test_annotation_timeline_rejects_oversized_task(api, ready, db_session, run_
     monkeypatch.setattr(sample_annotations, "MAX_TIMELINE_WINDOWS", 2)
     payload = api.get(f"/api/v1/split-tasks/{job_uid}/annotation-timeline").json()
     assert payload["code"] == 40000 and "超过标注时间轴上限" in payload["message"]
+
+
+# ── 删除分段任务（2026-09-23） ────────────────────────────────────────
+
+
+def test_delete_split_task_cascades_and_purges_artifacts(
+    api, ready, db_session, run_job, storage, mp4_bytes
+) -> None:
+    """删任务 = 删它的样本 + 样本上的段级标注 + 对象存储里的产物。
+
+    背景：分段的去重键含 `rules`，**改一次窗口参数就多一个任务**——历史任务会持续累积，
+    所以删除是常规操作。这条用例钉住"删干净"：DB 行没了、产物对象也没了。
+    """
+    from app.models.analysis import Sample, SampleAnnotation
+    from app.models.jobs import Job
+    from app.services import sample_annotation
+
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+
+    samples = db_session.exec(select(Sample).where(Sample.split_task_id == task.id)).all()
+    assert len(samples) == 3
+    seed_reference_data(db_session)
+    pore = next(c for c in sample_annotation.list_categories(db_session) if c["value"] == "气孔")
+    _annotate(api, job_uid, samples[0].id, "defect", pore["id"])
+
+    # 产物确实在存储里（每段帧图 + 焊缝切片 + 单样本 JSON，外加任务级 manifest）
+    keys = [key for row in samples for key in (row.object_keys or [])]
+    keys.append(f"processed/{WELD_ID}/split/{task.id}/manifest.json")
+    assert all(key in storage.objects for key in keys), "前置：产物应已落盘"
+
+    data = _ok(api.delete(f"/api/v1/split-tasks/{job_uid}"))
+
+    assert data["deleted"] is True
+    assert data["deleted_samples"] == 3
+    assert data["deleted_annotations"] == 1
+    assert data["deleted_objects"] == len(keys)
+
+    db_session.expire_all()
+    assert db_session.exec(select(Sample).where(Sample.split_task_id == task.id)).all() == []
+    assert db_session.get(SplitTask, task.id) is None
+    assert db_session.get(Job, task.job_id) is None, "job 只服务这一个任务，删完不该留孤儿"
+    assert all(key not in storage.objects for key in keys), "产物对象应一并清掉"
+
+    # 删完就查不到了（不是"删了但还列得出来"）
+    assert api.get(f"/api/v1/split-tasks/{job_uid}").json()["code"] == 40401
+    assert api.get(
+        f"/api/v1/welds/{WELD_ID}/segment-annotation-tasks"
+    ).json()["data"]["items"] == []
+    assert SampleAnnotation.__tablename__ == "sample_annotations"  # 沿用同一张表，不新建
+
+
+def test_delete_split_task_refuses_when_snapshot_referenced(
+    api, ready, db_session, run_job, storage, mp4_bytes
+) -> None:
+    """样本已进数据集固定快照 → `40900` 拒绝，**一行都不删**。
+
+    数据集版本是不可变的训练输入；删掉它引用的样本等于把已冻结的版本挖空。
+    """
+    from app.models.analysis import Sample
+    from app.models.datasets import Dataset, DatasetItem, DatasetVersion
+
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+
+    samples = db_session.exec(select(Sample).where(Sample.split_task_id == task.id)).all()
+    dataset = Dataset(
+        dataset_no="DS-DEL-001", name="船舶焊接-删除保护", task="目标检测", status="标注中",
+    )
+    db_session.add(dataset)
+    db_session.commit()
+    db_session.refresh(dataset)
+    ds_version = DatasetVersion(dataset_id=dataset.id, version_no="v1.0", split={}, item_count=1)
+    db_session.add(ds_version)
+    db_session.commit()
+    db_session.refresh(ds_version)
+    db_session.add(DatasetItem(dataset_version_id=ds_version.id, sample_id=samples[0].id, split="train"))
+    db_session.commit()
+
+    payload = api.delete(f"/api/v1/split-tasks/{job_uid}").json()
+    assert payload["code"] == 40900
+    assert "数据集固定快照" in payload["message"]
+
+    db_session.expire_all()
+    assert db_session.get(SplitTask, task.id) is not None, "被拦下时一行都不该删"
+    assert len(db_session.exec(select(Sample).where(Sample.split_task_id == task.id)).all()) == 3
+
+
+def test_delete_split_task_refuses_while_running(
+    api, ready, db_session, run_job, storage, mp4_bytes
+) -> None:
+    """任务还在跑 → 拒绝。删掉正在写的任务，执行器随后落的样本就成了孤儿。"""
+    from app.models.jobs import Job
+
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+    job = db_session.get(Job, task.job_id)
+    job.status = "running"
+    db_session.add(job)
+    db_session.commit()
+
+    payload = api.delete(f"/api/v1/split-tasks/{job_uid}").json()
+    assert payload["code"] == 40900
+    assert "还在执行中" in payload["message"]
+
+    db_session.expire_all()
+    assert db_session.get(SplitTask, task.id) is not None
+
+
+def test_delete_split_task_guards(api, ready, db_session, run_job, storage, mp4_bytes) -> None:
+    """未知任务 404、未登录 401。"""
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+
+    assert api.delete("/api/v1/split-tasks/job_不存在").json()["code"] == 40401
+
+    app.dependency_overrides.pop(get_current_user, None)
+    assert api.delete(f"/api/v1/split-tasks/{job_uid}").status_code == 401
+    app.dependency_overrides[get_current_user] = lambda: db_session.get(User, 1)

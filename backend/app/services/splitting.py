@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass
 
 from loguru import logger
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.core.config import settings
 from app.models.data import DataRecord, DataVersion
@@ -820,6 +820,122 @@ def signal_window_csv(bundle, window: SplitWindow) -> bytes:
         values = [channel_map[key].values[idx] for key in ("cur", "vol", "gas", "wir")]
         writer.writerow([f"{window.start + offset / bundle.sample_rate:.6f}", *[f"{float(v):.9g}" for v in values]])
     return output.getvalue().encode("utf-8")
+
+
+# ── 删除分段任务（2026-09-23） ────────────────────────────────────────
+#
+# 分段的去重键含 `rules`（`api.v1.analysis._split_request_key`）——**改一次窗口参数就多一个
+# 任务**，旧任务不会被复用。所以历史任务会持续累积，删除是常规操作而不是异常路径。
+
+
+class SplitTaskDeleteConflict(ValueError):
+    """分段任务已被下游产物引用或正在执行，不能安全删除。"""
+
+
+def split_task_artifact_keys(task, record) -> list[str]:
+    """该任务在对象存储里的**任务级**产物键。
+
+    每段的产物键（帧图 / 焊缝切片 / 单样本 JSON）在落库时记进了 `Sample.object_keys`，
+    调用方从那里取；这里只补 `manifest.json`——它的路径由 `jobs/split.py` 与任务 id 定死，
+    没有别的地方存它。
+
+    **不含 `split-preview/` 下的预览帧**：那批键按（焊缝, 映射哈希, 段号）复用，是分段页的
+    缓存而不是某个任务的产物——跟着任务删掉，会让另一个"规则不同但映射相同"的任务白跑
+    一次 ffmpeg。
+    """
+    return [f"processed/{record.weld_id}/split/{task.id}/manifest.json"]
+
+
+def delete_split_task(session: Session, task) -> dict:
+    """删除一个分段任务：级联清样本与标注。**只动数据库**，产物键回给调用方。
+
+    **两组护栏**（顺序即语义）：
+    1. 任务还在跑（`pending`/`running`）→ 拒绝。删掉一个正在写的任务，执行器随后落的
+       样本就成了孤儿。
+    2. 样本已进数据集固定快照（`dataset_items.sample_id`）→ 拒绝。数据集版本是
+       **不可变的训练输入**，删掉它引用的样本等于把已冻结的版本挖空——与 `delete_record`
+       拦"已进入切分/固定数据集快照"是同一条口径。
+
+    返回 `{deleted_samples, deleted_annotations, artifact_keys}`。**产物清理刻意不在
+    这里做**：先删对象再提交，事务一旦回滚就留下一堆指向不存在对象的样本行。调用方必须
+    **先 commit 再删对象**——存储是不可回滚的，它只能排在最后。
+    """
+    from app.models.analysis import Sample, SampleAnnotation
+    from app.models.datasets import DatasetItem
+    from app.models.jobs import Job
+
+    version = session.get(DataVersion, task.version_id)
+    record = session.get(DataRecord, version.record_id) if version is not None else None
+    if record is None:
+        raise SplitInputError("分段任务的来源版本不存在，无法删除")
+
+    job = session.get(Job, task.job_id)
+    if job is not None and job.status in {"pending", "running"}:
+        raise SplitTaskDeleteConflict("该分段任务还在执行中，等它结束或失败后再删除")
+
+    samples = session.exec(select(Sample).where(Sample.split_task_id == task.id)).all()
+    sample_ids = [row.id for row in samples if row.id is not None]
+    if sample_ids:
+        referenced = set(session.exec(
+            select(DatasetItem.sample_id).where(DatasetItem.sample_id.in_(sample_ids))
+        ).all())
+        if referenced:
+            raise SplitTaskDeleteConflict(
+                f"该分段任务有 {len(referenced)} 个样本已进入数据集固定快照，删除会把已冻结"
+                "的数据集版本挖空；请先删除引用它的数据集版本"
+            )
+
+    keys = split_task_artifact_keys(task, record)
+    for row in samples:
+        keys.extend(row.object_keys or [])
+
+    # **每一步都要 flush**：`SampleAnnotation` 与 `Sample` 之间只有裸外键列、没有
+    # `relationship()`，SQLAlchemy 的工作单元**推不出先后**，会按 mapper 顺序把 samples 的
+    # DELETE 排在 sample_annotations 前面——MySQL 直接 `1451 Cannot delete a parent row`。
+    # （SQLite 默认不校验外键，所以离线用例照样绿——这就是它当初溜到线上才炸的原因。）
+    annotations = session.exec(
+        select(SampleAnnotation).where(SampleAnnotation.sample_id.in_(sample_ids or [0]))
+    ).all()
+    for row in annotations:
+        session.delete(row)
+    session.flush()
+    for row in samples:
+        session.delete(row)
+    session.flush()
+    # `split_tasks.job_id` 是唯一外键、`jobs` 行只服务这一个任务：任务删完 job 就没有主人了
+    session.delete(task)
+    session.flush()
+    if job is not None:
+        session.delete(job)
+        session.flush()
+
+    return {
+        "deleted_samples": len(samples),
+        "deleted_annotations": len(annotations),
+        "artifact_keys": keys,
+    }
+
+
+def purge_split_artifacts(storage, keys: list[str]) -> int:
+    """删掉已提交事务对应的产物对象，返回**成功删掉的键数**。
+
+    **best-effort**：DB 行已经删了、事务已经提交，这时候存储抖动不该让用户看到"删除失败"
+    ——行没了就是没了，残留的对象只是垃圾（下次同 id 复用不可能，任务 id 单调递增）。
+    删不掉的记日志，不抛。
+    """
+    if not keys:
+        return 0
+    try:
+        failed = storage.delete_objects(keys)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Split artifact cleanup failed ({} keys): {}", len(keys), exc)
+        return 0
+    if failed:
+        logger.warning(
+            "Split artifacts left in storage: {} of {} ({})",
+            len(failed), len(keys), failed[:5],
+        )
+    return len(keys) - len(failed)
 
 
 def _valid_event_bounds(value) -> bool:

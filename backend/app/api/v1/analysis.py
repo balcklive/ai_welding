@@ -1032,6 +1032,54 @@ def get_split_task(task_id: str, session: Session = Depends(get_session)) -> dic
     return ok(payload)
 
 
+@router.delete("/split-tasks/{task_id}")
+def delete_split_task(
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """删除一个分段任务（**含它切出来的样本、样本上的段级标注、对象存储里的产物**）。
+
+    为什么需要它：分段的去重键含 `rules`（`_split_request_key`）——**改一次窗口参数就多一个
+    任务**，旧任务不会被复用。历史任务会持续累积，而在此之前没有任何删除入口（前端没有
+    按钮、后端没有接口），只能眼睁睁看着同一条焊缝挂着一堆口径不同的样本。
+
+    护栏（不满足一律 `40900`，**不删**）：任务还在 `pending`/`running`；样本已进数据集
+    固定快照（删它等于把已冻结的训练版本挖空）。归属沿用分段域口径（非管理员只能删自己
+    登记的焊缝，无权 `40300`）。产物清理是 best-effort，删不掉的键只记日志。
+    """
+    task = annotation.resolve_split_task(session, task_id)
+    if task is None:
+        return err(40401, "分段任务不存在", status=404)
+    version = session.get(DataVersion, task.version_id)
+    record = session.get(DataRecord, version.record_id) if version is not None else None
+    if record is None:
+        return err(40401, "分段任务的来源版本不存在", status=404)
+    forbid_unless_record_owned(session, current_user, record)
+
+    try:
+        counts = splitting.delete_split_task(session, task)
+    except splitting.SplitTaskDeleteConflict as exc:
+        session.rollback()
+        return err(40900, str(exc), status=409)
+    except splitting.SplitInputError as exc:
+        session.rollback()
+        return err(40401, str(exc), status=404)
+
+    artifact_keys = counts.pop("artifact_keys")
+    write_audit(
+        session, current_user.id, "delete", "split_task", task_id,
+        {**counts, "artifact_keys": len(artifact_keys)},
+    )
+    # 先落库再删对象：存储删了不可回滚，事务一旦回滚就会留下指向不存在对象的样本行。
+    session.commit()
+
+    from app.storage import get_storage  # 延迟导入：便于测试 monkeypatch `app.storage`
+
+    deleted_objects = splitting.purge_split_artifacts(get_storage(), artifact_keys)
+    return ok({"deleted": True, "deleted_objects": deleted_objects, **counts})
+
+
 @router.get("/split-tasks/{task_id}/samples")
 def list_split_samples(
     task_id: str,

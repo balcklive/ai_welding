@@ -176,6 +176,17 @@ export async function getSplitTask(taskId: string): Promise<Job<SplitResult>> {
   return request<Job<SplitResult>>(`/split-tasks/${taskId}`);
 }
 
+/** 删除一个分段任务（**含它切出来的样本、样本上的段级标注、对象存储里的产物**）。
+ *
+ *  分段的去重键含 `rules`——改一次窗口参数就多一个任务，所以历史任务会累积，删掉多余的
+ *  那几批是常规操作。被拦下时抛 `ApiError(40900)`，`message` 是面向用户的原因（任务还在跑 /
+ *  样本已进数据集固定快照），原样展示即可。 */
+export async function deleteSplitTask(
+  taskId: string,
+): Promise<{ deleted: boolean; deleted_samples: number; deleted_annotations: number; deleted_objects: number }> {
+  return request(`/split-tasks/${taskId}`, { method: 'DELETE' });
+}
+
 /** 任务样本分页（§5.5）：列表只给时间窗与模态摘要，高频数据走单样本详情。 */
 export async function listSplitSamples(
   taskId: string,

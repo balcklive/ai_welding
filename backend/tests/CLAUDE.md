@@ -86,6 +86,15 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
   `empty_label_rate` 与快照同口径）；⑥ 训练折叠优先认 `label`、旧标注线并存不被改写。
   **坑**：`_seed_split_task` 必须给不同 `suffix`（`weld_id`/`registration_no` 唯一）；夹具内自带
   `seed_reference_data`（词表是"能标注"的前提）。
+- **删除分段任务（2026-09-23，在 `test_split_v3_api.py` 内）**：4 条 E2E——① 删成功
+  （样本/标注/job 行都没了、产物对象也真删了、`GET` 变 40401、任务列表不再列出）；
+  ② 样本已进 `dataset_items` 固定快照 → `40900` 且**一行都不删**；③ 任务还在 `running`
+  → `40900`；④ 未知任务 40401、未登录 401。
+  **⚠️ 该文件的 engine 夹具开了 `PRAGMA foreign_keys=ON`（`event.listens_for(engine, "connect")`）
+  —— 别删掉。** SQLite 默认不校验外键，级联删除的先后顺序错了也全绿；`SampleAnnotation` 与
+  `Sample` 之间只有裸外键列、没有 `relationship()`，SQLAlchemy 推不出先后，把 `samples` 的
+  DELETE 排在了 `sample_annotations` 前面——离线全绿、MySQL 线上 `1451` 500。这条 PRAGMA
+  就是那次事故的守卫（去掉它，用例仍会全绿，但线上会炸）。
 - **标注总览时间轴（2026-09-23，在 `test_split_v3_api.py` 内）**：3 条 E2E 挂在既有的
   `ready` / `_run_split` 夹具上（复用真实信号导入 + 真视频抽帧 + 真图片裁切，不另起一套）。
   ① 一次拿全 —— 窗口来自**已落库的 `Sample`** 且按时间有序、标注态逐段回填、每段的帧/切片 URL

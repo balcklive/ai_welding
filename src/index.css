@@ -643,6 +643,11 @@ button { border: 0; cursor: pointer; }
 .segment-task-latest { position:relative; padding-top:13px; }
 .segment-task-latest-tag { position:absolute; top:0; left:0; padding:3px 8px; color:#22796c; background:#eaf8f1; border:1px solid #a8ddca; border-radius:5px; font-size:12px; }
 .segment-task-latest .segment-task-card { border-color:#83cdbb; }
+/* 卡片 + 删除按钮：删除是独立按钮（按钮不能套按钮），所以外面套一层 flex 行 */
+.segment-task-row { display:flex; align-items:stretch; gap:8px; }
+.segment-task-row .segment-task-card { flex:1; min-width:0; }
+.segment-task-delete { display:flex; align-items:center; padding:0 11px; color:#8a5a5f; }
+.segment-task-delete:hover { color:#a44a52; border-color:#e2a9a5; }
 .segment-history-toggle { display:flex; align-items:center; gap:7px; margin-top:16px; padding:8px 11px; color:#45666b; background:#f6faf9; border:1px solid #e2eeeb; border-radius:7px; font-size:13px; }
 .segment-history-toggle:hover { border-color:#a9d8cd; }
 .segment-history-toggle + .preview-summary { margin:9px 0 11px; }

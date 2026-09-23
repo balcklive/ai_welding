@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import re
 from datetime import timedelta
-from typing import BinaryIO
+from typing import BinaryIO, Iterable
 
 from minio import Minio
+from minio.deleteobjects import DeleteObject
 
 from app.core.config import settings
 
@@ -207,6 +208,26 @@ class StorageClient:
         """删除单个对象；供失败回滚清理已写占位产物。"""
         self._ensure_bucket()
         self._client.remove_object(self.bucket, object_key)
+
+    def delete_objects(self, object_keys: Iterable[str]) -> list[str]:
+        """批量删除对象（**一个批次一次请求**），返回**删失败**的对象键。
+
+        一个分段任务有 3N 个产物（每段帧图 + 焊缝切片 + 单样本 manifest），逐个
+        `remove_object` 是 3N 次往返，删一个 37 段的任务就是 111 次。走 minio SDK 的
+        `remove_objects` 一次发完，且**幂等**（S3 语义：删不存在的键算成功），
+        所以返回值里只有真正的错误（权限/网络），调用方按 best-effort 处理即可。
+        """
+        keys = [key for key in object_keys if key]
+        if not keys:
+            return []
+        self._ensure_bucket()
+        failed: list[str] = []
+        for result in self._client.remove_objects(
+            self.bucket, [DeleteObject(key) for key in keys]
+        ):
+            if result.error is not None:
+                failed.append(result.object_name)
+        return failed
 
     def presign_get(self, object_key: str, expires: int = 3600) -> str:
         """生成预签名 GET / 播放 URL（OSS §4，默认 1h，支持 Range 拖动播放）。

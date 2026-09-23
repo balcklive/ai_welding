@@ -29,6 +29,10 @@ MinIO 对象存储客户端（Task 4）。桶与连接信息来自 `app.core.con
     - `upload_stream(object_key, fileobj, size, content_type)`：小文件代理上传，
       `put_object(bucket, key, fileobj, size, content_type=...)`。
     - `delete_object(object_key)`：删除单个对象；供 alignment/split 失败回滚清理已写产物。
+    - `delete_objects(object_keys) -> list[str]`（**2026-09-23**）：批量删除，**一个批次一次
+      请求**（走 minio SDK 的 `remove_objects`），返回**删失败**的键。一个分段任务有 3N 个产物
+      （帧图/切片/单样本 JSON），逐个 `remove_object` 是 3N 次往返。S3 语义下删不存在的键算
+      成功，所以返回的失败只含真正的错误（权限/网络），调用方按 best-effort 处理。
     - `presign_get(object_key, expires=3600) -> str`：预签名 GET/播放 URL，`expires` 秒
       （长视频可 86400）。
     - `get_object(object_key) -> bytes`：**Task 18**。后端代理读取对象全部字节

@@ -26,6 +26,7 @@ const routeUrlSource = read('app/route-url.ts');
 const workspaceSource = read('features/annotation/segment/SampleAnnotationWorkspace.tsx');
 const railSource = read('features/annotation/segment/AnnotationRail.tsx');
 const apiSource = read('api/sampleAnnotations.ts');
+const analysisApiSource = read('api/analysis.ts');
 const splitPanelSource = read('features/alignment/split/SplitRulesPanel.tsx');
 
 test('新路由在导航 / hash 映射 / WorkspaceFrame 三处都登记（漏一处即死路由）', () => {
@@ -82,6 +83,20 @@ test('入口默认只进最近一次成功的分段任务，历史任务折叠',
   assert.match(workspaceSource, /aria-expanded=\{showHistory\}/);
   assert.match(workspaceSource, /\{showHistory && \(/);
   assert.match(workspaceSource, /历史分段任务（\{history\.length\}）/);
+});
+
+test('入口能删除分段任务：走独立按钮 + 二次确认，不裸删', () => {
+  assert.match(analysisApiSource, /export async function deleteSplitTask/);
+  assert.match(analysisApiSource, /\/split-tasks\/\$\{taskId\}`,\s*\{\s*method: 'DELETE'/);
+  assert.match(workspaceSource, /deleteSplitTask\(pendingDelete\.task_id\)/);
+  // 破坏性操作必须过确认弹窗，且用 danger 色调
+  assert.match(workspaceSource, /<ConfirmDialog/);
+  assert.match(workspaceSource, /tone="danger"/);
+  assert.match(workspaceSource, /该操作不可撤销/);
+  // 删除按钮是**独立按钮**，不能塞进卡片内部（按钮套按钮是无效 HTML，也容易误触）
+  assert.match(workspaceSource, /className="ghost-button segment-task-delete"/);
+  // 被后端拒绝时保留弹窗，把原因留在眼前
+  assert.match(workspaceSource, /setDeleteError\(errorText\(err, '删除失败，请重试'\)\)/);
 });
 
 test('词表由系统设置维护，工作台只读（不本地增删）', () => {

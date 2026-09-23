@@ -81,6 +81,12 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     （`task_format` 对 v3 无意义）。
   - `GET /split-tasks/{task_id}`：`result` 额外给出 `rules_version`/`schema_version`/`mapping_hash`，
     供前端区分 v3 与历史（≤2）任务。
+  - `DELETE /split-tasks/{task_id}`（**2026-09-23**）：删除分段任务——级联清它的样本、样本上的
+    段级标注与对象存储产物。**为什么需要**：去重键含 `rules`，改一次窗口参数就多一个任务，
+    历史任务会持续累积。**护栏**（不满足一律 40900 且一行不删）：任务还在 `pending`/`running`；
+    样本已进 `dataset_items` 固定快照（数据集版本是不可变的训练输入）。**先 commit 再删对象**
+    ——存储删除不可回滚，顺序反了会让回滚后的样本行指向不存在的对象。业务逻辑
+    `splitting.delete_split_task`（只动 DB）+ `splitting.purge_split_artifacts`（best-effort 清存储）。
   - `GET /split-tasks/{task_id}/samples`（分页）与 `…/samples/{sample_id}`（详情）：前者**只给
     时间窗与模态摘要**，后者才给完整 `meta` 与该窗**降采样**局部时序（≤600 点/通道）。
     **坑**：`list_split_samples` 用 `func.count()` + `Sample` —— `Sample` 必须从

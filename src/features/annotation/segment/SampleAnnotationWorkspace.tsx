@@ -22,8 +22,8 @@
  * 20 段的宽时间轴（每格 ~65px，看得清图），打标在批次里做。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, Crosshair, Undo2 } from 'lucide-react';
-import { getSplitSample } from '../../../api/analysis';
+import { ChevronDown, ChevronLeft, ChevronRight, Crosshair, Trash2, Undo2 } from 'lucide-react';
+import { deleteSplitTask, getSplitSample } from '../../../api/analysis';
 import { ApiError } from '../../../api/client';
 import { getFileUrl } from '../../../api/files';
 import {
@@ -36,6 +36,7 @@ import type {
 } from '../../../api/types';
 import { SignalTimelineLane } from '../../alignment/split/SignalTimelineLane';
 import { fmtRange, pctOf } from '../../alignment/split/splitTypes';
+import { ConfirmDialog } from '../../../shared/components/ConfirmDialog';
 import { PageIntro } from '../../../shared/components/PageIntro';
 import { StatusPill } from '../../../shared/components/StatusPill';
 import { AnnotationRail, EmptyRail, type VerdictDraft } from './AnnotationRail';
@@ -90,6 +91,10 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
   const [taskId, setTaskId] = useState<string | null>(null);
   /** 入口默认只显示最近一次成功的分段任务，历史任务折叠（同一焊缝的另一套窗口规则）。 */
   const [showHistory, setShowHistory] = useState(false);
+  /** 待删除的分段任务（非 null 即弹确认框）。分段的去重键含 rules，历史任务会累积，所以要能删。 */
+  const [pendingDelete, setPendingDelete] = useState<SegmentAnnotatableTask | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const [timeline, setTimeline] = useState<AnnotationTimeline | null>(null);
   const [loading, setLoading] = useState(false);
@@ -326,6 +331,30 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  // ── 删除分段任务 ───────────────────────────────────────────────────
+  const askDelete = (task: SegmentAnnotatableTask) => {
+    setDeleteError(null);
+    setPendingDelete(task);
+  };
+
+  /** 真删。失败时**不关弹窗**——后端的拒绝原因（任务还在跑 / 样本已进数据集快照）要留在
+   *  用户眼前，关掉弹窗等于把原因一起关掉了。 */
+  const confirmDelete = async () => {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteSplitTask(pendingDelete.task_id);
+      setPendingDelete(null);
+      setTasks((prev) => prev.filter((task) => task.task_id !== pendingDelete.task_id));
+      setNotice({ tone: 'ok', text: `已删除分段任务 ${pendingDelete.task_id}` });
+    } catch (err) {
+      setDeleteError(errorText(err, '删除失败，请重试'));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   // ── 渲染 ───────────────────────────────────────────────────────────
   if (!dataId) {
     return <p className="dataset-empty-state" role="status">请先在「选择数据」中选定一条焊缝。</p>;
@@ -342,6 +371,10 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
           title="分段样本标注"
           description="从该焊缝**已完成**的分段任务进入：每段一个主结论（正常 / 缺陷 + 主缺陷类别），时序、视频、焊缝图片共用同一个时间窗。"
         />
+        {notice && (
+          <p className={notice.tone === 'error' ? 'toolbar-error settings-notice' : 'accent-text settings-notice'}
+             role={notice.tone === 'error' ? 'alert' : 'status'}>{notice.text}</p>
+        )}
         <section className="panel">
           <div className="studio-head">
             <div><span className="file-badge">可标注的分段任务</span><h2>{dataId}</h2></div>
@@ -361,7 +394,7 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
           {latest && (
             <div className="segment-task-latest">
               <span className="segment-task-latest-tag">最近一次成功</span>
-              <TaskCard task={latest} onOpen={setTaskId} />
+              <TaskCard task={latest} onOpen={setTaskId} onDelete={askDelete} />
             </div>
           )}
 
@@ -383,13 +416,33 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
                     数据集出现两套口径的样本；确实要标再展开。
                   </p>
                   <div className="segment-task-list">
-                    {history.map((task) => <TaskCard key={task.task_id} task={task} onOpen={setTaskId} />)}
+                    {history.map((task) => (
+                      <TaskCard key={task.task_id} task={task} onOpen={setTaskId} onDelete={askDelete} />
+                    ))}
                   </div>
                 </>
               )}
             </>
           )}
         </section>
+
+        {pendingDelete && (
+          <ConfirmDialog
+            title="删除分段任务"
+            tone="danger"
+            description={`将删除 ${pendingDelete.task_id} 切出来的全部样本、样本上的段级标注，以及对象存储里的产物。该操作不可撤销。`}
+            items={[
+              { label: '分段时间窗', value: `${pendingDelete.sample_count} 段 · 窗口 ${pendingDelete.window_seconds ?? '—'}s / 步长 ${pendingDelete.stride_seconds ?? '—'}s` },
+              { label: '样本与标注', value: '该任务的全部样本与段级结论一并删除' },
+              { label: '已进数据集的样本', value: '若有，会被后端拒绝（数据集版本是不可变的训练输入）' },
+              ...(deleteError ? [{ label: '删除失败', value: deleteError }] : []),
+            ]}
+            confirmLabel={deleting ? '删除中…' : '确认删除'}
+            confirmDisabled={deleting}
+            onConfirm={() => void confirmDelete()}
+            onCancel={() => { setPendingDelete(null); setDeleteError(null); }}
+          />
+        )}
       </>
     );
   }
@@ -590,25 +643,43 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
   );
 }
 
-/** 入口里的一张分段任务卡（最近一次与历史任务共用同一张）。 */
-function TaskCard({ task, onOpen }: { task: SegmentAnnotatableTask; onOpen: (taskId: string) => void }) {
+/** 入口里的一张分段任务卡（最近一次与历史任务共用同一张）。
+ *
+ *  卡片本体是"进这个任务"，删除是旁边的独立按钮——**不能**把删除塞进卡片内部：
+ *  按钮套按钮是无效 HTML，而且删除是破坏性操作，混进"进任务"的点击区里迟早误触。 */
+function TaskCard({
+  task, onOpen, onDelete,
+}: {
+  task: SegmentAnnotatableTask;
+  onOpen: (taskId: string) => void;
+  onDelete: (task: SegmentAnnotatableTask) => void;
+}) {
   return (
-    <button type="button" className="segment-task-card" onClick={() => onOpen(task.task_id)}>
-      <div>
-        <strong>{task.task_id}</strong>
-        <small>
-          {task.version_no} · {task.sample_count} 段 · 窗口 {task.window_seconds ?? '—'}s / 步长 {task.stride_seconds ?? '—'}s
-          {task.effective_range ? ` · 有效 ${fmtRange(task.effective_range[0], task.effective_range[1])}` : ''}
-          {task.finished_at ? ` · ${task.finished_at.slice(0, 10)}` : ''}
-        </small>
-      </div>
-      <div className="segment-task-progress">
-        <span>{task.progress.annotated}/{task.progress.total}</span>
-        <StatusPill tone={task.progress.progress >= 100 ? 'green' : task.progress.annotated > 0 ? 'orange' : 'muted'}>
-          {task.progress.progress >= 100 ? '已完成' : `${task.progress.progress}%`}
-        </StatusPill>
-      </div>
-    </button>
+    <div className="segment-task-row">
+      <button type="button" className="segment-task-card" onClick={() => onOpen(task.task_id)}>
+        <div>
+          <strong>{task.task_id}</strong>
+          <small>
+            {task.version_no} · {task.sample_count} 段 · 窗口 {task.window_seconds ?? '—'}s / 步长 {task.stride_seconds ?? '—'}s
+            {task.effective_range ? ` · 有效 ${fmtRange(task.effective_range[0], task.effective_range[1])}` : ''}
+            {task.finished_at ? ` · ${task.finished_at.slice(0, 10)}` : ''}
+          </small>
+        </div>
+        <div className="segment-task-progress">
+          <span>{task.progress.annotated}/{task.progress.total}</span>
+          <StatusPill tone={task.progress.progress >= 100 ? 'green' : task.progress.annotated > 0 ? 'orange' : 'muted'}>
+            {task.progress.progress >= 100 ? '已完成' : `${task.progress.progress}%`}
+          </StatusPill>
+        </div>
+      </button>
+      <button
+        type="button"
+        className="ghost-button segment-task-delete"
+        title={`删除分段任务 ${task.task_id}`}
+        aria-label={`删除分段任务 ${task.task_id}`}
+        onClick={() => onDelete(task)}
+      ><Trash2 size={14} /></button>
+    </div>
   );
 }
 

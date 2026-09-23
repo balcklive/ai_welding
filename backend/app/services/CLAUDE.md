@@ -98,6 +98,16 @@
   - `build_preview(...)` / `sign_preview_token` / `verify_preview_token`：预览响应与**短期令牌**
     （HMAC-SHA256 无状态，15 分钟）。token 自带完整规则 + 规则哈希 + 映射哈希 + 有效区间，
     客户端改不了——这是"所见即所得"的技术基础（§5.4）。进程内 60s 预览缓存（§6.4）。
+  - `delete_split_task(session, task)` / `purge_split_artifacts(storage, keys)`（**2026-09-23**）：
+    删除分段任务。前者**只动数据库**（两组护栏：任务在跑 / 样本已进数据集固定快照 → 抛
+    `SplitTaskDeleteConflict`，由路由转 40900），返回 `artifact_keys` 交给调用方；后者在
+    **事务提交之后**清对象，best-effort。分开的原因：存储删除不可回滚，先删对象再提交的话，
+    事务一旦回滚就留下一批指向不存在对象的样本行。
+    **坑（踩过）**：`SampleAnnotation` 与 `Sample` 之间只有裸外键列、没有 `relationship()`，
+    SQLAlchemy 的工作单元推不出先后，会把 `samples` 的 DELETE 排在 `sample_annotations` 前面
+    → MySQL `1451 Cannot delete a parent row`。**每步之间都要显式 `session.flush()`**。
+    SQLite 默认不校验外键，离线用例照样绿，所以这条是在线上才炸的——`tests/test_split_v3_api.py`
+    的 engine 夹具已加 `PRAGMA foreign_keys=ON` 兜住。
   - `build_timeline_layers(bundle, mapping, start, end)`（**2026-09-23 由 `_preview_timeline` 转公开**）：
     统一时间轴的分层数据——事件、降采样时序（≤`_PREVIEW_SIGNAL_POINTS` 点/轨）、视频缩略图
     时间点、焊缝图片投影。**分段页（`build_preview`）与标注页（`annotation-timeline`）共用它，
