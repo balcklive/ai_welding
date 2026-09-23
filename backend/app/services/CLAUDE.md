@@ -79,9 +79,13 @@
   - `attach_preview_frames(payload, *, storage, weld_id, mapping, windows)`（**2026-09-23**）：
     预览**逐段真的下视频抽帧**并挂**短期预签名 URL**（占位图/全局首帧都是在骗人）。
     **不设段数上限**（2026-09-23 删掉 `PREVIEW_FRAME_LIMIT = 24`）：视频覆盖范围内有多少段就抽
-    多少段——按段截断等于让后半段凭空少一个模态。代价是一次预览要下视频 + 跑 N 次 ffmpeg。
-    对象键按（焊缝, 映射哈希, 段号）复用
-    （重复预览覆盖同一批对象、不累积），URL 有效期 `PREVIEW_FRAME_EXPIRES_SECONDS = 3600`。
+    多少段——按段截断等于让后半段凭空少一个模态。代价是**首次**预览要下视频 + 跑 N 次 ffmpeg。
+    对象键按（焊缝, 映射哈希, 段号）复用，**且复用判定就是"这个键的对象在不在"**：`_preview_frame_key(...)`
+    是键的**唯一**构造函数，`_object_exists(storage, key)`（`stat_object` 只取元数据、不拉字节）
+    探到就直接挂新的预签名 URL 并跳过抽帧；`pending` 全空时**连视频都不下载**。没有这层，
+    分段页每改一次规则就要重下一次视频 + 重跑 N 次 ffmpeg（45 段实测把预览拖到几十秒）。
+    抽帧失败时只把**这次没抽到的那批**置原因——命中复用的那些不能被连坐清掉。
+    URL 有效期 `PREVIEW_FRAME_EXPIRES_SECONDS = 3600`。
     视频超 `media_probe.MAX_VIDEO_PROBE_BYTES`、抽帧失败、上传失败一律**逐段**记原因，
     预览其余部分照常返回。**坑**：这只缓冲预览**不写 `processed/` 之外的东西**，
     也**不改 `build_preview` 的纯函数性质**——抽帧在路由层、缓存之后做，所以缓存里存的是

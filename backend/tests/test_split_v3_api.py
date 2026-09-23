@@ -664,6 +664,54 @@ def test_every_segment_gets_a_frame_no_segment_cap(api, ready, storage, mp4_byte
         _assert_jpeg(storage, key)
 
 
+def test_preview_reuses_stored_frames_instead_of_rerunning_ffmpeg(
+    api, ready, storage, mp4_bytes, monkeypatch
+) -> None:
+    """同一映射下重复预览**不得重抽**代表帧：对象键既已按（焊缝, 映射哈希, 段号）落定，
+    重抽只会得到同一张图。
+
+    回归背景：原实现每次预览都下一次视频 + 跑 N 次 ffmpeg，而分段页每改一次规则就预览一次
+    （45 段 = 一次下载 + 45 个子进程），预览被拖到几十秒。
+    """
+    from app.services import media_probe
+
+    extracted: list[int] = []
+    real_analyze = media_probe.analyze_video
+
+    def counting_analyze(data, event_points, seek_offset=0.0):  # noqa: ANN001
+        extracted.append(len(event_points))
+        return real_analyze(data, event_points, seek_offset=seek_offset)
+
+    monkeypatch.setattr(media_probe, "analyze_video", counting_analyze)
+
+    reads: list[str] = []
+    real_get = storage.get_object
+
+    def counting_get(object_key: str) -> bytes:
+        reads.append(object_key)
+        return real_get(object_key)
+
+    storage.get_object = counting_get  # type: ignore[method-assign]
+
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    _ok(api.put(_url(version_id, "calibration"), json={"video": {"offset_seconds": 1.0}}))
+
+    first = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    keys = [w["video"]["frame"]["object_key"] for w in first["windows"]]
+    assert extracted == [3], "第一次预览要抽满 3 段"
+    reads.clear()
+
+    # 清掉 payload 缓存，逼服务端真的重算一次预览——这次必须走"对象已存在就复用"
+    splitting._PREVIEW_CACHE.clear()
+    again = _preview(api, version_id, event_start=1.0, event_end=7.0)
+
+    assert extracted == [3], "第二次预览不该再跑 ffmpeg"
+    assert reads == [], "第二次预览不该再下载视频"
+    assert [w["video"]["frame"]["object_key"] for w in again["windows"]] == keys
+    assert all(w["video"]["frame"]["url"] for w in again["windows"]), "复用也要给新的短期 URL"
+
+
 def test_frame_available_false_when_window_outside_video_coverage(api, ready, storage, mp4_bytes) -> None:
     """窗口落在视频覆盖范围外（视频 8s、信号 8s、offset=-4 → 视频只到信号 4s）→ 逐段给原因。"""
     _record, version_id = ready

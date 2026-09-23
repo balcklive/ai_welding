@@ -15,10 +15,17 @@ interface Props {
   /** 该窗口已生成时（任务跑完）的切片对象键，按类型分。 */
   cropKey?: string | null;
   cropUrl?: string | null;
+  /** 真实视频（视频轨已让给胶片条，播放器落到这里）。 */
+  videoUrl?: string | null;
+  /** 视频零点：`t_video = t_signal - offset`，与下方 seek 成对。 */
+  offsetSeconds?: number;
+  onTimeUpdate?: (signalTime: number) => void;
   onOpenKey?: (key: string) => void;
 }
 
-export function SliceDetailPanel({ window, preview, cropKey, cropUrl, onOpenKey }: Props) {
+export function SliceDetailPanel({
+  window, preview, cropKey, cropUrl, videoUrl, offsetSeconds = 0, onTimeUpdate, onOpenKey,
+}: Props) {
   if (!window) {
     return (
       <section className="panel">
@@ -50,6 +57,30 @@ export function SliceDetailPanel({ window, preview, cropKey, cropUrl, onOpenKey 
         </div>
         <span className="studio-dur">{window.duration.toFixed(3)}s</span>
       </div>
+
+      {/* 播放器：把本段播出来核对。**换段即重挂载并 seek 到本段起点**——
+          seek 写 `t_signal - offset`、onTimeUpdate 写回 `currentTime + offset`，两处成对。 */}
+      {videoUrl && (
+        <>
+          <div className="lane-track lane-track-video slice-video">
+            <video
+              key={window.index}
+              className="studio-video"
+              src={videoUrl}
+              controls
+              preload="metadata"
+              onLoadedMetadata={(e) => {
+                e.currentTarget.currentTime = Math.max(0, window.start - offsetSeconds);
+              }}
+              onTimeUpdate={(e) => onTimeUpdate?.(e.currentTarget.currentTime + offsetSeconds)}
+            />
+          </div>
+          <p className="preview-summary slice-video-note">
+            播放器已定位到本段起点（t_signal {window.start.toFixed(3)}s）。样本里存下来的画面
+            是下方那张代表帧，不是播放器当前帧。
+          </p>
+        </>
+      )}
 
       {localTracks.map((track) => {
         const [lo, hi] = trackRange(track);

@@ -716,3 +716,19 @@ button { border: 0; cursor: pointer; }
 .slice-frame { margin:12px 0 0; }
 .slice-frame img { display:block; width:100%; max-width:520px; border-radius:6px; background:#0d2226; }
 .slice-frame figcaption { margin-top:6px; color:#5f7275; font:12px 'DM Mono',monospace; }
+/* 视频轨的胶片条：一段一格，格宽即该段在时间轴上的占比（相邻格缝 = 切片边界）。
+   ponytail: 只按百分比分格，不设最小格宽——设了就得同步滚动整块时间轴（标尺+三条轨），
+   而格宽本来就该诚实地等于时长占比。极密规则（如 18s 上跑 0.1s 步长 = 182 格）会细到看不清，
+   那时再上「最小格宽 + 整体横向滚动」。 */
+.lane-track-film { height:96px; }
+.film-cell { position:absolute; top:0; bottom:0; padding:0; border:0; border-right:1px solid rgba(22,52,61,.35); background:#0d2226; overflow:hidden; cursor:pointer; }
+.film-cell:last-child { border-right:0; }
+.film-cell img { display:block; width:100%; height:100%; object-fit:cover; }
+.film-cell:hover { filter:brightness(1.18); }
+.film-cell.is-selected { box-shadow:inset 0 0 0 2px #8cdbc8; }
+.film-cell-empty { display:grid; place-items:center; width:100%; height:100%; color:#5f7275; background:#eef4f2; font:12px 'DM Mono',monospace; }
+/* 焊缝图片轨：只显示 ROI 那一块——照片按 roi 反算放大倍率与偏移，定位/尺寸都由行内样式给，
+   这里只兜住 Tailwind preflight 的 `img{max-width:100%;height:auto}`（否则 ROI 裁切算不出来）。 */
+.seam-lane-photo { position:absolute; max-width:none; max-height:none; }
+.slice-video { margin:12px 0 0; }
+.slice-video-note { margin:8px 0 0; }

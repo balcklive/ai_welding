@@ -23,7 +23,6 @@ import { defaultDraft, draftKey, draftToRules } from './splitTypes';
 import type { RulesDraft } from './splitTypes';
 
 const VIDEO_EXTS = ['.mp4', '.avi', '.mkv', '.mov', '.webm'];
-const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.bmp'];
 /** §4.5：输入合法且停顿 300ms 后才请求预览，避免每敲一个字符打一次服务端。 */
 const DEBOUNCE_MS = 300;
 
@@ -44,7 +43,6 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
   const [seamImageUrl, setSeamImageUrl] = useState<string | null>(null);
   /** 视频零点（`t_video = t_signal - offset`）：来自该焊缝 v1.0 的标定。 */
   const [videoOffset, setVideoOffset] = useState(0);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const fetchTokenRef = useRef(0);
 
   const { status: jobStatus, progress, result: splitResult, error: jobError } = useJob<SplitResult>(jobId);
@@ -66,15 +64,13 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
         setVersionId(source.id);
         const keys = versions.flatMap((v) => v.object_keys ?? []);
         const videoKey = keys.find((k) => VIDEO_EXTS.some((e) => k.toLowerCase().endsWith(e)));
-        const imageKey = keys.find((k) => IMAGE_EXTS.some((e) => k.toLowerCase().endsWith(e)));
         if (videoKey) {
           getFileUrl(videoKey).then((r) => { if (!cancelled) setVideoUrl(r.url); })
             .catch(() => { if (!cancelled) setVideoUrl(null); });
         }
-        if (imageKey) {
-          getFileUrl(imageKey).then((r) => { if (!cancelled) setSeamImageUrl(r.url); })
-            .catch(() => { if (!cancelled) setSeamImageUrl(null); });
-        }
+        // 焊缝照片的键**不在这条启发式里挑**：ROI 是照着对齐页那张图量的，分段页必须显示
+        // **同一张**，否则框选的位置对不上。权威来源是服务端预览的 `seam_image_projection.object_key`
+        // （见下方 effect）——扩展名启发式可能先撞上对齐产物的关键帧 jpg。
         // 标定只读：拿 offset 供播放器 seek 换算（标定的编辑在对齐页）
         getCalibration(dataId, String(source.id))
           .then((c) => { if (!cancelled) setVideoOffset(c.video.calibrated ? c.video.offset_seconds : 0); })
@@ -116,17 +112,22 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
     return () => clearTimeout(timer);
   }, [dataId, versionId, currentKey, rules, applied?.key, draft.windowSeconds, draft.strideSeconds]);
 
+  // 焊缝照片地址取服务端预览认定的那个键（与对齐页框 ROI 时看的必须是同一张）
+  const seamImageKey = applied?.preview?.timeline.seam_image_projection.object_key ?? null;
+  useEffect(() => {
+    if (!seamImageKey) return;
+    let cancelled = false;
+    getFileUrl(seamImageKey)
+      .then((r) => { if (!cancelled) setSeamImageUrl(r.url); })
+      .catch(() => { if (!cancelled) setSeamImageUrl(null); });
+    return () => { cancelled = true; };
+  }, [seamImageKey]);
+
   const preview = applied?.preview ?? null;
   const stale = Boolean(preview) && applied?.key !== currentKey;
   const fieldError = draft.windowSeconds <= 0 || draft.strideSeconds <= 0 ? '切片时长与步长必须大于 0' : null;
 
-  const onSeek = useCallback((signalTime: number) => {
-    setPlayhead(signalTime);
-    const video = videoRef.current;
-    // 时间轴上的秒是**信号时间**：视频轴时刻 = 信号时间 − offset（钳 0，不给 currentTime 负值）
-    if (video) video.currentTime = Math.max(0, signalTime - videoOffset);
-  }, [videoOffset]);
-
+  // 视频轴 → 信号轴的换回（`+ offset`）由详情面板的播放器驱动游标；反向 seek 也在那边
   const onTimeUpdate = useCallback((signalTime: number) => setPlayhead(signalTime), []);
 
   const handleCreate = () => {
@@ -180,14 +181,10 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
         {preview ? (
           <MultimodalTimeline
             preview={preview}
-            videoUrl={videoUrl}
             seamImageUrl={seamImageUrl}
-            videoRef={videoRef}
             selectedIndex={selectedIndex}
             playhead={playhead}
             onSelect={setSelectedIndex}
-            onSeek={onSeek}
-            onTimeUpdate={onTimeUpdate}
           />
         ) : (
           <section className="panel alignment-board">
@@ -224,6 +221,9 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
           preview={preview}
           cropKey={generatedCropKey}
           cropUrl={null}
+          videoUrl={videoUrl}
+          offsetSeconds={videoOffset}
+          onTimeUpdate={onTimeUpdate}
           onOpenKey={(key) => {
             getFileUrl(key).then((r) => window.open(r.url, '_blank', 'noopener,noreferrer')).catch(() => undefined);
           }}

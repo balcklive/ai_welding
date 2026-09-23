@@ -70,6 +70,10 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
   ——每段都必须有自己的帧，回归"第 25 段起没有代表帧"）、窗口落在覆盖范围外时
   "整段不可用"与"仅中点越界"两种原因分开。该文件另加**逐用例清 `splitting._PREVIEW_CACHE`**
   的 autouse fixture（缓存键含 version_id，各用例的库都是新的、id 从 1 重来 → 会跨用例误命中）。
+  **代表帧复用（2026-09-23）**：`test_preview_reuses_stored_frames_instead_of_rerunning_ffmpeg`
+  ——包一层 `media_probe.analyze_video` 与 `storage.get_object` 计数，清掉 `_PREVIEW_CACHE` 后
+  再预览一次，断言 ffmpeg **没被再调用**、视频**没被再下载**、对象键一致且 URL 是新的。
+  关掉 `_object_exists` 的复用判定这条就会失败（`assert [3, 3] == [3]`），是它存在的意义。
 - `test_splitting_v3.py`（**2026-09-22 分段 v3 纯函数，不连 DB**）：`build_time_windows`（默认 2/2、重叠、尾片 `drop`/`keep`、**刚好整除时 `keep` 不多出零长尾片**、`ceil` 派生采样点、非法输入报错）；`map_window_to_modalities`（offset **正负号**、整段落在视频外记 `available=false` 不伪造帧号、部分重叠钳到 0、首/中/末帧只留覆盖范围内的、ROI 弧长投影、无 ROI 不可用带原因、manifest 的 `schema_version`/`source.mapping_hash`）；`preview_token`（往返、**改一字节即失效**、过期、格式错）；`rules_hash`/`mapping_hash` 稳定性与内容敏感性。
 - `test_sample_annotation.py`（**2026-09-22 分段样本段级标注**）：服务层 + `/split-tasks/{id}/annotation-samples` 端点。
   内存 SQLite + StaticPool + 真实 TestClient + 依赖覆盖 + 假 Storage + `executor.SessionLocal` 指到测试引擎。

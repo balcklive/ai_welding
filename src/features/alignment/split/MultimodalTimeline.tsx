@@ -4,7 +4,6 @@
  * 三条轨道（时序 / 视频 / 焊缝图片）共用**同一个横轴**，边界线贯穿全部轨道——
  * 这是"确认不同模态是否落入同一时间窗"的前提（§1 问题 3）。所有边界都来自服务端成功预览。
  */
-import type { Ref } from 'react';
 import type { SplitPreview } from '../../../api/types';
 import { SeamImageLane } from './SeamImageLane';
 import { SignalTimelineLane } from './SignalTimelineLane';
@@ -13,21 +12,16 @@ import { fmtRange, pctOf } from './splitTypes';
 
 interface Props {
   preview: SplitPreview;
-  videoUrl: string | null;
   seamImageUrl: string | null;
-  videoRef: Ref<HTMLVideoElement>;
   selectedIndex: number | null;
   playhead: number;
   onSelect: (index: number) => void;
-  onSeek: (signalTime: number) => void;
-  onTimeUpdate: (signalTime: number) => void;
 }
 
 const RULER_TICKS = 8;
 
 export function MultimodalTimeline({
-  preview, videoUrl, seamImageUrl, videoRef,
-  selectedIndex, playhead, onSelect, onSeek, onTimeUpdate,
+  preview, seamImageUrl, selectedIndex, playhead, onSelect,
 }: Props) {
   const duration = preview.timeline.duration;
   const video = preview.modalities.video ?? { available: false, calibrated: false, reason: null };
@@ -80,24 +74,18 @@ export function MultimodalTimeline({
         selected={selectedRange}
       />
       <VideoTimelineLane
-        videoUrl={videoUrl}
-        videoRef={videoRef}
+        windows={preview.windows}
         duration={duration}
-        offsetSeconds={selected?.video?.offset_seconds ?? 0}
         calibrated={Boolean(video.calibrated)}
         reason={video.reason ?? null}
-        boundaries={boundaries}
-        thumbnailTimes={preview.timeline.video_thumbnail_times}
-        selected={selectedRange}
-        onSeek={onSeek}
-        onTimeUpdate={onTimeUpdate}
+        selectedIndex={selectedIndex}
+        onSelect={onSelect}
       />
       <SeamImageLane
         projection={preview.timeline.seam_image_projection}
+        windows={preview.windows}
         imageUrl={seamImageUrl}
-        duration={duration}
-        boundaries={boundaries}
-        selected={selectedRange}
+        selectedIndex={selectedIndex}
       />
 
       {/* 切片卡片：与轨道上的边界是"同一切片的两种入口"（§4.4） */}

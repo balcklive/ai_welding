@@ -652,7 +652,10 @@ def attach_preview_frames(
     都是在骗人。**窗口有多少就抽多少**（不设段数上限）：视频覆盖范围内的每一段都要有自己的帧，
     按段截断等于让后半段凭空少一个模态。代价是一次预览要下视频 + 跑 N 次 ffmpeg。
     ① 对象键按（焊缝, 映射哈希, 段号）复用，重复预览覆盖同一批对象、不累积；
-    ② 给的是**短期预签名 URL**，二进制不进 JSON。
+    ② 给的是**短期预签名 URL**，二进制不进 JSON；
+    ③ **已有对象直接复用，不再重抽**——分段页每改一次规则就预览一次，全量重抽（45 段 = 一次
+    下视频 + 45 次进程）会把页面拖到几十秒；对象既已按（映射哈希, 段号）落定，重抽只会得到
+    同一张图。
     任一段抽不到/传不上去，就把该段的 `frame` 置不可用并写原因，**不伪造图片**。
     """
     from app.services import media_probe  # 延迟导入：ffmpeg 二进制探测较慢，预览非必然用到
@@ -672,6 +675,18 @@ def attach_preview_frames(
         return payload
 
     offset = float(video.get("offset_seconds") or 0.0)
+    digest = mapping_hash(mapping)
+    pending: list[tuple] = []
+    for window, row in kept:
+        key = _preview_frame_key(weld_id, digest, window.index)
+        if _object_exists(storage, key):
+            row["video"]["frame"]["object_key"] = key
+            row["video"]["frame"]["url"] = storage.presign_get(key, expires=PREVIEW_FRAME_EXPIRES_SECONDS)
+        else:
+            pending.append((window, row))
+    if not pending:
+        return payload  # 全部命中：不下视频、不跑 ffmpeg
+
     try:
         data = storage.get_object(video_key)
         if len(data) > media_probe.MAX_VIDEO_PROBE_BYTES:
@@ -681,24 +696,24 @@ def attach_preview_frames(
             )
         _meta, frames = media_probe.analyze_video(
             data,
-            [(str(window.index), float(row["video"]["frame"]["t_signal"])) for window, row in kept],
+            [(str(window.index), float(row["video"]["frame"]["t_signal"])) for window, row in pending],
             seek_offset=offset,
         )
     except Exception as exc:  # noqa: BLE001 - 抽帧失败只影响代表帧，预览其余部分照常
         logger.warning("Preview video frame extraction failed for {}: {}", weld_id, exc)
-        for _window, row in kept:
+        # 只改这次真的没抽到的段：命中复用的那些帧不能被一次失败连坐清掉
+        for _window, row in pending:
             row["video"]["frame"] = {"available": False, "reason": f"预览抽帧失败：{exc}"}
         return payload
 
     extracted = {str(frame["event"]): frame for frame in frames}
-    digest = mapping_hash(mapping)
-    for window, row in kept:
+    for window, row in pending:
         frame = row["video"]["frame"]
         got = extracted.get(str(window.index))
         if got is None:
             row["video"]["frame"] = {"available": False, "reason": "该时刻未能抽出视频帧"}
             continue
-        key = f"processed/{weld_id}/split-preview/{digest}/{window.index:06d}.jpg"
+        key = _preview_frame_key(weld_id, digest, window.index)
         try:
             storage.upload_stream(key, io.BytesIO(got["bytes"]), len(got["bytes"]), "image/jpeg")
             frame["object_key"] = key
@@ -707,6 +722,23 @@ def attach_preview_frames(
             logger.warning("Preview frame upload failed for {}#{}: {}", weld_id, window.index, exc)
             row["video"]["frame"] = {"available": False, "reason": f"代表帧上传失败：{exc}"}
     return payload
+
+
+def _preview_frame_key(weld_id: str, digest: str, index: int) -> str:
+    """预览代表帧的对象键：按（焊缝, 映射哈希, 段号）稳定，所以能当"已抽过"的判据。"""
+    return f"processed/{weld_id}/split-preview/{digest}/{index:06d}.jpg"
+
+
+def _object_exists(storage, key: str) -> bool:
+    """对象是否已存在且非空（`stat_object` 只取元数据，不拉字节）。
+
+    判定不了（存储不支持 stat / 网络抖动）一律按"不存在"处理——多抽一次只是慢，
+    拿一张不存在的图的 URL 去渲染是错。长度为 0 的对象当不存在：空 JPEG 本来就渲染不出来。
+    """
+    try:
+        return storage.stat_object(key) > 0
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _preview_modalities(mapping: dict) -> dict:

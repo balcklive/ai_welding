@@ -50,7 +50,14 @@ test('预览接口明确提供代表帧地址：短期 URL + 逐段对象键，�
   assert.match(splittingPy, /PREVIEW_FRAME_EXPIRES_SECONDS = 3600/);
   assert.match(analysisPy, /splitting\.attach_preview_frames\(/);
   // 对象键按（焊缝, 映射哈希, 段号）复用：重复预览覆盖同一批对象，不无限累积
-  assert.match(splittingPy, /split-preview\/\{digest\}\/\{window\.index:06d\}\.jpg/);
+  assert.match(splittingPy, /def _preview_frame_key\(/);
+  assert.match(splittingPy, /split-preview\/\{digest\}\/\{index:06d\}\.jpg/);
+  // 键只有一处构造：写入与"已抽过"判定必须是同一个键，否则复用永远不命中
+  const keyCalls = splittingPy.match(/_preview_frame_key\(weld_id, digest, window\.index\)/g) ?? [];
+  assert.equal(keyCalls.length, 2, '拼接与判定都要走 _preview_frame_key');
+  // 已落盘的代表帧直接复用：不再下视频、不重跑 ffmpeg（改一次规则就全量重抽会把预览拖死）
+  assert.match(splittingPy, /if _object_exists\(storage, key\)/);
+  assert.match(splittingPy, /def _object_exists\(/);
   // **不设段数上限**：视频覆盖范围内有多少段就抽多少段，不许按段截断（旧实现的
   // `PREVIEW_FRAME_LIMIT` 会让第 25 段起没有代表帧，那等于凭空少一个模态）
   assert.doesNotMatch(splittingPy, /PREVIEW_FRAME_LIMIT/);
