@@ -74,6 +74,16 @@ test('段级结论：normal 清空类别，defect 必须选类别才能提交', 
   assert.match(railSource, /label: 'normal', categoryId: null/);
 });
 
+test('入口默认只进最近一次成功的分段任务，历史任务折叠', () => {
+  // 服务端按 SplitTask.id desc 返回，首个即最近一次成功——**不在前端自己排序**
+  assert.match(workspaceSource, /const latest = tasks\[0\] \?\? null/);
+  assert.match(workspaceSource, /const history = tasks\.slice\(1\)/);
+  // 历史任务默认收起：卡片只在展开后才渲染（否则"折叠"只是视觉上的）
+  assert.match(workspaceSource, /aria-expanded=\{showHistory\}/);
+  assert.match(workspaceSource, /\{showHistory && \(/);
+  assert.match(workspaceSource, /历史分段任务（\{history\.length\}）/);
+});
+
 test('词表由系统设置维护，工作台只读（不本地增删）', () => {
   // 词表读的是标注侧只读端点；增删改只在设置页（settings/options/defect_category）
   assert.match(apiSource, /'\/segment-annotation\/categories'/);

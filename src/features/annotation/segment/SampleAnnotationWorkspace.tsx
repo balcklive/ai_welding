@@ -22,7 +22,7 @@
  * 20 段的宽时间轴（每格 ~65px，看得清图），打标在批次里做。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Crosshair, Undo2 } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Crosshair, Undo2 } from 'lucide-react';
 import { getSplitSample } from '../../../api/analysis';
 import { ApiError } from '../../../api/client';
 import { getFileUrl } from '../../../api/files';
@@ -88,6 +88,8 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
   const [tasksLoading, setTasksLoading] = useState(true);
   const [tasksError, setTasksError] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
+  /** 入口默认只显示最近一次成功的分段任务，历史任务折叠（同一焊缝的另一套窗口规则）。 */
+  const [showHistory, setShowHistory] = useState(false);
 
   const [timeline, setTimeline] = useState<AnnotationTimeline | null>(null);
   const [loading, setLoading] = useState(false);
@@ -330,6 +332,9 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
   }
 
   if (!taskId) {
+    // 服务端按 `SplitTask.id desc` 返回，首个就是最近一次成功的那个
+    const latest = tasks[0] ?? null;
+    const history = tasks.slice(1);
     return (
       <>
         <PageIntro
@@ -350,26 +355,39 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
               任务成功后再回到这里做段级标注。
             </p>
           )}
-          {tasks.length > 0 && (
-            <div className="segment-task-list">
-              {tasks.map((task) => (
-                <button key={task.task_id} className="segment-task-card" onClick={() => setTaskId(task.task_id)}>
-                  <div>
-                    <strong>{task.task_id}</strong>
-                    <small>
-                      {task.version_no} · {task.sample_count} 段 · 窗口 {task.window_seconds ?? '—'}s / 步长 {task.stride_seconds ?? '—'}s
-                      {task.effective_range ? ` · 有效 ${fmtRange(task.effective_range[0], task.effective_range[1])}` : ''}
-                    </small>
-                  </div>
-                  <div className="segment-task-progress">
-                    <span>{task.progress.annotated}/{task.progress.total}</span>
-                    <StatusPill tone={task.progress.progress >= 100 ? 'green' : task.progress.annotated > 0 ? 'orange' : 'muted'}>
-                      {task.progress.progress >= 100 ? '已完成' : `${task.progress.progress}%`}
-                    </StatusPill>
-                  </div>
-                </button>
-              ))}
+          {/* 默认只进**最近一次成功**的分段任务。服务端按 `SplitTask.id desc` 返回，所以
+              `tasks[0]` 就是它。历史任务是同一焊缝用**别的规则**切出来的另一批样本——
+              两批混着标，数据集构建时会拿到两套口径的样本，所以默认收起来。 */}
+          {latest && (
+            <div className="segment-task-latest">
+              <span className="segment-task-latest-tag">最近一次成功</span>
+              <TaskCard task={latest} onOpen={setTaskId} />
             </div>
+          )}
+
+          {history.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="segment-history-toggle"
+                aria-expanded={showHistory}
+                onClick={() => setShowHistory((value) => !value)}
+              >
+                {showHistory ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                历史分段任务（{history.length}）
+              </button>
+              {showHistory && (
+                <>
+                  <p className="preview-summary">
+                    这些是同一焊缝按**别的窗口规则**切出来的另一批样本。默认不进——两批混标会让
+                    数据集出现两套口径的样本；确实要标再展开。
+                  </p>
+                  <div className="segment-task-list">
+                    {history.map((task) => <TaskCard key={task.task_id} task={task} onOpen={setTaskId} />)}
+                  </div>
+                </>
+              )}
+            </>
           )}
         </section>
       </>
@@ -569,6 +587,28 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
         </>
       )}
     </>
+  );
+}
+
+/** 入口里的一张分段任务卡（最近一次与历史任务共用同一张）。 */
+function TaskCard({ task, onOpen }: { task: SegmentAnnotatableTask; onOpen: (taskId: string) => void }) {
+  return (
+    <button type="button" className="segment-task-card" onClick={() => onOpen(task.task_id)}>
+      <div>
+        <strong>{task.task_id}</strong>
+        <small>
+          {task.version_no} · {task.sample_count} 段 · 窗口 {task.window_seconds ?? '—'}s / 步长 {task.stride_seconds ?? '—'}s
+          {task.effective_range ? ` · 有效 ${fmtRange(task.effective_range[0], task.effective_range[1])}` : ''}
+          {task.finished_at ? ` · ${task.finished_at.slice(0, 10)}` : ''}
+        </small>
+      </div>
+      <div className="segment-task-progress">
+        <span>{task.progress.annotated}/{task.progress.total}</span>
+        <StatusPill tone={task.progress.progress >= 100 ? 'green' : task.progress.annotated > 0 ? 'orange' : 'muted'}>
+          {task.progress.progress >= 100 ? '已完成' : `${task.progress.progress}%`}
+        </StatusPill>
+      </div>
+    </button>
   );
 }
 
