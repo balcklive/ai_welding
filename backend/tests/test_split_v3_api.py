@@ -29,6 +29,7 @@ from sqlmodel import Session, SQLModel, select
 
 from app.api.deps import get_current_user
 from app.core.db import get_session
+from app.core.seed import seed_reference_data
 from app.main import app
 from app.models import User
 from app.models.analysis import Sample, SplitTask
@@ -727,3 +728,131 @@ def test_frame_available_false_when_window_outside_video_coverage(api, ready, st
     assert "覆盖范围" in middle["video"]["frame"]["reason"]
     assert last["video"]["available"] is False
     assert "覆盖范围" in last["video"]["frame"]["reason"]
+
+
+# ── 标注总览时间轴（2026-09-23） ──────────────────────────────────────
+
+
+def _annotate(api, job_uid: str, sample_id: int, label: str, category_id: int | None = None) -> dict:
+    body: dict = {"label": label}
+    if category_id is not None:
+        body["defect_category_id"] = category_id
+    return _ok(api.put(f"/api/v1/split-tasks/{job_uid}/annotation-samples/{sample_id}", json=body))
+
+
+def _annotated_task(api, db_session, run_job, version_id) -> SplitTask:
+    """标定（视频 offset + 图片 ROI）→ 预览 → 建任务 → 跑完，返回落库后的任务行。"""
+    _ok(api.put(_url(version_id, "calibration"), json={
+        "video": {"offset_seconds": 0.5},
+        "seam_image": {"roi": {"x": 10, "y": 10, "w": 300, "h": 60}},
+    }))
+    preview = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    created = _ok(api.post(_url(version_id, "split-tasks"), json={"preview_token": preview["preview_token"]}))
+    return _run_split(db_session, run_job, created["job_id"])
+
+
+def _job_uid(db_session, task: SplitTask) -> str:
+    from app.models.jobs import Job
+
+    job = db_session.exec(select(Job).where(Job.id == task.job_id)).first()
+    assert job is not None
+    return job.job_uid
+
+
+def test_annotation_timeline_covers_whole_task(api, ready, db_session, run_job, storage, mp4_bytes) -> None:
+    """标注页主视图一次拿全：全部窗口 + 标注态 + 每段自己的帧/切片 URL + 统一轴分层数据。
+
+    三条防回归口径：
+    ① 窗口来自**已落库的 `Sample`**（不是按规则重算），顺序按时间窗——标的一定是切出来的那一批；
+    ② 媒体 URL 只认 manifest 里的**类型化键**（`video.frame.object_key` / `seam_image.crop_key`），
+       各段互不相同，不按对象键后缀去猜、也不拿邻段的图顶替；
+    ③ 时间轴分层由**与分段页同一段代码**（`build_timeline_layers`）产出，所以能和预览逐字段对齐。
+    """
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+
+    from app.services import sample_annotation
+
+    seed_reference_data(db_session)
+    pore = next(c for c in sample_annotation.list_categories(db_session) if c["value"] == "气孔")
+
+    samples = db_session.exec(
+        select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.start_time)
+    ).all()
+    assert len(samples) == 3
+    _annotate(api, job_uid, samples[1].id, "defect", pore["id"])
+
+    data = _ok(api.get(f"/api/v1/split-tasks/{job_uid}/annotation-timeline"))
+
+    assert data["split_task_id"] == task.id
+    assert data["version_id"] == version_id
+    assert data["progress"]["total"] == 3 and data["progress"]["defect"] == 1
+    assert data["warnings"] == []
+
+    rows = data["windows"]
+    assert [row["sample_id"] for row in rows] == [s.id for s in samples]
+    assert [row["start"] for row in rows] == [1.0, 3.0, 5.0]
+    assert [row["annotated"] for row in rows] == [False, True, False]
+    assert rows[1]["label"] == "defect" and rows[1]["defect_category_name"] == "气孔"
+    assert rows[1]["note"] is None
+
+    # ② 每段自己的帧与切片：互不相同、都是签名 URL
+    frames = [row["frame_url"] for row in rows]
+    crops = [row["crop_url"] for row in rows]
+    assert all(frames) and len(set(frames)) == 3, frames
+    assert all(crops) and len(set(crops)) == 3, crops
+    for sample, row in zip(samples, rows):
+        assert sample.meta["video"]["frame"]["object_key"] in row["frame_url"]
+        assert sample.meta["seam_image"]["crop_key"] in row["crop_url"]
+
+    # ③ 与预览同一段代码产出：时长与通道列表逐字段一致
+    preview = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    assert data["timeline"]["duration"] == preview["timeline"]["duration"]
+    assert [t["id"] for t in data["timeline"]["signal"]["tracks"]] == [
+        t["id"] for t in preview["timeline"]["signal"]["tracks"]
+    ]
+    assert data["timeline"]["seam_image_projection"]["available"] is True
+
+    # 完整 manifest 不进响应（几百段会撑爆载荷）
+    assert "crop_key" not in json.dumps(data, ensure_ascii=False)
+    assert len(json.dumps(data)) < 200_000
+
+
+def test_annotation_timeline_keeps_windows_when_signal_is_unreadable(
+    api, ready, db_session, run_job, storage, mp4_bytes, monkeypatch
+) -> None:
+    """信号读不回来时**不假装有波形**：窗口与标注态照常给，`timeline=null` + 写明原因。
+
+    缺失模态只标记不阻断（设计 §4 硬约束②）——没有波形不该让整条焊缝标不了。
+    """
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+
+    def _boom(*_args, **_kwargs):
+        raise splitting.SplitInputError("测试：真实时序信号读取失败")
+
+    monkeypatch.setattr(splitting, "load_input", _boom)
+    data = _ok(api.get(f"/api/v1/split-tasks/{job_uid}/annotation-timeline"))
+
+    assert data["timeline"] is None
+    assert len(data["warnings"]) == 1 and "统一时间轴波形不可用" in data["warnings"][0]
+    assert [row["start"] for row in data["windows"]] == [1.0, 3.0, 5.0], "窗口不该因波形缺失而消失"
+    assert all(row["frame_url"] for row in data["windows"]), "媒体 URL 不受波形缺失影响"
+
+
+def test_annotation_timeline_rejects_oversized_task(api, ready, db_session, run_job, storage, mp4_bytes, monkeypatch) -> None:
+    """段数超过上限 → 明确报错，**不静默截断**（截断会让人以为焊缝只有那么多段）。"""
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    task = _annotated_task(api, db_session, run_job, version_id)
+    job_uid = _job_uid(db_session, task)
+
+    from app.api.v1 import sample_annotations
+
+    monkeypatch.setattr(sample_annotations, "MAX_TIMELINE_WINDOWS", 2)
+    payload = api.get(f"/api/v1/split-tasks/{job_uid}/annotation-timeline").json()
+    assert payload["code"] == 40000 and "超过标注时间轴上限" in payload["message"]

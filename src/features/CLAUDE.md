@@ -10,7 +10,7 @@
 - `validation/`：数据管理·数据核验（15 项规则）。
 - `versions/`：`VersionDetailDrawer` 版本详情抽屉（数据版本 / 数据集版本两种 mode；T1 已改称呼）。
 - `analysis/`：分析与标注·起收弧识别（`AdvancedWeldAnalysis` + 六种图表 + `signals/chartData` 演示坐标系工具）。
-- `annotation/`：分析与标注·数据标注（图像/时序/视频三模式，基于 Annotorious）+ `annotation/segment/`（**分段样本段级标注工作台**，2026-09-22，路由 `analysis/sample-annotation`：一个 v3 样本一个主结论「正常 / 缺陷 + 主缺陷类别」，三模态共用该样本时间窗）。
+- `annotation/`：分析与标注·数据标注（图像/时序/视频三模式，基于 Annotorious）+ `annotation/segment/`（**分段样本段级标注工作台**，2026-09-22，路由 `analysis/sample-annotation`：一个 v3 样本一个主结论「正常 / 缺陷 + 主缺陷类别」，三模态共用该样本时间窗。**2026-09-23 改为总览打标流**——整条焊缝一条统一时间轴（全局条 + 20 窗批次 + 四信号泳道 + 焊缝图片带 + 视频帧胶片条 + 标注行），结论落在窗口列上）。
 - `alignment/`：分析与标注·多模态对齐（`AlignmentWorkspace`，标定层）+ `alignment/split/`（样本分段工作台 v3，独立组件树）。
 - `models/`：模型中心（训练数据准备/模型资产/新建训练/测试评估/推理验证）。
 - `features/`：分析与标注·特征提取（`FeatureExtractionPage`）。

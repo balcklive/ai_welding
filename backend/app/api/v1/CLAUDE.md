@@ -244,8 +244,18 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `DELETE …/annotation-samples/{sample_id}`（撤销）、
     `GET …/annotation-export`（版本化导出，顶层 `schema_version`）、
     `GET /segment-annotation/categories`（主缺陷词表只读；`include_inactive=1` 含停用项）。
+  - `GET …/annotation-timeline`（**2026-09-23，标注工作台主视图**）：一次给全该任务的
+    **全部窗口 + 标注态 + 每段的帧/切片短期 URL + 统一轴分层数据**（`timeline`）。窗口直接读
+    **已落库的 `Sample`**（不按规则重算——标的一定是切出来的那一批），时间轴分层由
+    `splitting.build_timeline_layers` 产出（**与分段页同一段代码**，两页边界不会漂移）。
+    **不下载视频、不跑 ffmpeg、不写产物**；全量给的是索引与媒体地址，不是媒体字节。
+    三条硬口径：① 媒体 URL **只认 manifest 的类型化键**（`meta.video.frame.object_key` /
+    `meta.seam_image.crop_key`），不按 `object_keys` 后缀猜（那是 Job 的写入顺序不是契约）；
+    ② 波形读不回来时 `timeline=null` + `warnings` 写明原因，**窗口与标注态照常返回**（缺失模态
+    只标记不阻断）；③ 段数超 `MAX_TIMELINE_WINDOWS`(2000) **明确报错不静默截断**。
   - **样本的三模态细节不在这里**——复用既有的 `GET /split-tasks/{task_id}/samples/{sample_id}`
     （§3.4）：列表只给导航/进度字段，媒体字节按对象键走预签名，各有其主人。
+    **逐段详情仍走它**（`annotation-timeline` 给的是总览，不给该窗的局部 `time_series`）。
   - **前置条件**：非 v3（`rules_version<=2`）或未成功完成的分段任务一律 `40000`；样本不属于该任务 `40401`。
   - **归属**：沿用**分段域**的 owner 口径（`forbid_unless_record_owned`，同 `POST …/split-tasks`）——
     与 `analysis_annotations.py` 那条旧标注线刻意不同（后者没有 owner 校验）。

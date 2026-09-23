@@ -98,6 +98,11 @@
   - `build_preview(...)` / `sign_preview_token` / `verify_preview_token`：预览响应与**短期令牌**
     （HMAC-SHA256 无状态，15 分钟）。token 自带完整规则 + 规则哈希 + 映射哈希 + 有效区间，
     客户端改不了——这是"所见即所得"的技术基础（§5.4）。进程内 60s 预览缓存（§6.4）。
+  - `build_timeline_layers(bundle, mapping, start, end)`（**2026-09-23 由 `_preview_timeline` 转公开**）：
+    统一时间轴的分层数据——事件、降采样时序（≤`_PREVIEW_SIGNAL_POINTS` 点/轨）、视频缩略图
+    时间点、焊缝图片投影。**分段页（`build_preview`）与标注页（`annotation-timeline`）共用它，
+    两页看到的时间轴必须由同一段代码产出**，否则"标注时看到的边界"会与"预览时的"漂移。
+    `start`/`end` 只决定波形取哪一段，调用方各自给（预览给有效区间，标注给样本首尾）。
   - `validate_rules(...)`：秒级规则校验。**按帧入口已废弃**（§2.3），故 `resolve_rule_seconds`
     已删除；`event_bounds`/`build_windows` 改名并升级为上表的函数。
   历史（`rules_version <= 2`）口径的读取在 `jobs/split.py::_run_legacy`，本模块只负责 v3。

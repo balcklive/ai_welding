@@ -558,7 +558,7 @@ def build_preview(
             _preview_window(w, mapping, bundle.sample_rate, weld_id, version_id)
             for w in windows
         ],
-        "timeline": _preview_timeline(bundle, mapping, start, end),
+        "timeline": build_timeline_layers(bundle, mapping, start, end),
         "modalities": _preview_modalities(mapping),
         "warnings": preview_warnings(mapping, rules, windows),
     }
@@ -584,8 +584,13 @@ def _preview_window(
     }
 
 
-def _preview_timeline(bundle, mapping: dict, start: float, end: float) -> dict:
-    """统一时间轴的分层数据（设计 §5.3）：事件、降采样时序、视频缩略图时间点、图片投影。"""
+def build_timeline_layers(bundle, mapping: dict, start: float, end: float) -> dict:
+    """统一时间轴的分层数据（设计 §5.3）：事件、降采样时序、视频缩略图时间点、图片投影。
+
+    公开给两处消费：分段页的 `split-preview`，以及标注页的 `annotation-timeline`——
+    两页看到的时间轴必须由**同一段代码**产出，否则"标注时看到的边界"会与"预览时的边界"漂移。
+    `start`/`end` 只决定波形取哪一段，调用方各自给（预览给有效区间，标注给样本的首尾）。
+    """
     fs = int(bundle.sample_rate)
     i0 = max(0, math.ceil(start * fs))
     i1 = min(

@@ -317,6 +317,7 @@
 | 方法 | 路径 | 功能 | 关键参数 / 请求体 |
 |---|---|---|---|
 | GET | `/api/v1/welds/{weld_id}/segment-annotation-tasks` | 该焊缝**可进入标注**的分段任务（已完成 + v3），带标注进度 | 需登录；response `{items: [{task_id(job_uid), version_no, sample_count, window_seconds, stride_seconds, effective_range, finished_at, progress{total,annotated,unannotated,progress}}]}`；焊缝不存在 40401 |
+| GET | `/api/v1/split-tasks/{task_id}/annotation-timeline` | **标注总览时间轴**（工作台主视图，2026-09-23）：一次给全部窗口 + 标注态 + 每段的帧/切片短期 URL + 统一轴分层数据 | response `{task_id, split_task_id, version_id, rules, progress, timeline, windows[], warnings[]}`；`windows[]` 行含 `{sample_id, index, start, end, annotated, label, defect_category_name, note, frame_url, crop_url, signal/video/seam_image{available,calibrated,excluded,reason,…}}`；`timeline` 与 `split-preview` 的 `timeline` **同形同源**（`splitting.build_timeline_layers`）；段数 > `MAX_TIMELINE_WINDOWS`(2000) → 40000（**不静默截断**） |
 | GET | `/api/v1/split-tasks/{task_id}/annotation-samples` | 可标注样本列表（分页，按时间窗排序）**+ 进度** | query `page`, `page_size`(≤200，默认 50), `filter`(`all`/`unannotated`)；行只含 `{id, frame_no, start_time, end_time, annotated, label, defect_category_name}`——**不含 `meta`/媒体键**；`progress.defect_distribution` 给缺陷分布 |
 | GET | `/api/v1/segment-annotation/categories` | 主缺陷词表（供工作台渲染候选） | query `include_inactive`(1 时含已停用项，供历史标注显示)；response `{categories:[{id,value,active,sort_order}], schema_version}` |
 | GET | `/api/v1/split-tasks/{task_id}/annotation-samples/{sample_id}` | 单样本的当前结论 | 未标注时 `annotation=null`（**不是 404**）；样本不属于该任务 → 40401 |
@@ -324,6 +325,13 @@
 | DELETE | `/api/v1/split-tasks/{task_id}/annotation-samples/{sample_id}` | 撤销结论（回到未标注） | 本来就没有标注 → 40401 |
 | GET | `/api/v1/split-tasks/{task_id}/annotation-export` | 版本化导出（数据集构建消费的输入，**不含媒体字节**） | response 顶层 `schema_version`(=1) + `label_vocabulary` + `items[]`（未标注样本也在，`label=null`） |
 
+> **`annotation-timeline` 的三条口径（2026-09-23）**：
+> ① 窗口直接读**已落库的 `Sample`**（不按规则重算）——标注的一定是切出来的那一批；
+> ② 媒体 URL **只认 manifest 的类型化键**（`meta.video.frame.object_key` / `meta.seam_image.crop_key`），
+> 取不到即 `null`，**不按 `object_keys` 后缀猜**（那是分段 Job 的写入顺序，不是契约）；
+> ③ 波形读不回来时 `timeline=null` + `warnings[]` 写明原因，**窗口与标注态照常返回**——缺失模态只
+> 标记不阻断。该端点**不下载视频、不跑 ffmpeg、不写任何产物**，全量给的是索引与媒体地址而非字节。
+>
 > **`task_id` 寻址**：与 §3.4 的切分端点一致，兼容 `job_uid` 与 `split_tasks` 表 DB id；
 > 前端一律用创建分段任务时拿到的 `job_id`（= `job_uid`）。
 >

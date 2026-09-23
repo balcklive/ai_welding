@@ -1,65 +1,86 @@
 /**
- * 分段样本标注工作台（段级分类，2026-09-22）。
+ * 分段样本标注工作台（段级分类，2026-09-22；**2026-09-23 改为总览打标流**）。
  *
- * 一期范围：**只面向已完成且 `rules_version=3` 的分段任务**。一个标注对象就是一个
- * `Sample`（一个时间窗），每段只有**一个主结论**：`normal` / `defect`（+ 主缺陷类别）。
- * 不做框、点、掩膜，也不做两级精度——旧的 `analysis/annotation` 页仍负责那套几何标注。
+ * 一期范围没变：一个标注对象就是一个 `Sample`（一个时间窗），每窗只有**一个主结论**
+ * （`normal` / `defect` + 主缺陷类别），不做框 / 点 / 掩膜，也不做两级精度。
  *
- * 关键约定：
- * - 三个模态（时序 / 视频 / 焊缝图片）**共用同一个 Sample 的时间窗**：屏幕上不存在"各模态
- *   各自的时间轴"，窗口起止一律取 `sample.start_time`/`end_time`（服务端切分时定下）。
- * - 样本列表**分页拉取**（每页 50），上一段/下一段在页边界自动翻页——不把整个任务的
- *   切片灌进一次响应，也不在前端缓存全量。
- * - 模态缺失（未标定 / 无视频 / 图片不可用）**如实显示原因，不阻断标注**：缺陷结论来自
- *   人工判断，不依赖某个模态是否可用。
- * - 词表（主缺陷类别）的增删改在「系统设置 → 分段样本缺陷词表」，这里只读；历史标注显示的是
- *   **写入当时的名称快照**，不回查词表去"修正"。
+ * **改的是"怎么看、怎么标"**。旧版是"左列表选一段 → 右栏看一段 → 表单标一段"，屏幕上永远
+ * 只有一段。现在是一条**整条焊缝的统一时间轴**，纵向叠：4 条信号泳道 → 焊缝图片带 →
+ * 视频帧胶片条 → 标注行，窗口竖线贯穿全部泳道，结论直接落在窗口列上。这与分段页
+ * （`features/alignment/split`）是同一个视觉母题，用的是同一份服务端时间轴。
+ *
+ * 三条关键约定（前两条是设计文档 §4 的硬约束，第三条是本次新增的口径）：
+ * - 三模态**共用同一个 `Sample` 时间窗**：屏幕上不存在"各模态各自的时间轴"，窗口起止一律
+ *   取服务端的 `start_time`/`end_time`。
+ * - 模态缺失（未标定 / 无视频 / 图片不可用）**如实显示原因，不阻断标注**。
+ * - **全量的是索引，不是媒体**：窗口索引、标注态、媒体地址由 `annotation-timeline` 一次给全
+ *   （几百段的元信息很轻），但**只有当前批次的图会挂 `<img>`**（`loading="lazy"`），
+ *   批次之外不渲染任何切片——这才对得起"不把整个任务的切片灌进前端"那条约束。
+ *
+ * 为什么按批横铺而不是一屏铺满：一条焊缝 90~200 段，全铺时每格只有十几像素、看不见帧图。
+ * 所以顶部留一条**全局条**（每窗一格色块，看进度与缺陷分布、点击跳批），下面是当前批次
+ * 20 段的宽时间轴（每格 ~65px，看得清图），打标在批次里做。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Save, Trash2, Undo2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, Crosshair, Undo2 } from 'lucide-react';
 import { getSplitSample } from '../../../api/analysis';
 import { ApiError } from '../../../api/client';
 import { getFileUrl } from '../../../api/files';
 import {
-  clearSegmentAnnotation, getSegmentAnnotation, listAnnotatableTasks, listSegmentCategories,
-  listSegmentSamples, saveSegmentAnnotation,
+  clearSegmentAnnotation, getAnnotationTimeline, getSegmentAnnotation,
+  listAnnotatableTasks, listSegmentCategories, saveSegmentAnnotation,
 } from '../../../api/sampleAnnotations';
 import type {
-  SampleAnnotation, SegmentAnnotatableTask, SegmentCategory, SegmentLabel,
-  SegmentProgress, SegmentSampleRow, SplitSampleDetail,
+  AnnotationTimeline, AnnotationTimelineWindow, SampleAnnotation, SegmentAnnotatableTask,
+  SegmentCategory, SplitSampleDetail, SplitTimelineTrack,
 } from '../../../api/types';
-import { chanColorOf } from '../../analysis/signals/chartData';
-import { fmtRange, timePath, trackRange } from '../../alignment/split/splitTypes';
+import { SignalTimelineLane } from '../../alignment/split/SignalTimelineLane';
+import { fmtRange, pctOf } from '../../alignment/split/splitTypes';
 import { PageIntro } from '../../../shared/components/PageIntro';
 import { StatusPill } from '../../../shared/components/StatusPill';
+import { AnnotationRail, EmptyRail, type VerdictDraft } from './AnnotationRail';
 
-/** 列表分页大小（服务端上限 200；50 足够列表可视高度，翻页由"上一段/下一段"自动触发）。 */
-const PAGE_SIZE = 50;
-/** 时序轨道的局部波形点数上限（详情端点已降采样到 ≤600，这里只做像素级抽稀）。 */
-const WAVE_POINTS = 400;
+/** 空结论草稿（默认"正常"，类别必须为空——切到正常要清掉残影）。 */
+const emptyDraft = (): VerdictDraft => ({ label: 'normal', categoryId: null, note: '' });
+
+/** 一批铺多少段。一屏可用宽度 ~1300px → 每格 ~65px，够看清帧图和焊缝切片；
+ *  再密就看不清图，再疏则一屏装不下上下文。 */
+const BATCH_SIZE = 20;
+const RULER_TICKS = 8;
+
+type Tone = 'ok' | 'bad' | 'none';
+
+/** 焊缝图片带在服务端的模态可用性（`timeline` 缺失时整条轨道也走空态）。 */
+type SeamProjection = NonNullable<AnnotationTimeline['timeline']>['seam_image_projection'];
 
 const errorText = (err: unknown, fallback: string): string =>
   err instanceof ApiError && err.message ? err.message
     : err instanceof Error && err.message ? err.message : fallback;
 
-const labelText = (row: { label: SegmentLabel | null; defect_category_name: string | null }): string =>
-  row.label === 'defect' ? (row.defect_category_name || '缺陷')
-    : row.label === 'normal' ? '正常' : '未标注';
+const toneOf = (row: AnnotationTimelineWindow): Tone =>
+  row.annotated ? (row.label === 'defect' ? 'bad' : 'ok') : 'none';
 
-/** 详情 `meta` 的模态块（服务端 manifest 的原始形状，只取用到的字段）。 */
-interface ModalityMeta {
-  available?: boolean;
-  calibrated?: boolean;
-  reason?: string | null;
-  object_key?: string | null;
-  crop_key?: string | null;
-  fps?: number;
-  offset_seconds?: number;
-  start_frame?: number;
-  end_frame?: number;
-  keyframes?: { at: number }[];
-  spatial_range?: { start_px: number; end_px: number };
-  roi?: { x: number; y: number; w: number; h: number };
+const markText = (row: AnnotationTimelineWindow): string =>
+  !row.annotated ? '未标注'
+    : row.label === 'defect' ? (row.defect_category_name || '缺陷') : '正常';
+
+/**
+ * 把整条焊缝的降采样轨道裁到当前批次，并把时间轴原点移到批次起点（`x = t − from`）。
+ *
+ * **必须裁**：`timePath` 会把越界时刻钳到 `[0, duration]`，不裁的话整条焊缝的其它点全被
+ * 压到批次左右边缘上，画出一条假的水平线。裁出来正好一段。
+ */
+function clipTrack(track: SplitTimelineTrack, from: number, to: number): SplitTimelineTrack {
+  const times: number[] = [];
+  const values: number[] = [];
+  for (let i = 0; i < track.times.length && i < track.values.length; i += 1) {
+    const t = track.times[i];
+    if (t >= from && t <= to) {
+      times.push(t - from);
+      values.push(track.values[i]);
+    }
+  }
+  return { ...track, times, values };
 }
 
 export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
@@ -68,28 +89,23 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
   const [tasksError, setTasksError] = useState<string | null>(null);
   const [taskId, setTaskId] = useState<string | null>(null);
 
-  const [categories, setCategories] = useState<SegmentCategory[]>([]);
-  const [filter, setFilter] = useState<'all' | 'unannotated'>('all');
-  const [page, setPage] = useState(1);
-  const [rows, setRows] = useState<SegmentSampleRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [progress, setProgress] = useState<SegmentProgress | null>(null);
-  const [currentId, setCurrentId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<SplitSampleDetail | null>(null);
-  const [annotation, setAnnotation] = useState<SampleAnnotation | null>(null);
-  const [draft, setDraft] = useState<{ label: SegmentLabel; categoryId: number | null; note: string }>(
-    { label: 'normal', categoryId: null, note: '' },
-  );
-  const [busy, setBusy] = useState(false);
+  const [timeline, setTimeline] = useState<AnnotationTimeline | null>(null);
   const [loading, setLoading] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [categories, setCategories] = useState<SegmentCategory[]>([]);
+
+  /** 选中的窗口是**唯一的导航源头**：所在批次由它在列表里的下标反推（见 `batchIndex`）。
+   *  这样翻批、点全局条、按 ←/→ 都只是"改选中项"，不存在两个状态要对齐的问题。 */
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [detail, setDetail] = useState<SplitSampleDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [annotation, setAnnotation] = useState<SampleAnnotation | null>(null);
+  const [draft, setDraft] = useState<VerdictDraft>(emptyDraft);
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoFailed, setVideoFailed] = useState(false);
-  const [cropUrl, setCropUrl] = useState<string | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  /** 翻页后要自动选中的位置（`'first'` / `'last'`）；行数据到达后由下面的效果消费。 */
-  const pendingSelectRef = useRef<'first' | 'last' | null>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
 
   // ── 入口：该焊缝已完成的分段任务 ────────────────────────────────────
   useEffect(() => {
@@ -106,30 +122,21 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
 
   // 词表：含停用项——历史标注可能引用了后来被停用的类别，要能显示而不是空候选
   useEffect(() => {
-    listSegmentCategories(true)
-      .then(setCategories)
-      .catch(() => setCategories([]));
+    listSegmentCategories(true).then(setCategories).catch(() => setCategories([]));
   }, []);
 
-  // ── 样本列表（分页） ───────────────────────────────────────────────
-  const loadPage = useCallback(async (target: string, nextFilter: 'all' | 'unannotated', nextPage: number) => {
+  // ── 总览时间轴：一次拿全窗口 + 标注态 + 媒体地址 ────────────────────
+  const loadTimeline = useCallback(async (target: string) => {
     setLoading(true);
-    setListError(null);
+    setLoadError(null);
     try {
-      const data = await listSegmentSamples(target, {
-        page: nextPage,
-        page_size: PAGE_SIZE,
-        filter: nextFilter,
-      });
-      setRows(data.items);
-      setTotal(data.total);
-      setProgress(data.progress);
-      return data;
+      const data = await getAnnotationTimeline(target);
+      setTimeline(data);
+      setSelectedId(data.windows[0]?.sample_id ?? null);
     } catch (err) {
-      setRows([]);
-      setTotal(0);
-      setListError(errorText(err, '样本列表读取失败'));
-      return null;
+      setTimeline(null);
+      setSelectedId(null);
+      setLoadError(errorText(err, '标注时间轴读取失败'));
     } finally {
       setLoading(false);
     }
@@ -137,60 +144,48 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
 
   useEffect(() => {
     if (!taskId) return;
-    let cancelled = false;
-    // 注意：**不要**在这里清 `pendingSelectRef`——翻页正是靠它把选中项带到新页；
-    // 它由下面的 `[rows]` 效果消费后自清，悬空时也只会多选一次首/末行。
-    loadPage(taskId, filter, page).then((data) => {
-      if (cancelled || !data) return;
-      setCurrentId((prev) => {
-        if (prev != null && data.items.some((row) => row.id === prev)) return prev;
-        return data.items[0]?.id ?? null;
-      });
-    });
-    return () => { cancelled = true; };
-  }, [taskId, filter, page, loadPage]);
+    void loadTimeline(taskId);
+  }, [taskId, loadTimeline]);
 
-  // 翻页后选中新页的首/末行（上一段/下一段走到页边界时触发）
-  useEffect(() => {
-    const pending = pendingSelectRef.current;
-    if (!pending || !rows.length) return;
-    pendingSelectRef.current = null;
-    setCurrentId(pending === 'first' ? rows[0].id : rows[rows.length - 1].id);
-  }, [rows]);
+  // ── 选中窗口的细节与本窗结论 ────────────────────────────────────────
+  const current = useMemo(
+    () => timeline?.windows.find((row) => row.sample_id === selectedId) ?? null,
+    [timeline, selectedId],
+  );
 
-  // ── 单样本：结论 + 三模态细节（同一个时间窗） ──────────────────────
   useEffect(() => {
-    if (!taskId || currentId == null) {
+    if (!taskId || selectedId == null) {
       setDetail(null);
       setAnnotation(null);
+      setDetailError(null);
       return;
     }
     let cancelled = false;
     setDetail(null);
+    setDetailError(null);
     setNotice(null);
-    Promise.all([getSplitSample(taskId, currentId), getSegmentAnnotation(taskId, currentId)])
-      .then(([sample, current]) => {
+    Promise.all([getSplitSample(taskId, selectedId), getSegmentAnnotation(taskId, selectedId)])
+      .then(([sample, existing]) => {
         if (cancelled) return;
         setDetail(sample);
-        setAnnotation(current.annotation);
-        setDraft(current.annotation
+        setAnnotation(existing.annotation);
+        setDraft(existing.annotation
           ? {
-              label: current.annotation.label,
-              categoryId: current.annotation.defect_category_id,
-              note: current.annotation.note ?? '',
+              label: existing.annotation.label,
+              categoryId: existing.annotation.defect_category_id,
+              note: existing.annotation.note ?? '',
             }
-          : { label: 'normal', categoryId: null, note: '' });
+          : emptyDraft());
       })
-      .catch((err) => { if (!cancelled) setListError(errorText(err, '样本详情读取失败')); });
+      .catch((err) => { if (!cancelled) setDetailError(errorText(err, '窗口细节读取失败')); });
     return () => { cancelled = true; };
-  }, [taskId, currentId]);
+  }, [taskId, selectedId]);
 
-  // 媒体签名 URL：视频（按 offset 换算 seek）与焊缝图片切片
-  const videoMeta = (detail?.meta?.video ?? null) as ModalityMeta | null;
-  const seamMeta = (detail?.meta?.seam_image ?? null) as ModalityMeta | null;
-  const videoKey = typeof videoMeta?.object_key === 'string' ? videoMeta.object_key : null;
-  const cropKey = typeof seamMeta?.crop_key === 'string' ? seamMeta.crop_key
-    : (detail?.object_keys ?? []).find((key) => key.endsWith('.jpg')) ?? null;
+  // 视频对象：本窗 manifest 里那个键换签名 URL（图片直接用时间轴给的那两份，不重复签）
+  const videoKey = useMemo(() => {
+    const meta = (detail?.meta?.video ?? null) as { object_key?: string } | null;
+    return typeof meta?.object_key === 'string' ? meta.object_key : null;
+  }, [detail]);
 
   useEffect(() => {
     setVideoFailed(false);
@@ -202,80 +197,98 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
     return () => { cancelled = true; };
   }, [videoKey]);
 
-  useEffect(() => {
-    if (!cropKey) { setCropUrl(null); return; }
-    let cancelled = false;
-    getFileUrl(cropKey)
-      .then((res) => { if (!cancelled) setCropUrl(res.url); })
-      .catch(() => { if (!cancelled) setCropUrl(null); });
-    return () => { cancelled = true; };
-  }, [cropKey]);
-
-  // 选中样本变化 → 视频 seek 到该段的**视频轴**起点（`t_video = t_signal - offset`）。
-  // 与分段页同一换算；offset 来自本样本 manifest 的 video 映射，未标定即 0。
+  // 换窗口 → 播放器定位到本窗的视频轴起点（`t_video = t_signal − offset`）。
+  // offset 来自时间轴的模态槽（服务端已从标定算出），未标定即 0。
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || detail?.start_time == null) return;
-    const offset = typeof videoMeta?.offset_seconds === 'number' ? videoMeta.offset_seconds : 0;
-    video.currentTime = Math.max(0, detail.start_time - offset);
-  }, [detail, videoMeta, videoUrl]);
+    if (!video || current?.start == null) return;
+    const offset = typeof current.video.offset_seconds === 'number' ? current.video.offset_seconds : 0;
+    video.currentTime = Math.max(0, current.start - offset);
+  }, [current, videoUrl]);
 
-  // ── 导航与保存 ─────────────────────────────────────────────────────
-  const index = rows.findIndex((row) => row.id === currentId);
-  const hasPrevPage = page > 1;
-  const hasNextPage = page * PAGE_SIZE < total;
-  const canPrev = index > 0 || hasPrevPage;
-  const canNext = (index >= 0 && index < rows.length - 1) || hasNextPage;
+  // ── 批次（由选中项反推） ───────────────────────────────────────────
+  const windows = useMemo(() => timeline?.windows ?? [], [timeline]);
+  const batchCount = Math.max(1, Math.ceil(windows.length / BATCH_SIZE));
+  const selectedIndex = windows.findIndex((row) => row.sample_id === selectedId);
+  const batchIndex = selectedIndex >= 0 ? Math.floor(selectedIndex / BATCH_SIZE) : 0;
+  const batch = windows.slice(batchIndex * BATCH_SIZE, (batchIndex + 1) * BATCH_SIZE);
+  const batchFrom = batch[0]?.start ?? 0;
+  const batchTo = batch[batch.length - 1]?.end ?? batchFrom;
+  const batchDuration = Math.max(batchTo - batchFrom, 1e-6);
 
-  const goPrev = () => {
-    if (index > 0) { setCurrentId(rows[index - 1].id); return; }
-    if (hasPrevPage) { pendingSelectRef.current = 'last'; setPage((value) => value - 1); }
+  const selectAt = useCallback((index: number) => {
+    if (index < 0 || index >= windows.length) return;
+    setSelectedId(windows[index].sample_id);
+  }, [windows]);
+
+  const step = (delta: number) => selectAt(selectedIndex >= 0 ? selectedIndex + delta : 0);
+  const goBatch = (delta: number) => selectAt((batchIndex + delta) * BATCH_SIZE);
+
+  /** 跳到下一处未标注（到末尾回卷）。取代旧版的「只看未标注」筛选——总览已经把
+   *  标注态铺在屏幕上了，再叠一个会改变批次数量的筛选只会让"第几批"变得没法说清。 */
+  const jumpUnannotated = () => {
+    if (!windows.length) return;
+    const start = selectedIndex < 0 ? -1 : selectedIndex;
+    for (let i = 1; i <= windows.length; i += 1) {
+      const index = (start + i) % windows.length;
+      if (!windows[index].annotated) { selectAt(index); return; }
+    }
+    setNotice({ tone: 'ok', text: '该分段任务已全部标注完成' });
   };
 
-  const goNext = () => {
-    if (index >= 0 && index < rows.length - 1) { setCurrentId(rows[index + 1].id); return; }
-    if (hasNextPage) { pendingSelectRef.current = 'first'; setPage((value) => value + 1); }
+  // ── 保存 / 撤销：原地改那一列，不重拉整个时间轴 ────────────────────
+  const patchWindow = (sampleId: number, next: Partial<AnnotationTimelineWindow>) => {
+    setTimeline((prev) => prev && {
+      ...prev,
+      windows: prev.windows.map((row) => (row.sample_id === sampleId ? { ...row, ...next } : row)),
+    });
   };
 
-  /** 保存（`advance` 为真时保存并跳到下一段）。 */
-  const submit = async (advance: boolean) => {
-    if (!taskId || currentId == null || busy) return;
+  /** 保存。`override` 给快捷键用——`N` 要"此刻就按正常提交"，不能等 `setDraft` 落地。 */
+  const submit = async (advance: boolean, override?: VerdictDraft) => {
+    if (!taskId || !current || busy) return;
+    const verdict = override ?? draft;
     setBusy(true);
     setNotice(null);
-    const indexBefore = index;
+    // "下一段"用**保存前**的下标算：保存后这一列的 `annotated` 就变了，
+    // 而"总览已把全部窗口拿在手里"，所以下标是稳定的。
+    const nextIndex = selectedIndex + 1;
     try {
-      await saveSegmentAnnotation(taskId, currentId, {
-        label: draft.label,
-        defect_category_id: draft.label === 'defect' ? draft.categoryId : null,
-        note: draft.note.trim() ? draft.note.trim() : null,
+      const res = await saveSegmentAnnotation(taskId, current.sample_id, {
+        label: verdict.label,
+        defect_category_id: verdict.label === 'defect' ? verdict.categoryId : null,
+        note: verdict.note.trim() ? verdict.note.trim() : null,
       });
+      patchWindow(current.sample_id, {
+        annotated: true,
+        label: verdict.label,
+        defect_category_name: verdict.label === 'defect'
+          ? (res.annotation?.defect_category_name ?? null) : null,
+        note: verdict.note.trim() ? verdict.note.trim() : null,
+      });
+      setAnnotation(res.annotation);
+      setTimeline((prev) => prev && { ...prev, progress: res.progress });
+      setNotice({ tone: 'ok', text: '已保存' });
+      if (advance) selectAt(nextIndex);
     } catch (err) {
-      setBusy(false);
       setNotice({ tone: 'error', text: errorText(err, '保存失败，请重试') });
-      return;
+    } finally {
+      setBusy(false);
     }
-    // 保存成功：刷新当前页（进度与行状态都变了）。
-    // **未标注筛选下当前行会从列表消失**，所以用保存前的下标定位"下一段"。
-    const data = await loadPage(taskId, filter, page);
-    setBusy(false);
-    setNotice({ tone: 'ok', text: '已保存' });
-    if (!data) return;
-    if (!advance) return;
-    const sameIndex = data.items.findIndex((row) => row.id === currentId);
-    const nextIndex = sameIndex >= 0 ? sameIndex + 1 : indexBefore;
-    if (nextIndex < data.items.length) setCurrentId(data.items[nextIndex].id);
-    else if (page * PAGE_SIZE < data.total) { pendingSelectRef.current = 'first'; setPage((value) => value + 1); }
   };
 
   const removeAnnotation = async () => {
-    if (!taskId || currentId == null || busy) return;
+    if (!taskId || !current || busy) return;
     setBusy(true);
     setNotice(null);
     try {
-      await clearSegmentAnnotation(taskId, currentId);
+      const res = await clearSegmentAnnotation(taskId, current.sample_id);
+      patchWindow(current.sample_id, {
+        annotated: false, label: null, defect_category_name: null, note: null,
+      });
       setAnnotation(null);
-      setDraft({ label: 'normal', categoryId: null, note: '' });
-      await loadPage(taskId, filter, page);
+      setDraft(emptyDraft());
+      setTimeline((prev) => prev && { ...prev, progress: res.progress });
       setNotice({ tone: 'ok', text: '已撤销该段标注' });
     } catch (err) {
       setNotice({ tone: 'error', text: errorText(err, '撤销失败，请重试') });
@@ -283,6 +296,33 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
       setBusy(false);
     }
   };
+
+  // ── 快捷键：←/→ 换窗口、N 标正常、D 进缺陷态 ───────────────────────
+  // 只在**文本输入控件**里放行（那些键在那儿有自己的含义）。
+  // **按钮不算**：点窗口列后焦点就落在那个按钮上，把按钮也排除掉的话"点一格再按 N"这条
+  // 最顺手的路径会当场失效。我们绑的四个键在按钮上没有默认行为，不会误触。
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+  useEffect(() => {
+    if (!timeline) return;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && target.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === 'ArrowLeft') { event.preventDefault(); step(-1); return; }
+      if (event.key === 'ArrowRight') { event.preventDefault(); step(1); return; }
+      if (event.key === 'n' || event.key === 'N') {
+        const next: VerdictDraft = { label: 'normal', categoryId: null, note: draft.note };
+        setDraft(next);
+        // 用**这一份**直接提交，不等 setDraft 落地（否则打的是上一份结论）
+        void submitRef.current(true, next);
+        return;
+      }
+      if (event.key === 'd' || event.key === 'D') setDraft((prev) => ({ ...prev, label: 'defect' }));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   // ── 渲染 ───────────────────────────────────────────────────────────
   if (!dataId) {
@@ -313,7 +353,7 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
           {tasks.length > 0 && (
             <div className="segment-task-list">
               {tasks.map((task) => (
-                <button key={task.task_id} className="segment-task-card" onClick={() => { setTaskId(task.task_id); setPage(1); setFilter('all'); }}>
+                <button key={task.task_id} className="segment-task-card" onClick={() => setTaskId(task.task_id)}>
                   <div>
                     <strong>{task.task_id}</strong>
                     <small>
@@ -336,17 +376,22 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
     );
   }
 
-  const windowRows = rows;
-  const range = detail && detail.start_time != null && detail.end_time != null
-    ? fmtRange(detail.start_time, detail.end_time) : '—';
-  const draftInvalid = draft.label === 'defect' && draft.categoryId == null;
+  const progress = timeline?.progress ?? null;
+  const tracks = timeline?.timeline?.signal.tracks ?? [];
+  // 全局条的横轴是**整条焊缝**：格宽 = 该段时长 / 焊缝总时长。总时长优先用服务端给的
+  // `timeline.duration`，波形读不回来时退到"首窗起点 → 末窗终点"（总览不该因为没波形而消失）。
+  const weldFrom = windows[0]?.start ?? 0;
+  const weldTo = windows[windows.length - 1]?.end ?? weldFrom;
+  const weldDuration = timeline?.timeline?.duration ?? Math.max(weldTo - weldFrom, 1e-6);
+  const boundaries = batch.map((row) => (row.start ?? 0) - batchFrom);
+  if (batch.length) boundaries.push(batchTo - batchFrom);
 
   return (
     <>
       <PageIntro
         eyebrow="多模态数据生产线"
         title="分段样本标注"
-        description="每段一个主结论：正常，或缺陷 + 主缺陷类别。三个模态共用该段的时间窗，缺失模态只提示原因、不阻断标注。"
+        description="整条焊缝一条时间轴：四面信号、焊缝图片、视频帧按同一个时间窗上下对齐，结论直接标在窗口列上。"
         action={<button className="outline-button" onClick={() => setTaskId(null)}><Undo2 size={14} />换个分段任务</button>}
       />
 
@@ -354,252 +399,235 @@ export function SampleAnnotationWorkspace({ dataId }: { dataId?: string }) {
         <p className={notice.tone === 'error' ? 'toolbar-error settings-notice' : 'accent-text settings-notice'}
            role={notice.tone === 'error' ? 'alert' : 'status'}>{notice.text}</p>
       )}
-      {listError && <p className="toolbar-error settings-notice" role="alert">{listError}</p>}
+      {loadError && <p className="toolbar-error settings-notice" role="alert">{loadError}</p>}
+      {timeline?.warnings.map((text) => (
+        <p key={text} className="toolbar-error settings-notice" role="status">{text}</p>
+      ))}
+      {loading && <p className="dataset-empty-state" role="status">标注时间轴加载中…</p>}
 
-      <div className="segment-annotation-layout">
-        <aside className="panel segment-sidebar">
-          <div className="studio-head">
-            <div><span className="file-badge">样本列表</span><h2>{progress ? `${progress.annotated}/${progress.total}` : '—'}</h2></div>
-            <span className="studio-dur">{progress ? `${progress.progress}%` : '—'}</span>
-          </div>
-          <div className="segment-progress-bar" aria-hidden>
-            <i style={{ width: `${progress?.progress ?? 0}%` }} />
-          </div>
-          <div className="segment-filter">
-            <button className={filter === 'all' ? 'segment-chip active' : 'segment-chip'} onClick={() => { setFilter('all'); setPage(1); }}>全部</button>
-            <button className={filter === 'unannotated' ? 'segment-chip active' : 'segment-chip'} onClick={() => { setFilter('unannotated'); setPage(1); }}>
-              未标注{progress ? ` ${progress.unannotated}` : ''}
-            </button>
-          </div>
-          {progress && progress.defect_distribution.length > 0 && (
-            <div className="segment-defect-summary">
-              {progress.defect_distribution.map((item) => (
-                <span key={item.name}>{item.name} {item.count}</span>
+      {timeline && (
+        <>
+          {/* 全局条：整条焊缝一窗一格，看进度与缺陷分布；点一格跳到它所在的批次 */}
+          <section className="panel annot-overview">
+            <div className="annot-overview-head">
+              <span className="file-badge">整条焊缝</span>
+              <span className="studio-dur">{windows.length} 段 · 已标 {progress?.annotated ?? 0} · 未标 {progress?.unannotated ?? 0}</span>
+            </div>
+            <div className="annot-strip" role="list" aria-label="整条焊缝窗口总览">
+              {windows.map((row) => (
+                <button
+                  type="button"
+                  key={row.sample_id}
+                  role="listitem"
+                  className={`annot-strip-cell ${toneOf(row)}${row.sample_id === selectedId ? ' is-current' : ''}`}
+                  style={{ width: `${Math.max(pctOf((row.end ?? 0) - (row.start ?? 0), weldDuration), 0.4)}%` }}
+                  title={`#${row.index ?? '—'} ${fmtRange(row.start ?? 0, row.end ?? 0)} · ${markText(row)}`}
+                  aria-label={`跳转到窗口 ${row.index ?? ''}（${markText(row)}）`}
+                  onClick={() => setSelectedId(row.sample_id)}
+                />
               ))}
             </div>
-          )}
-          {loading && <p className="dataset-empty-state" role="status">样本加载中…</p>}
-          {!loading && windowRows.length === 0 && (
-            <p className="dataset-empty-state" role="status">
-              {filter === 'unannotated' ? '该任务已全部标注完成。' : '该任务没有样本。'}
-            </p>
-          )}
-          <div className="segment-sample-list">
-            {windowRows.map((row) => (
-              <button
-                key={row.id}
-                className={`segment-sample-row ${row.id === currentId ? 'active' : ''}`}
-                onClick={() => setCurrentId(row.id)}
-              >
-                <span className="segment-sample-no">#{row.frame_no ?? '—'}</span>
-                <span className="segment-sample-time">
-                  {row.start_time != null && row.end_time != null ? `${row.start_time.toFixed(2)}–${row.end_time.toFixed(2)}s` : '—'}
+            <div className="annot-overview-foot">
+              <span>红=缺陷 · 绿=正常 · 灰=未标注（格宽即该段时长）</span>
+              {progress && progress.defect_distribution.length > 0 && (
+                <span className="annot-defect-summary">
+                  {progress.defect_distribution.map((item) => <em key={item.name}>{item.name} {item.count}</em>)}
                 </span>
-                <span className={`segment-sample-label ${row.annotated ? (row.label === 'defect' ? 'bad' : 'ok') : ''}`}>
-                  {labelText(row)}
-                </span>
-              </button>
-            ))}
-          </div>
-          <div className="segment-pager">
-            <button className="ghost-button" disabled={!canPrev} onClick={goPrev}><ChevronLeft size={14} />上一段</button>
-            <span>{page}/{Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
-            <button className="ghost-button" disabled={!canNext} onClick={goNext}>下一段<ChevronRight size={14} /></button>
-          </div>
-        </aside>
-
-        <section className="panel segment-detail">
-          <div className="studio-head">
-            <div>
-              <span className="file-badge">样本 #{detail?.frame_no ?? '—'}</span>
-              <h2>{range}</h2>
+              )}
             </div>
-            {annotation && <StatusPill tone={annotation.label === 'defect' ? 'red' : 'green'}>{labelText(annotation)}</StatusPill>}
-          </div>
+          </section>
 
-          {!detail && <p className="dataset-empty-state" role="status">样本详情加载中…</p>}
-
-          {detail && (
-            <>
-              {/* ① 时序：该窗口内的局部波形（服务端已降采样，≤600 点/通道） */}
-              <div className="segment-modality">
-                <div className="segment-modality-head">
-                  <b>时域信号</b>
-                  <ModalityTag available={Boolean(detail.modalities?.signal?.available)} reason={detail.modalities?.signal?.reason} />
+          <div className="annot-layout">
+            <section className="panel annot-timeline">
+              <div className="annot-batch-bar">
+                <div>
+                  <span className="file-badge">本批次</span>
+                  <b className="annot-batch-range">
+                    {batch.length ? `#${batch[0].index ?? '—'}–#${batch[batch.length - 1].index ?? '—'}` : '—'}
+                  </b>
+                  <small>第 {batchIndex + 1}/{batchCount} 批 · {fmtRange(batchFrom, batchTo)}</small>
                 </div>
-                {detail.time_series.length === 0 ? (
-                  <p className="preview-summary">该窗口没有可用的时序数据（源信号未导入或读取失败）。</p>
-                ) : detail.time_series.map((track) => (
-                  <LocalWave key={track.id} track={track} />
-                ))}
-              </div>
-
-              {/* ② 视频：定位到本段起点（t_video = t_signal − offset） */}
-              <div className="segment-modality">
-                <div className="segment-modality-head">
-                  <b>视频</b>
-                  <ModalityTag available={Boolean(detail.modalities?.video?.available)}
-                               reason={detail.modalities?.video?.reason}
-                               calibrated={videoMeta?.calibrated} />
-                </div>
-                {videoUrl ? (
-                  <>
-                    <video
-                      ref={videoRef}
-                      className="segment-video"
-                      src={videoUrl}
-                      controls
-                      preload="metadata"
-                      onError={() => setVideoFailed(true)}
-                    />
-                    <p className="preview-summary">
-                      {videoFailed
-                        ? '该视频当前浏览器无法解码（多为 MPEG-4 Part 2 等非 H.264 编码）。等到媒体预处理生成 H.264 预览版后可重试。'
-                        : `已定位到本段起点：t_video = t_signal − offset（offset ${(videoMeta?.offset_seconds ?? 0).toFixed(3)}s）${
-                            videoMeta?.fps ? ` · fps ${videoMeta.fps} · 帧 ${videoMeta.start_frame}–${videoMeta.end_frame}` : ''
-                          }${
-                            (videoMeta?.keyframes ?? []).length
-                              ? ` · 关联帧时刻 ${(videoMeta?.keyframes ?? []).map((k) => k.at.toFixed(2)).join(' / ')}s`
-                              : ''
-                          }`}
-                    </p>
-                  </>
-                ) : (
-                  <p className="preview-summary">
-                    本段没有可播放的视频对象。{detail.modalities?.video?.reason ? `原因：${detail.modalities.video.reason}` : ''}
-                  </p>
-                )}
-              </div>
-
-              {/* ③ 焊缝图片：按弧长投影裁出的本段条带 */}
-              <div className="segment-modality">
-                <div className="segment-modality-head">
-                  <b>焊缝图片切片</b>
-                  <ModalityTag available={Boolean(detail.modalities?.seam_image?.available)}
-                               reason={detail.modalities?.seam_image?.reason}
-                               calibrated={seamMeta?.calibrated} />
-                </div>
-                {cropUrl ? <img className="segment-crop" src={cropUrl} alt={`样本 ${detail.frame_no} 的焊缝图片切片`} />
-                  : <p className="preview-summary">
-                      本段没有焊缝图片切片——图片是**增强模态**，缺失不影响该段成立。{detail.modalities?.seam_image?.reason ? `原因：${detail.modalities.seam_image.reason}` : ''}
-                    </p>}
-                {seamMeta?.spatial_range && (
-                  <p className="preview-summary">
-                    沿 ROI 长边投影：{seamMeta.spatial_range.start_px.toFixed(1)} – {seamMeta.spatial_range.end_px.toFixed(1)} px
-                    {seamMeta.roi ? `（ROI ${seamMeta.roi.w}×${seamMeta.roi.h}）` : ''}
-                  </p>
-                )}
-              </div>
-
-              {/* ④ 结论：一期只有这一个表单，没有框/点/掩膜 */}
-              <div className="segment-verdict">
-                <div className="segment-verdict-head">
-                  <b>本段结论</b>
-                  {annotation && <small>最近由 {annotation.annotator ?? '—'} 标注</small>}
-                </div>
-                <div className="segment-verdict-choice">
-                  <button
-                    className={`segment-choice ${draft.label === 'normal' ? 'active ok' : ''}`}
-                    onClick={() => setDraft((prev) => ({ ...prev, label: 'normal', categoryId: null }))}
-                  ><CheckCircle2 size={15} />正常</button>
-                  <button
-                    className={`segment-choice ${draft.label === 'defect' ? 'active bad' : ''}`}
-                    onClick={() => setDraft((prev) => ({ ...prev, label: 'defect' }))}
-                  ><AlertTriangle size={15} />缺陷</button>
-                </div>
-
-                {draft.label === 'defect' && (
-                  <div className="segment-category-grid">
-                    {categories.filter((item) => item.active || item.id === annotation?.defect_category_id).length === 0 && (
-                      <p className="preview-summary">暂无可用缺陷类别，请到「系统设置 → 分段样本缺陷词表」维护。</p>
-                    )}
-                    {categories
-                      .filter((item) => item.active || item.id === annotation?.defect_category_id)
-                      .map((item) => (
-                        <button
-                          key={item.id}
-                          className={`segment-category ${draft.categoryId === item.id ? 'active' : ''}`}
-                          onClick={() => setDraft((prev) => ({ ...prev, categoryId: item.id }))}
-                        >
-                          {item.value}
-                          {!item.active && <em>已停用</em>}
-                        </button>
-                      ))}
-                  </div>
-                )}
-
-                <label className="split-field-label" htmlFor="segment-note">备注（可选）</label>
-                <textarea
-                  id="segment-note"
-                  className="segment-note"
-                  rows={2}
-                  maxLength={512}
-                  placeholder="例如：收弧处可见气孔，长度约 3mm"
-                  value={draft.note}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, note: event.target.value }))}
-                />
-
-                <div className="segment-actions">
-                  <button className="primary-button" disabled={busy || draftInvalid} onClick={() => void submit(false)}>
-                    <Save size={14} />保存
+                <div className="annot-batch-actions">
+                  <button className="ghost-button" disabled={batchIndex <= 0} onClick={() => goBatch(-1)}>
+                    <ChevronLeft size={14} />上一批
                   </button>
-                  <button className="outline-button" disabled={busy || draftInvalid} onClick={() => void submit(true)}>
-                    保存并下一段<ChevronRight size={14} />
+                  <button className="ghost-button" disabled={batchIndex >= batchCount - 1} onClick={() => goBatch(1)}>
+                    下一批<ChevronRight size={14} />
                   </button>
-                  {annotation && (
-                    <button className="ghost-button" disabled={busy} onClick={() => void removeAnnotation()}>
-                      <Trash2 size={13} />撤销标注
+                  <button className="outline-button" onClick={jumpUnannotated}>
+                    <Crosshair size={14} />下一处未标注
+                  </button>
+                </div>
+              </div>
+
+              <div className="studio-ruler">
+                <div className="ruler-tickbar">
+                  {Array.from({ length: RULER_TICKS + 1 }, (_, i) => {
+                    const t = (batchDuration * i) / RULER_TICKS;
+                    return <span key={i} style={{ left: `${pctOf(t, batchDuration)}%` }}>{(t + batchFrom).toFixed(1)}</span>;
+                  })}
+                </div>
+              </div>
+
+              {/* ① 信号泳道：整条焊缝的降采样轨道按批次裁出来，按真实秒坐标画 */}
+              <SignalTimelineLane
+                tracks={tracks.map((track) => clipTrack(track, batchFrom, batchTo))}
+                duration={batchDuration}
+                boundaries={boundaries}
+                selected={current?.start != null && current.end != null
+                  ? { start: current.start - batchFrom, end: current.end - batchFrom } : null}
+              />
+
+              {/* ② 焊缝图片带：每格是本窗自己的 ROI 投影切片（分段任务的落盘产物） */}
+              <FilmLane
+                title="焊缝图片"
+                dot="#c08a4e"
+                cells={batch.map((row) => ({
+                  row,
+                  url: row.crop_url,
+                  reason: row.seam_image.reason ?? '该窗没有焊缝图片切片（图片是增强模态，缺失不影响标注）',
+                }))}
+                availability={timeline.timeline?.seam_image_projection ?? null}
+                duration={batchDuration}
+                from={batchFrom}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+
+              {/* ③ 视频帧轨：每格是本窗自己的代表帧 */}
+              <FilmLane
+                title="视频帧"
+                dot="#2c9caf"
+                cells={batch.map((row) => ({
+                  row,
+                  url: row.frame_url,
+                  reason: row.video.reason ?? '该窗没有视频代表帧',
+                }))}
+                availability={null}
+                duration={batchDuration}
+                from={batchFrom}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
+
+              {/* ④ 标注行：结论落在窗口列上。这条**永远在**——标注态不属于任何一个模态。 */}
+              <div className="lane annot-mark-lane">
+                <div className="lane-label">
+                  <i className="lane-dot" style={{ background: '#6f9c7f' }} />
+                  标注
+                  <span className="lane-meta">{batch.filter((row) => row.annotated).length}/{batch.length}</span>
+                </div>
+                <div className="lane-track annot-mark-row">
+                  {batch.map((row) => (
+                    <button
+                      type="button"
+                      key={row.sample_id}
+                      className={`annot-mark ${toneOf(row)}${row.sample_id === selectedId ? ' is-selected' : ''}`}
+                      style={{
+                        left: `${pctOf((row.start ?? 0) - batchFrom, batchDuration)}%`,
+                        width: `${Math.max(0, pctOf((row.end ?? 0) - batchFrom, batchDuration) - pctOf((row.start ?? 0) - batchFrom, batchDuration))}%`,
+                      }}
+                      title={`#${row.index ?? '—'} ${fmtRange(row.start ?? 0, row.end ?? 0)} · ${markText(row)}`}
+                      aria-label={`窗口 #${row.index ?? '—'}（${markText(row)}）`}
+                      aria-pressed={row.sample_id === selectedId}
+                      onClick={() => setSelectedId(row.sample_id)}
+                    >
+                      <b>{row.annotated ? (row.label === 'defect' ? '✗' : '✓') : '·'}</b>
+                      {row.annotated && <em>{markText(row)}</em>}
                     </button>
-                  )}
-                  {draftInvalid && <span className="toolbar-error">选择「缺陷」时必须指定主缺陷类别</span>}
+                  ))}
                 </div>
               </div>
-            </>
-          )}
-        </section>
-      </div>
+
+              <small className="lane-note">
+                一格 = 一个时间窗（该段的时长决定格宽），窗口竖线贯穿所有泳道；
+                点任意一格选中该窗，右栏给出结论表单与其三模态细节。
+              </small>
+            </section>
+
+            {current
+              ? (
+                <AnnotationRail
+                  window={current}
+                  detail={detail}
+                  detailError={detailError}
+                  videoUrl={videoUrl}
+                  videoFailed={videoFailed}
+                  onVideoFailed={() => setVideoFailed(true)}
+                  videoRef={videoRef}
+                  categories={categories}
+                  annotation={annotation}
+                  draft={draft}
+                  onDraft={(patch) => setDraft((prev) => ({ ...prev, ...patch }))}
+                  busy={busy}
+                  onSave={(advance) => void submit(advance)}
+                  onClear={() => void removeAnnotation()}
+                />
+              )
+              : <EmptyRail />}
+          </div>
+        </>
+      )}
     </>
   );
 }
 
-/** 模态可用性角标：不可用时**如实给出原因**（缺失不阻断标注）。 */
-function ModalityTag({ available, reason, calibrated }: { available: boolean; reason?: string | null; calibrated?: boolean }) {
-  if (!available) {
-    return <span className="segment-modality-tag bad" title={reason ?? undefined}>不可用{reason ? ` · ${reason}` : ''}</span>;
-  }
-  if (calibrated === false) {
-    return <span className="segment-modality-tag warn" title="时间零点未标定，该模态按 offset=0 假设对齐">未标定</span>;
-  }
-  return <span className="segment-modality-tag ok">可用</span>;
-}
-
-/** 本段局部波形：横轴是该段自身的起止（不是全段时长），按点自带的秒坐标画。 */
-function LocalWave({ track }: { track: { id: string; name: string; unit: string; times: number[]; values: number[] } }) {
-  const color = chanColorOf(track.id);
-  const start = track.times[0] ?? 0;
-  const span = Math.max((track.times[track.times.length - 1] ?? start) - start, 1e-6);
-  const [lo, hi] = trackRange(track);
-  // 像素级抽稀：详情端点已降到 ≤600 点，这里再按屏幕宽度取样，避免一条 SVG path 上千段
-  const step = Math.max(1, Math.ceil(track.values.length / WAVE_POINTS));
-  const times = step > 1 ? track.times.filter((_, i) => i % step === 0) : track.times;
-  const values = step > 1 ? track.values.filter((_, i) => i % step === 0) : track.values;
+/**
+ * 标注页的胶片轨：**一段一格**，格宽 = 该段在批次时间轴上的占比，格内是本段自己的图。
+ *
+ * 与分段页的 `VideoTimelineLane` 是同一个视觉母题，但**刻意没有合并成一个组件**：
+ * 那条轨格内只有图和"无帧"的原因，且被 `App.split-lanes-regression.test.mjs` 逐条钉着；
+ * 这条轨要额外承载**该段的标注态着色**（`normal`/`defect`/`none`），还要给图片轨与视频轨
+ * 各渲染一份。合并的代价是给那条轨加一堆可选 props，再加一层把 `AnnotationTimelineWindow`
+ * 伪装成 `SplitPreviewWindow` 的适配层——那个适配层是在骗人。宁可多这几十行。
+ */
+function FilmLane({
+  title, dot, cells, availability, duration, from, selectedId, onSelect,
+}: {
+  title: string;
+  dot: string;
+  cells: { row: AnnotationTimelineWindow; url: string | null; reason: string }[];
+  /** 焊缝图片带的模态可用性（无图片 / 已选择不参与 / 未标定 ROI → 整条轨走空态）。 */
+  availability: SeamProjection | null;
+  duration: number;
+  from: number;
+  selectedId: number | null;
+  onSelect: (sampleId: number) => void;
+}) {
+  const ready = cells.some((cell) => cell.url);
+  const emptyText = availability && !availability.available
+    ? (availability.excluded
+        ? `已选择不对焊缝图片进行分段：${availability.reason ?? '本轮只生成时序 / 视频样本'}`
+        : (availability.reason ?? '焊缝图片在本轮分段中不可用'))
+    : `本批次没有${title}缩略图`;
   return (
     <div className="lane">
       <div className="lane-label">
-        <i className="lane-dot" style={{ background: color }} />
-        {track.name}
-        <span className="lane-meta">{track.values.length} 点{track.unit ? ` · ${track.unit}` : ''}</span>
+        <i className="lane-dot" style={{ background: dot }} />
+        {title}
+        {!ready && <span className="track-availability warn">无图</span>}
       </div>
-      <div className="lane-track">
-        {values.length > 1 ? (
-          <svg className="lane-wave" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden>
-            <path
-              d={timePath(times.map((t) => t - start), values, lo, hi, span, 1000, 40)}
-              fill="none" stroke={color} strokeWidth={1.4} vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-        ) : (
-          <div className="lane-video-empty"><span>该窗口内没有降采样点</span></div>
+      <div className="lane-track lane-track-film">
+        {ready ? cells.map(({ row, url, reason }) => {
+          const left = pctOf((row.start ?? 0) - from, duration);
+          const width = Math.max(0, pctOf((row.end ?? 0) - from, duration) - left);
+          return (
+            <button
+              type="button"
+              key={row.sample_id}
+              className={`film-cell ${toneOf(row)}${row.sample_id === selectedId ? ' is-selected' : ''}`}
+              style={{ left: `${left}%`, width: `${width}%` }}
+              title={url ? `#${row.index ?? '—'} 的${title}` : `#${row.index ?? '—'} 无图：${reason}`}
+              aria-label={`选择窗口 #${row.index ?? ''}`}
+              aria-pressed={row.sample_id === selectedId}
+              onClick={() => onSelect(row.sample_id)}
+            >
+              {url ? <img src={url} alt={`窗口 #${row.index ?? ''} 的${title}`} loading="lazy" />
+                : <span className="film-cell-empty" aria-hidden>无图</span>}
+            </button>
+          );
+        }) : (
+          <div className="lane-video-empty"><span>{emptyText}</span></div>
         )}
       </div>
     </div>

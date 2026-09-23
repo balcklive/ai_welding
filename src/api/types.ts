@@ -875,6 +875,42 @@ export interface SegmentProgress {
 
 export type SegmentSamplePage = Page<SegmentSampleRow> & { progress: SegmentProgress };
 
+/** 总览时间轴的一列（一个时间窗）。窗口来自**已落库的 `Sample`**，不是前端按规则算的。
+ *  `frame_url`/`crop_url` 是该段自己的视频代表帧与焊缝图片切片（短期预签名），取不到即 `null`。 */
+export interface AnnotationTimelineWindow {
+  sample_id: number;
+  /** 窗口序号（= `Sample.frame_no`），总览里的"第几段"。 */
+  index: number | null;
+  start: number | null;
+  end: number | null;
+  annotated: boolean;
+  label: SegmentLabel | null;
+  /** 主缺陷类别**名称快照**（写入当时的值，不随词表改名而变）。 */
+  defect_category_name: string | null;
+  note: string | null;
+  frame_url: string | null;
+  crop_url: string | null;
+  signal: SplitModalitySlot;
+  video: SplitModalitySlot;
+  seam_image: SplitModalitySlot;
+}
+
+/** 整条焊缝的**标注总览时间轴**（`GET /split-tasks/{task_id}/annotation-timeline`）。
+ *
+ *  一次拿全窗口索引与媒体地址；`timeline` 与分段页的 `SplitPreview.timeline` 同形——
+ *  由服务端**同一段代码**（`splitting.build_timeline_layers`）产出，两页的边界不会漂移。
+ *  波形读不回来时 `timeline` 为 `null` 并附 `warnings`，但**窗口照常返回**（缺失不阻断标注）。 */
+export interface AnnotationTimeline {
+  task_id: string;
+  split_task_id: number;
+  version_id: number;
+  rules: SplitRules & { rules_version?: number };
+  progress: SegmentProgress;
+  timeline: SplitPreview['timeline'] | null;
+  windows: AnnotationTimelineWindow[];
+  warnings: string[];
+}
+
 /** 可进入标注的分段任务（`GET /welds/{weld_id}/segment-annotation-tasks`）——只含
  *  **已完成 + v3** 的任务，是标注工作台的入口列表。 */
 export interface SegmentAnnotatableTask {

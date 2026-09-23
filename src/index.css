@@ -691,6 +691,48 @@ button { border: 0; cursor: pointer; }
 .segment-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:14px; }
 .segment-actions .primary-button, .segment-actions .outline-button, .segment-actions .ghost-button { display:flex; align-items:center; gap:7px; margin:0; padding:10px 15px; font-size:14px; }
 .segment-actions .ghost-button { color:#8a5a5f; }
+.annot-hint { margin:11px 0 0; color:#5f7275; font-size:12px; }
+
+/* 分段样本标注·总览打标流（2026-09-23）：全局条 + 批次时间轴 + 右栏。
+   横铺 20 窗，每格 ~65px——够看清帧图，又不必横向滚动。 */
+.annot-overview { padding:16px 20px; margin-bottom:14px; }
+.annot-overview-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:11px; color:#24434b; }
+.annot-overview-head .studio-dur { color:#5f7275; }
+/* 全局条：一窗一格，格宽 = 该段占整条焊缝的时长比例。3px 的间隙本身就是窗口边界。 */
+.annot-strip { display:flex; align-items:stretch; gap:2px; height:30px; padding:3px; background:#f4f9f8; border:1px solid #e7efed; border-radius:7px; }
+.annot-strip-cell { min-width:3px; padding:0; border:0; border-radius:3px; background:#cfdcdb; cursor:pointer; }
+.annot-strip-cell.ok { background:#8ed3bb; }
+.annot-strip-cell.bad { background:#e0958f; }
+.annot-strip-cell:hover { box-shadow:0 0 0 2px rgba(44,156,175,.35); }
+.annot-strip-cell.is-current { box-shadow:0 0 0 2px #2c9caf; }
+.annot-overview-foot { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:9px; color:#5f7275; font-size:12px; }
+.annot-defect-summary { display:flex; flex-wrap:wrap; gap:8px; }
+.annot-defect-summary em { color:#9a4a44; font-style:normal; }
+
+.annot-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(310px,.4fr); gap:15px; align-items:start; }
+.annot-timeline { padding:20px; overflow:hidden; }
+.annot-rail { padding:20px; position:sticky; top:14px; max-height:calc(100vh - 40px); overflow-y:auto; }
+.annot-rail-empty { min-height:180px; }
+.annot-batch-bar { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:12px; }
+.annot-batch-bar b.annot-batch-range { margin-left:9px; color:#315f66; font:600 14px 'DM Mono',monospace; }
+.annot-batch-bar small { display:block; margin-top:4px; color:#5f7275; font-size:12px; }
+.annot-batch-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.annot-batch-actions .ghost-button, .annot-batch-actions .outline-button { display:flex; align-items:center; gap:6px; margin:0; padding:7px 11px; font-size:13px; }
+.annot-batch-actions .ghost-button:disabled { opacity:.35; cursor:not-allowed; }
+
+/* 标注行：结论就落在这一列上，**与任何模态无关**，所以它永远在。 */
+.annot-mark-lane .lane-track { height:44px; }
+.annot-mark-row { position:relative; }
+.annot-mark { position:absolute; top:0; bottom:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px; overflow:hidden; padding:0 2px; color:#5f7275; background:#f4f9f8; border:1px solid #e7efed; border-radius:5px; cursor:pointer; }
+.annot-mark b { font-size:15px; line-height:1; }
+.annot-mark em { max-width:100%; overflow:hidden; color:#4e777c; font-size:12px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
+.annot-mark.ok { color:#22796c; background:#eaf8f1; border-color:#a8ddca; }
+.annot-mark.bad { color:#9a4a44; background:#fdf3f2; border-color:#f0d3d0; }
+.annot-mark.is-selected { box-shadow:0 0 0 2px #2c9caf; }
+/* 胶片格的标注态：用 outline 而不是底色——格子里是铺满的真图，底色根本看不见；
+   用 outline 也刻意避开 box-shadow（选中态占着 box-shadow，两者要能同时显示）。 */
+.film-cell.ok { outline:2px solid #59bfa6; outline-offset:-2px; }
+.film-cell.bad { outline:2px solid #d98a84; outline-offset:-2px; }
 
 /* 焊缝图片 ROI 标定（对齐页标定层）：图上拖拽框选 + 只读回显。坐标恒为**原始图片像素**，
    下方覆盖框按自然尺寸换算成百分比，故显示尺寸变化不影响框的位置与保存值。 */

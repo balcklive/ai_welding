@@ -13,6 +13,7 @@
  */
 import { request } from './client';
 import type {
+  AnnotationTimeline,
   SampleAnnotation,
   SegmentAnnotatableTask,
   SegmentAnnotationExport,
@@ -40,6 +41,14 @@ export async function listSegmentCategories(
     { query: { include_inactive: includeInactive ? 1 : undefined } },
   );
   return data.categories ?? [];
+}
+
+/** 整条焊缝的**标注总览时间轴**（工作台主视图）：全部窗口 + 标注态 + 媒体 URL + 统一轴分层。
+ *
+ *  一次拿全，取代原先"逐页翻样本列表"——所以保存后不必重拉列表，原地更新那一列即可。
+ *  波形缺失时 `timeline` 为 `null`，窗口照常可用（缺失模态不阻断标注）。 */
+export async function getAnnotationTimeline(taskId: string): Promise<AnnotationTimeline> {
+  return request<AnnotationTimeline>(`/split-tasks/${taskId}/annotation-timeline`);
 }
 
 /** 可标注样本列表（分页 + 进度）。`filter='unannotated'` 只看未标注（服务端过滤）。 */
