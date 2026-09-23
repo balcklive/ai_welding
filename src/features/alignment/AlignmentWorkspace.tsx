@@ -4,16 +4,19 @@ import {
   FileText, Image as ImageIcon, Play, RefreshCw, ScanLine, Waves,
 } from 'lucide-react';
 import {
-  createAlignmentTask, getCalibration, getLatestAlignmentTask, getSignals,
+  createAlignmentTask, getCalibration, getLatestAlignmentTask, getSignals, updateCalibration,
 } from '../../api/analysis';
 import { getFileUrl } from '../../api/files';
 import { getWeld, listVersions } from '../../api/welds';
-import type { AlignmentResult, AlignmentTrack, DataRecord, SignalData } from '../../api/types';
+import type {
+  AlignmentResult, AlignmentTrack, Calibration, DataRecord, SeamRoi, SignalData,
+} from '../../api/types';
 import { useJob } from '../../hooks/useJob';
 import { PageIntro } from '../../shared/components/PageIntro';
 import { StatusPill } from '../../shared/components/StatusPill';
 import { Toolbar } from '../../shared/components/Toolbar';
 import { buildPath, chanColor, fmt } from '../analysis/signals/chartData';
+import { SeamRoiEditor } from './SeamRoiEditor';
 
 const VIDEO_EXTS = ['.mp4', '.avi', '.mkv', '.mov', '.webm'];
 const ALIGN_CHANNEL_MAP: Record<string, string> = { current: 'cur', voltage: 'vol' };
@@ -59,6 +62,13 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
   // 视频零点在信号轴上的时刻（`t_video = t_signal - offset`），来自该焊缝 v1.0 的标定。
   // 未标定/读取失败时保持 0 —— 与后端 mapping 的 `calibrated=false` 同义。
   const [videoOffset, setVideoOffset] = useState(0);
+  // 标定原文（含焊缝图片 ROI）：本页是**唯一**能改它的地方（§4.3），分段页只读消费同一份。
+  const [calibration, setCalibration] = useState<Calibration | null>(null);
+  const [seamImageUrl, setSeamImageUrl] = useState<string | null>(null);
+  const [seamImageError, setSeamImageError] = useState<string | null>(null);
+  const [calibError, setCalibError] = useState<string | null>(null);
+  const [calibLoading, setCalibLoading] = useState(false);
+  const [calibSaving, setCalibSaving] = useState(false);
   // 对齐任务：纳入对齐的模态（默认取自登记模态，未登记则视频+时序）
   const [modalities, setModalities] = useState<string[]>(['video', 'timeseries']);
 
@@ -110,6 +120,10 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     setVideoUrl(null);
+    setSeamImageUrl(null);
+    setSeamImageError(null);
+    setCalibration(null);
+    setCalibError(null);
     listVersions(dataId).then((versions) => {
       if (cancelled) return;
       const sourceVersion = versions.find((v) => v.id === versionId) ?? versions[versions.length - 1];
@@ -138,9 +152,22 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
        getSignals(dataId, String(sourceVersion.id)).then((s) => { if (!cancelled) setSignals(s); }).catch((err) => { if (!cancelled) setInputError(`信号读取失败：${err instanceof Error ? err.message : '请检查导入状态'}`); });
       // 视频零点：时间轴上的秒是**信号时间**，播放器 seek 要按 `t_video = t_signal - offset`
       // 换算。标定归属 v1.0，任何版本读到同一份，故这里用解析出的源版本 id 取即可。
+      // 同一份响应也带着焊缝图片的 ROI 与对象键（对象键由服务端挑，跳过上次对齐的产物图）。
+      setCalibLoading(true);
       getCalibration(dataId, String(sourceVersion.id))
-        .then((c) => { if (!cancelled) setVideoOffset(c.video.calibrated ? c.video.offset_seconds : 0); })
-        .catch((err) => console.warn('[alignment] calibration unavailable', err));
+        .then((c) => {
+          if (cancelled) return;
+          setCalibration(c);
+          setVideoOffset(c.video.calibrated ? c.video.offset_seconds : 0);
+          if (!c.seam_image.object_key) return;
+          getFileUrl(c.seam_image.object_key).then((r) => { if (!cancelled) setSeamImageUrl(r.url); })
+            .catch((err) => { if (!cancelled) setSeamImageError(err instanceof Error ? err.message : '请稍后重试'); });
+        })
+        .catch((err) => {
+          if (!cancelled) setCalibError(`标定读取失败：${err instanceof Error ? err.message : '请重试'}`);
+          console.warn('[alignment] calibration unavailable', err);
+        })
+        .finally(() => { if (!cancelled) setCalibLoading(false); });
     }).catch((err) => { if (!cancelled) setInputError(`数据版本读取失败：${err instanceof Error ? err.message : '请重试'}`); });
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
   }, [dataId, versionId]);
@@ -158,6 +185,27 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
     if (!window.confirm(`确认开始多模态对齐？\n输入版本：v${versionId}\n参与模态：${modalities.map((item) => names[item] ?? item).join('、') || '无'}${warning}`)) return;
     const run = createAlignmentTask(dataId, String(versionId), modalities.length ? modalities : ['video', 'timeseries']);
     run.then((res) => setJobId(res.job_id)).catch((err) => setCreateError(`任务创建失败：${err instanceof Error ? err.message : '请检查输入后重试'}`));
+  };
+  /** 保存焊缝图片标定（`{roi}` = 框选并参与分段，`{excluded:true}` = 明确不参与）；
+   * 成功返回 true 供面板清掉草稿框。 */
+  const handleSaveRoi = (patch: { roi: SeamRoi } | { excluded: true }): Promise<boolean> => {
+    if (!dataId || versionId == null) {
+      setCalibError('当前数据版本尚未准备好，请稍后重试。');
+      return Promise.resolve(false);
+    }
+    setCalibError(null);
+    setCalibSaving(true);
+    return updateCalibration(dataId, String(versionId), { seam_image: patch })
+      .then((c) => {
+        setCalibration(c);
+        setVideoOffset(c.video.calibrated ? c.video.offset_seconds : 0);
+        return true;
+      })
+      .catch((err) => {
+        setCalibError(`标定保存失败：${err instanceof Error ? err.message : '请重试'}`);
+        return false;
+      })
+      .finally(() => setCalibSaving(false));
   };
   const tone = inputError || createError || artifactError || jobError || jobStatus === 'failed' ? 'red' : jobStatus === 'running' || jobStatus === 'pending' ? 'orange' : jobStatus === 'succeeded' ? 'green' : 'muted';
   const statusText = inputError ?? createError ?? artifactError ?? (jobError ? '任务状态读取失败' : !inputReady ? '正在读取输入' : jobStatus === 'succeeded' ? '对齐完成' : jobStatus === 'running' ? `处理中 ${progress}%` : jobStatus === 'pending' ? '排队中' : jobStatus === 'failed' ? '执行失败' : '待对齐');
@@ -242,7 +290,7 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
     });
     return () => { root.removeEventListener('click', seek); root.removeEventListener('click', openArtifact); root.removeEventListener('keydown', activateArtifact); };
   }, [dataId, timelineDur, videoUrl, alignRes, videoOffset]);
-  return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title="多模态对齐" description="将单条焊缝的视频、时序、音频与红外统一到同一时间轴，自动识别起收弧事件并生成对齐版本。" action={<Toolbar secondary="导出标注集" exportType="analysis" />} /><div className="split-source-banner"><div><strong>{record?.weld_id ?? dataId ?? '正在读取焊缝…'}</strong><span>版本 v{versionId ?? '—'} · {record?.source ?? '数据来源读取中'}</span></div><div className="source-status"><span className={signals?.source === 'real' ? 'real' : 'generated'}>{signals?.source === 'real' ? '真实信号' : '真实输入不可用'}</span><span>{videoUrl ? '视频已加载' : '视频未加载'}</span><span>{videoFps ? `视频 ${videoFps} fps` : '视频帧率未知（按帧切分不可用）'}</span><span>{signals ? `${signals.duration.toFixed(2)} 秒 · ${signals.sample_rate} Hz` : '信号加载中…'}</span></div></div><div className="alignment-layout"><section className="panel alignment-board">{alignRes?.version && <div className="alignment-banner ok" role="status"><CheckCircle2 size={15} />已生成「时间对齐」版本 {alignRes.version.version_no}（{alignRes.version.object_keys.length} 个产物 · 事件来源 {alignRes.event_source === 'real' ? '真实信号' : '生成回退'}）</div>}{jobStatus === 'failed' && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />对齐任务失败：{errMsg}</div>}<div className="studio-head"><div><span className="file-badge"><Waves size={15} />多模态时间轴</span><h2>熔池视频 / 电流电压 / 音频 / 红外</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="studio-ruler"><div className="ruler-tickbar">{rulerTicks.map((t) => <span key={t} style={{ left: pct(t) }}>{fmt(t)}</span>)}</div><div className="ruler-events">{events && <i className="ruler-arc" style={{ left: pct(events.arc) }} title="起弧" />}{events && <b className="ruler-tail" style={{ left: pct(events.tail) }} title="收弧" />}</div>{playhead > 0 && <span className="ruler-playhead" style={{ left: pct(playhead) }} />}</div>{trackRows.map((row) => { const isVideo = row.channel === 'video'; return <div className="lane" key={row.channel}><div className="lane-label"><span className="lane-dot" style={{ background: isVideo ? '#4fa9c2' : (row.color ?? '#2c9caf') }} />{row.label}{row.track && <AvailabilityTag track={row.track} />}</div><div className={`lane-track ${isVideo ? 'lane-track-video' : ''}`}>{isVideo ? (videoUrl ? <video className="studio-video" src={videoUrl} controls onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime + videoOffset)} /> : <div className="lane-video-empty"><Play size={18} /><span>等待真实视频</span></div>) : (row.values && row.values.length > 1 && row.lo != null && row.hi != null && <svg className="lane-wave" viewBox="0 0 100 18" preserveAspectRatio="none"><path d={buildPath(row.values, row.lo, row.hi, 100, 18)} fill="none" stroke={row.color ?? '#2c9caf'} strokeWidth="1.1" vectorEffect="non-scaling-stroke" /></svg>)}{events && <i className="lane-marker" style={{ left: pct(events.arc) }} />}{events && <b className="lane-marker lane-marker-end" style={{ left: pct(events.tail) }} />}{playhead > 0 && <span className="lane-playhead" style={{ left: pct(playhead) }} />}</div></div>; })}<div className="studio-events"><span><i className="studio-evt arc" />起弧 <b>{events ? fmt(events.arc) : '—'}</b></span><span><i className="studio-evt seg" />有效焊接段 <b>{events ? `${fmt(events.weld_segment[0])} – ${fmt(events.weld_segment[1])}` : '—'}</b></span><span><i className="studio-evt tail" />收弧 <b>{events ? fmt(events.tail) : '—'}</b></span><span className="studio-dur">总时长 {fmt(timelineDur)}</span></div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>对齐任务</h2><p>选择要纳入对齐的模态</p></div><Waves size={17} /></div><div className="modal-checklist">{modalOptions.map((m) => <label className="modal-check" key={m.id}><input type="checkbox" checked={modalities.includes(m.id)} onChange={(e) => { setModalities((prev) => (e.target.checked ? [...prev, m.id] : prev.filter((x) => x !== m.id))); }} /><span className="modal-check-box">{m.icon}</span><b>{m.label}</b><small>{m.desc}</small></label>)}</div><div className="split-estimate studio-estimate"><strong>{modalities.length}</strong><span>种模态纳入对齐</span><small>{signals?.source === 'real' ? '真实信号' : '真实输入不可用'} · 起收弧事件将自动识别</small></div><button className="full-button" onClick={handleRun} disabled={running || !dataId || versionId == null || modalities.length === 0}>{done ? <><Check size={16} />已完成对齐</> : running ? <><Activity size={16} />对齐处理中 {progress}%</> : <><Waves size={16} />开始多模态对齐</>}</button>{done && <button className="full-button studio-reset" onClick={() => setJobId(null)}><RefreshCw size={15} />重新对齐</button>}</section>{alignRes && <section className="panel"><div className="panel-heading"><div><h2>对齐产物</h2><p>写入「时间对齐」版本</p></div><FileText size={17} /></div><div className="artifact-list">{alignRes.assets.map((a, i) => <div className="artifact-row" key={`${a}-${i}`}><span className="artifact-icon">{a.toLowerCase().endsWith('.csv') ? <BarChart3 size={13} /> : a.toLowerCase().endsWith('.jpg') ? <ImageIcon size={13} /> : <FileText size={13} />}</span><div><strong>{a.split('/').pop()}</strong><small>{a}</small></div></div>)}</div></section>}</aside></div></div>;
+  return <div className="page-wrap"><PageIntro eyebrow="多模态数据生产线" title="多模态对齐" description="将单条焊缝的视频、时序、音频与红外统一到同一时间轴，自动识别起收弧事件并生成对齐版本。" action={<Toolbar secondary="导出标注集" exportType="analysis" />} /><div className="split-source-banner"><div><strong>{record?.weld_id ?? dataId ?? '正在读取焊缝…'}</strong><span>版本 v{versionId ?? '—'} · {record?.source ?? '数据来源读取中'}</span></div><div className="source-status"><span className={signals?.source === 'real' ? 'real' : 'generated'}>{signals?.source === 'real' ? '真实信号' : '真实输入不可用'}</span><span>{videoUrl ? '视频已加载' : '视频未加载'}</span><span>{videoFps ? `视频 ${videoFps} fps` : '视频帧率未知（按帧切分不可用）'}</span><span>{signals ? `${signals.duration.toFixed(2)} 秒 · ${signals.sample_rate} Hz` : '信号加载中…'}</span></div></div><div className="alignment-layout"><section className="panel alignment-board">{alignRes?.version && <div className="alignment-banner ok" role="status"><CheckCircle2 size={15} />已生成「时间对齐」版本 {alignRes.version.version_no}（{alignRes.version.object_keys.length} 个产物 · 事件来源 {alignRes.event_source === 'real' ? '真实信号' : '生成回退'}）</div>}{jobStatus === 'failed' && <div className="alignment-banner bad" role="alert"><AlertTriangle size={15} />对齐任务失败：{errMsg}</div>}<div className="studio-head"><div><span className="file-badge"><Waves size={15} />多模态时间轴</span><h2>熔池视频 / 电流电压 / 音频 / 红外</h2></div><StatusPill tone={tone as 'green' | 'orange' | 'red'}>{statusText}</StatusPill></div><div className="studio-ruler"><div className="ruler-tickbar">{rulerTicks.map((t) => <span key={t} style={{ left: pct(t) }}>{fmt(t)}</span>)}</div><div className="ruler-events">{events && <i className="ruler-arc" style={{ left: pct(events.arc) }} title="起弧" />}{events && <b className="ruler-tail" style={{ left: pct(events.tail) }} title="收弧" />}</div>{playhead > 0 && <span className="ruler-playhead" style={{ left: pct(playhead) }} />}</div>{trackRows.map((row) => { const isVideo = row.channel === 'video'; return <div className="lane" key={row.channel}><div className="lane-label"><span className="lane-dot" style={{ background: isVideo ? '#4fa9c2' : (row.color ?? '#2c9caf') }} />{row.label}{row.track && <AvailabilityTag track={row.track} />}</div><div className={`lane-track ${isVideo ? 'lane-track-video' : ''}`}>{isVideo ? (videoUrl ? <video className="studio-video" src={videoUrl} controls onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime + videoOffset)} /> : <div className="lane-video-empty"><Play size={18} /><span>等待真实视频</span></div>) : (row.values && row.values.length > 1 && row.lo != null && row.hi != null && <svg className="lane-wave" viewBox="0 0 100 18" preserveAspectRatio="none"><path d={buildPath(row.values, row.lo, row.hi, 100, 18)} fill="none" stroke={row.color ?? '#2c9caf'} strokeWidth="1.1" vectorEffect="non-scaling-stroke" /></svg>)}{events && <i className="lane-marker" style={{ left: pct(events.arc) }} />}{events && <b className="lane-marker lane-marker-end" style={{ left: pct(events.tail) }} />}{playhead > 0 && <span className="lane-playhead" style={{ left: pct(playhead) }} />}</div></div>; })}<div className="studio-events"><span><i className="studio-evt arc" />起弧 <b>{events ? fmt(events.arc) : '—'}</b></span><span><i className="studio-evt seg" />有效焊接段 <b>{events ? `${fmt(events.weld_segment[0])} – ${fmt(events.weld_segment[1])}` : '—'}</b></span><span><i className="studio-evt tail" />收弧 <b>{events ? fmt(events.tail) : '—'}</b></span><span className="studio-dur">总时长 {fmt(timelineDur)}</span></div></section><aside className="alignment-aside"><section className="panel"><div className="panel-heading"><div><h2>对齐任务</h2><p>选择要纳入对齐的模态</p></div><Waves size={17} /></div><div className="modal-checklist">{modalOptions.map((m) => <label className="modal-check" key={m.id}><input type="checkbox" checked={modalities.includes(m.id)} onChange={(e) => { setModalities((prev) => (e.target.checked ? [...prev, m.id] : prev.filter((x) => x !== m.id))); }} /><span className="modal-check-box">{m.icon}</span><b>{m.label}</b><small>{m.desc}</small></label>)}</div><div className="split-estimate studio-estimate"><strong>{modalities.length}</strong><span>种模态纳入对齐</span><small>{signals?.source === 'real' ? '真实信号' : '真实输入不可用'} · 起收弧事件将自动识别</small></div><button className="full-button" onClick={handleRun} disabled={running || !dataId || versionId == null || modalities.length === 0}>{done ? <><Check size={16} />已完成对齐</> : running ? <><Activity size={16} />对齐处理中 {progress}%</> : <><Waves size={16} />开始多模态对齐</>}</button>{done && <button className="full-button studio-reset" onClick={() => setJobId(null)}><RefreshCw size={15} />重新对齐</button>}</section>{alignRes && <section className="panel"><div className="panel-heading"><div><h2>对齐产物</h2><p>写入「时间对齐」版本</p></div><FileText size={17} /></div><div className="artifact-list">{alignRes.assets.map((a, i) => <div className="artifact-row" key={`${a}-${i}`}><span className="artifact-icon">{a.toLowerCase().endsWith('.csv') ? <BarChart3 size={13} /> : a.toLowerCase().endsWith('.jpg') ? <ImageIcon size={13} /> : <FileText size={13} />}</span><div><strong>{a.split('/').pop()}</strong><small>{a}</small></div></div>)}</div></section>}</aside></div><SeamRoiEditor calibration={calibration} imageUrl={seamImageUrl} imageError={seamImageError} loading={calibLoading} saving={calibSaving} error={calibError} onSave={handleSaveRoi} /></div>;
 }
 
 

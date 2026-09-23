@@ -586,6 +586,14 @@ export interface AlignmentResult {
   version: DataVersion;
 }
 
+/** 焊缝照片上的轴对齐矩形（**原始图片像素**，非归一化）。 */
+export interface SeamRoi {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 /** 标定（§3.4）：视频零点 offset + 焊缝图片 ROI。
  *
  * 权威归属固定钉在该焊缝的 **v1.0 原始版本**上——任何属于该焊缝的版本都读到同一份。
@@ -595,16 +603,30 @@ export interface Calibration {
   /** 原始标定（未标定 → 空对象）。 */
   calibration: {
     video?: { offset_seconds: number } | null;
-    seam_image?: { roi: { x: number; y: number; w: number; h: number } } | null;
+    seam_image?: { roi?: SeamRoi | null; excluded?: boolean } | null;
   };
   /** 标定归属版本（v1.0）；该焊缝无 v1.0 时为 null。 */
   anchored_version_id: number | null;
   video: { offset_seconds: number; calibrated: boolean };
   seam_image: {
-    roi: { x: number; y: number; w: number; h: number } | null;
+    roi: SeamRoi | null;
+    /** 已框选 ROI 且未被排除。 */
     calibrated: boolean;
+    /** 用户明确选择「不对焊缝图片进行分段」——与"还没框 ROI"是两回事。 */
+    excluded: boolean;
     object_key: string | null;
   };
+}
+
+/** PUT …/calibration 请求体（§3.4）：**合并语义**——省略的组保持原值，显式 `null` 清除该组。
+ *
+ * `seam_image` 组在服务端是**整组替换**（`validate_calibration_patch`），两条路径互斥：
+ * - `{roi}` → 框选并参与分段（服务端同时显式写 `excluded: false`，撤销旧的"不参与"）；
+ * - `{excluded: true}` → 明确不参与分段：不必给 ROI，也不下载图片做越界校验。
+ */
+export interface CalibrationUpdate {
+  video?: { offset_seconds: number } | null;
+  seam_image?: { roi?: SeamRoi; excluded?: boolean } | null;
 }
 
 export interface SplitResult {
@@ -689,18 +711,42 @@ export interface SplitRules {
   tail_policy?: 'drop' | 'keep';
 }
 
+/** 一个分段的**视频代表帧**（§3.3）：默认取该段窗口中点，`t_video = t_signal - offset`。
+ *
+ * 同一段只认这一帧——**不许拿全局首帧或占位图冒充**。预览下 `url` 是**短期**预签名地址
+ * （过期后重新预览即可）；产物路径下只有 `object_key`（自己换地址）。`available=false` 时
+ * `reason` 必是真实原因（视频不可用 / 该段落视频覆盖外 / 抽帧失败）。
+ */
+export interface SplitVideoFrame {
+  available: boolean;
+  reason?: string | null;
+  /** 帧在**信号轴**上的时刻（秒）。 */
+  t_signal?: number;
+  /** 帧在**视频轴**上的时刻（秒，`t_signal - offset`）。 */
+  t_video?: number;
+  /** 视频帧号（`t_video × fps`）。 */
+  frame_no?: number;
+  object_key?: string | null;
+  /** 预览专用：短期预签名 URL。 */
+  url?: string | null;
+}
+
 /** 单个窗口在某个模态上的摘要（§3.3）。`available=false` 时 `reason` 必有值。 */
 export interface SplitModalitySlot {
   available: boolean;
   calibrated?: boolean;
+  /** 该模态被用户明确排除在本轮分段之外（焊缝图片的「不对其分段」选择）。 */
+  excluded?: boolean;
   reason?: string | null;
   object_key?: string | null;
-  /** 视频：`start_frame`/`end_frame`/`offset_seconds`/`fps`/`keyframes[{at}]`。 */
+  /** 视频：`start_frame`/`end_frame`/`offset_seconds`/`fps`/`keyframes[{at}]`/`frame`。 */
   start_frame?: number;
   end_frame?: number;
   offset_seconds?: number;
   fps?: number;
   keyframes?: { at: number }[];
+  /** 本段代表帧（每段各不相同）。 */
+  frame?: SplitVideoFrame;
   /** 焊缝图片：`roi` 与沿 ROI 长边的像素区间。 */
   roi?: { x: number; y: number; w: number; h: number } | null;
   spatial_range?: { start_px: number; end_px: number };
@@ -749,12 +795,14 @@ export interface SplitPreview {
       available: boolean;
       object_key: string | null;
       roi: { x: number; y: number; w: number; h: number } | null;
+      /** 用户已选择「不对焊缝图片进行分段」：不可用，但**不是**待标定，别再引导去框选。 */
+      excluded: boolean;
       speed_source: string | null;
       reason: string | null;
     };
   };
   /** 各模态的可用性与**标定状态**（分段页只读展示，不可在此编辑）。 */
-  modalities: Record<string, { available: boolean; calibrated: boolean; reason: string | null; speed_source?: string | null }>;
+  modalities: Record<string, { available: boolean; calibrated: boolean; excluded?: boolean; reason: string | null; speed_source?: string | null }>;
   warnings: string[];
 }
 

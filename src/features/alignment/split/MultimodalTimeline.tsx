@@ -110,12 +110,23 @@ export function MultimodalTimeline({
             aria-pressed={w.index === selectedIndex}
             onClick={() => onSelect(w.index)}
           >
-            <div className="sample-thumb">
-              <span>#{w.index}</span>
+            {/* 代表帧：**本段自己的**那一帧（窗口中点）。取不到就如实写原因——
+                既不拿全局首帧充数，也不用占位渐变假装有图。 */}
+            <div className={`sample-thumb${w.video.frame?.url ? '' : ' sample-thumb-empty'}`}>
+              {w.video.frame?.url ? (
+                <img src={w.video.frame.url} alt={`分段 #${w.index} 的视频代表帧`} loading="lazy" />
+              ) : (
+                <span>无代表帧：{w.video.frame?.reason ?? w.video.reason ?? '视频不可用'}</span>
+              )}
+              <span className="sample-thumb-no">#{w.index}</span>
             </div>
             <strong>{fmtRange(w.start, w.end)}</strong>
             <small>
-              {w.video.available ? '视频✓' : '视频✕'} · {w.seam_image.available ? '图片✓' : '图片✕'}
+              {w.video.available ? '视频✓' : '视频✕'} ·{' '}
+              {/* 图片：明确不参与 / 未框选 / 无图 三种"没有"要分开说，别让用户以为"再等等就有了" */}
+              {w.seam_image.available ? '图片✓'
+                : w.seam_image.excluded ? '图片未参与'
+                : '图片✕'}
             </small>
           </button>
         ))}

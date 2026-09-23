@@ -27,6 +27,7 @@ import math
 import time
 from dataclasses import dataclass
 
+from loguru import logger
 from sqlmodel import Session
 
 from app.core.config import settings
@@ -54,6 +55,9 @@ PREVIEW_TOKEN_TTL_SECONDS = 900.0
 #: 预览响应的分层数据上限（设计 §6.4）：时序 ≤1200 点/轨、视频缩略图 ≤80 张。
 _PREVIEW_SIGNAL_POINTS = 1200
 _PREVIEW_VIDEO_THUMBS = 80
+
+#: 代表帧短期 URL 的有效期（秒）。预览响应本身有 60s 缓存，URL 比缓存活得久即可。
+PREVIEW_FRAME_EXPIRES_SECONDS = 3600
 
 #: 预览结果短期缓存（设计 §6.4）：key = (version_id, rules_hash, mapping_hash)。
 #: 命中的是"同一规则反复编辑"的重复请求，省掉每次重算全量信号的 min-max 池化
@@ -239,6 +243,7 @@ def map_window_to_modalities(
     weld_id: str,
     version_id: int,
     crop_key: str | None = None,
+    video_frame_key: str | None = None,
 ) -> dict:
     """经坐标映射为一个窗口生成样本包 manifest（**纯函数，不做 IO**）。
 
@@ -267,20 +272,62 @@ def map_window_to_modalities(
             "end_index": window.frame_end,
             "channels": list(_TS_CHANNEL_IDS),
         },
-        "video": _video_part(window, maps.get("video") or {}),
+        "video": _video_part(window, maps.get("video") or {}, video_frame_key),
         "seam_image": _seam_image_part(window, maps.get("seam_image") or {}, crop_key),
         "audio": {"available": False, "reason": "source_not_attached"},
     }
     return manifest
 
 
-def _video_part(window: SplitWindow, video: dict) -> dict:
+def representative_frame_time(window: SplitWindow, video: dict) -> float | None:
+    """本段**代表帧**在信号轴上的时刻（默认取窗口中点）；落在视频覆盖范围外返回 None。
+
+    **预览与正式产物共用这一处**——两处各写一份换算迟早会漂移，而它们本该是同一条规则：
+    屏幕上看到的代表帧，就是样本里存下来的那一张。
+    这里只回答"取哪一刻"（信号轴时刻）；`t_video = t_signal - offset` 的换算由
+    `media_probe.analyze_video(..., seek_offset=)` 统一执行。
+    """
+    fps = video.get("fps")
+    if not video.get("available") or not isinstance(fps, (int, float)) or fps <= 0:
+        return None
+    offset = float(video.get("offset_seconds") or 0.0)
+    t_video = (window.start + window.end) / 2.0 - offset
+    if t_video < 0.0:
+        return None
+    duration = video.get("duration")
+    if isinstance(duration, (int, float)) and t_video >= float(duration) - _EPS:
+        return None
+    return (window.start + window.end) / 2.0
+
+
+def _frame_part(window: SplitWindow, video: dict, frame_key: str | None) -> dict:
+    """代表帧在 manifest 里的形状（**时间 + 帧号 + 对象键**，不含字节）。"""
+    t_signal = representative_frame_time(window, video)
+    if t_signal is None:
+        return {
+            "available": False,
+            "reason": "代表帧（窗口中点）落在视频覆盖范围之外：本段视频内容只覆盖部分窗口",
+        }
+    offset = float(video.get("offset_seconds") or 0.0)
+    fps = float(video["fps"])
+    return {
+        "available": True,
+        "t_signal": round(t_signal, 6),
+        "t_video": round(t_signal - offset, 6),
+        "frame_no": int(max(0.0, t_signal - offset) * fps),
+        "object_key": frame_key,
+    }
+
+
+def _video_part(window: SplitWindow, video: dict, frame_key: str | None = None) -> dict:
     """视频模态：`t_video = t_signal - offset`（设计 §3.1.1）。"""
     if not video.get("available"):
-        return {"available": False, "reason": video.get("reason") or "无可用视频文件"}
+        reason = video.get("reason") or "无可用视频文件"
+        return {"available": False, "reason": reason, "frame": {"available": False, "reason": reason}}
     fps = video.get("fps")
     if not isinstance(fps, (int, float)) or fps <= 0:
-        return {"available": False, "reason": video.get("reason") or "视频帧率不可测"}
+        reason = video.get("reason") or "视频帧率不可测"
+        return {"available": False, "reason": reason, "frame": {"available": False, "reason": reason}}
     offset = float(video.get("offset_seconds") or 0.0)
     v_duration = video.get("duration")
     coverage_end = min(
@@ -289,10 +336,12 @@ def _video_part(window: SplitWindow, video: dict) -> dict:
     )
     if coverage_end <= _EPS or window.start - offset >= coverage_end - _EPS:
         # 整个窗口落在视频覆盖范围之外——该模态在本窗内缺失，不伪造帧号
+        reason = "该时间窗落在视频覆盖范围之外"
         return {
             "available": False,
             "object_key": video.get("object_key"),
-            "reason": "该时间窗落在视频覆盖范围之外",
+            "reason": reason,
+            "frame": {"available": False, "reason": reason},
         }
     # 部分重叠时把起点钳到 0：不记不存在的负帧号
     start_frame = math.ceil(max(window.start - offset, 0.0) * fps)
@@ -314,6 +363,7 @@ def _video_part(window: SplitWindow, video: dict) -> dict:
         "start_frame": start_frame,
         "end_frame": max(start_frame, end_frame),
         "keyframes": keyframes,
+        "frame": _frame_part(window, video, frame_key),
     }
 
 
@@ -321,6 +371,16 @@ def _seam_image_part(window: SplitWindow, seam: dict, crop_key: str | None) -> d
     """焊缝图片模态：沿 ROI 长边按弧长比例投影（设计 §3.1.2）。"""
     if not seam.get("available"):
         return {"available": False, "reason": seam.get("reason") or "无焊缝图片文件"}
+    if seam.get("excluded"):
+        # 用户明确选择「不对焊缝图片进行分段」（标定 `seam_image.excluded`）：样本里如实记
+        # 不可用 + 原因。与"没框 ROI"是两件事——后者是未完成的标定，前者是已完成的决定。
+        return {
+            "available": False,
+            "excluded": True,
+            "object_key": seam.get("object_key"),
+            "reason": seam.get("reason")
+            or "已选择不对焊缝图片进行分段：该模态不参与样本",
+        }
     roi = seam.get("roi")
     profile = seam.get("arc_profile")
     if not roi or not profile:
@@ -568,13 +628,85 @@ def _preview_timeline(bundle, mapping: dict, start: float, end: float) -> dict:
         "signal": {"sample_rate": fs, "tracks": tracks},
         "video_thumbnail_times": thumb_times,
         "seam_image_projection": {
-            "available": bool(seam.get("available") and seam.get("roi")),
+            "available": bool(seam.get("available") and seam.get("roi") and not seam.get("excluded")),
+            "excluded": bool(seam.get("excluded")),
             "object_key": seam.get("object_key"),
             "roi": seam.get("roi"),
             "speed_source": seam.get("speed_source"),
             "reason": seam.get("reason"),
         },
     }
+
+
+def attach_preview_frames(
+    payload: dict,
+    *,
+    storage,
+    weld_id: str,
+    mapping: dict,
+    windows: list[SplitWindow],
+) -> dict:
+    """给预览的每个窗口挂上**本段自己的**视频代表帧短期 URL（原地改 `payload` 后返回）。
+
+    预览**必须真的下视频抽帧**——"这一段画面长什么样"只有真帧能回答，占位渐变或全局首帧
+    都是在骗人。**窗口有多少就抽多少**（不设段数上限）：视频覆盖范围内的每一段都要有自己的帧，
+    按段截断等于让后半段凭空少一个模态。代价是一次预览要下视频 + 跑 N 次 ffmpeg。
+    ① 对象键按（焊缝, 映射哈希, 段号）复用，重复预览覆盖同一批对象、不累积；
+    ② 给的是**短期预签名 URL**，二进制不进 JSON。
+    任一段抽不到/传不上去，就把该段的 `frame` 置不可用并写原因，**不伪造图片**。
+    """
+    from app.services import media_probe  # 延迟导入：ffmpeg 二进制探测较慢，预览非必然用到
+
+    video = (mapping.get("mappings") or {}).get("video") or {}
+    video_key = video.get("object_key")
+    rows = payload.get("windows") or []
+    if not video.get("available") or not video_key or not rows:
+        return payload  # 窗口里的 frame 已由 _video_part 写明不可用原因
+
+    kept = [
+        (window, row)
+        for window, row in zip(windows, rows)
+        if (row.get("video") or {}).get("frame", {}).get("available")
+    ]
+    if not kept:
+        return payload
+
+    offset = float(video.get("offset_seconds") or 0.0)
+    try:
+        data = storage.get_object(video_key)
+        if len(data) > media_probe.MAX_VIDEO_PROBE_BYTES:
+            raise ValueError(
+                f"视频 {len(data) // (1024 * 1024)}MB 超过预览抽帧上限"
+                f"（{media_probe.MAX_VIDEO_PROBE_BYTES // (1024 * 1024)}MB）"
+            )
+        _meta, frames = media_probe.analyze_video(
+            data,
+            [(str(window.index), float(row["video"]["frame"]["t_signal"])) for window, row in kept],
+            seek_offset=offset,
+        )
+    except Exception as exc:  # noqa: BLE001 - 抽帧失败只影响代表帧，预览其余部分照常
+        logger.warning("Preview video frame extraction failed for {}: {}", weld_id, exc)
+        for _window, row in kept:
+            row["video"]["frame"] = {"available": False, "reason": f"预览抽帧失败：{exc}"}
+        return payload
+
+    extracted = {str(frame["event"]): frame for frame in frames}
+    digest = mapping_hash(mapping)
+    for window, row in kept:
+        frame = row["video"]["frame"]
+        got = extracted.get(str(window.index))
+        if got is None:
+            row["video"]["frame"] = {"available": False, "reason": "该时刻未能抽出视频帧"}
+            continue
+        key = f"processed/{weld_id}/split-preview/{digest}/{window.index:06d}.jpg"
+        try:
+            storage.upload_stream(key, io.BytesIO(got["bytes"]), len(got["bytes"]), "image/jpeg")
+            frame["object_key"] = key
+            frame["url"] = storage.presign_get(key, expires=PREVIEW_FRAME_EXPIRES_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - 同上：单段失败不拖垮预览
+            logger.warning("Preview frame upload failed for {}#{}: {}", weld_id, window.index, exc)
+            row["video"]["frame"] = {"available": False, "reason": f"代表帧上传失败：{exc}"}
+    return payload
 
 
 def _preview_modalities(mapping: dict) -> dict:
@@ -584,6 +716,7 @@ def _preview_modalities(mapping: dict) -> dict:
         key: {
             "available": bool(value.get("available")),
             "calibrated": bool(value.get("calibrated")),
+            "excluded": bool(value.get("excluded")),
             "reason": value.get("reason"),
             "speed_source": value.get("speed_source"),
         }
@@ -601,12 +734,15 @@ def preview_warnings(mapping: dict, rules: dict, windows: list[SplitWindow]) -> 
     if not video.get("available"):
         warnings.append(f"视频模态不可用：{video.get('reason') or '无可用视频文件'}。分段仍可继续。")
     seam = maps.get("seam_image") or {}
-    if seam.get("available") and not seam.get("calibrated"):
+    if seam.get("excluded"):
+        warnings.append("焊缝图片已选择不参与分段：本次只生成时序/视频样本。")
+    elif seam.get("available") and not seam.get("calibrated"):
         warnings.append("焊缝图片未框选 ROI：该模态在样本中标记为不可用，请前往对齐页标定。")
-    if seam.get("speed_source") == "scalar":
-        warnings.append("焊缝图片按焊接速度稳态中位数映射，未使用逐点速度。")
-    elif seam.get("speed_source") == "none":
-        warnings.append("焊缝图片未使用真实焊接速度，按时间比例映射。")
+    if not seam.get("excluded"):
+        if seam.get("speed_source") == "scalar":
+            warnings.append("焊缝图片按焊接速度稳态中位数映射，未使用逐点速度。")
+        elif seam.get("speed_source") == "none":
+            warnings.append("焊缝图片未使用真实焊接速度，按时间比例映射。")
     overlap = float(rules["window_seconds"]) - float(rules["stride_seconds"])
     if overlap > _EPS:
         ratio = overlap / float(rules["window_seconds"]) * 100

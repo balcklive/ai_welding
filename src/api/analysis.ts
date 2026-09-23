@@ -13,6 +13,7 @@ import type {
   AnalysisViewData,
   Annotation,
   Calibration,
+  CalibrationUpdate,
   DataRecord,
   FeatureExtractRequest,
   FeatureExtraction,
@@ -83,6 +84,22 @@ export async function getCalibration(
   versionId: string,
 ): Promise<Calibration> {
   return request<Calibration>(`/welds/${weldId}/versions/${versionId}/calibration`);
+}
+
+/** 写标定（合并语义，§3.4）：省略的组保持原值，组值 `null` 清除该组。
+ *
+ * ROI 必须落在焊缝照片的真实像素范围内（服务端下载图头校验，越界 400 + 原因）。
+ * 传 `{ seam_image: null }` = 清除 ROI，等价于「焊缝图片不参与分段」。
+ */
+export async function updateCalibration(
+  weldId: string,
+  versionId: string,
+  patch: CalibrationUpdate,
+): Promise<Calibration> {
+  return request<Calibration>(`/welds/${weldId}/versions/${versionId}/calibration`, {
+    method: 'PUT',
+    body: patch,
+  });
 }
 
 /** 多通道时域波形。传 `max_points` 时由服务端 min-max 抽稀（含 `times` 坐标，点数

@@ -94,6 +94,30 @@ export function SliceDetailPanel({ window, preview, cropKey, cropUrl, onOpenKey 
         calibrated={window.video.calibrated}
       />
 
+      {/* 本段代表帧：预览给短期 URL，产物路径给对象键（点开看）。取不到就写原因，不占位。 */}
+      {window.video.frame?.available && window.video.frame.url ? (
+        <figure className="slice-frame">
+          <img src={window.video.frame.url} alt={`分段 #${window.index} 的视频代表帧`} />
+          <figcaption>
+            本段代表帧（窗口中点）：t_signal {window.video.frame.t_signal?.toFixed(3)}s ·
+            t_video {window.video.frame.t_video?.toFixed(3)}s · 视频帧号 {window.video.frame.frame_no}
+          </figcaption>
+        </figure>
+      ) : window.video.frame?.available && window.video.frame.object_key ? (
+        <button
+          type="button"
+          className="artifact-row"
+          onClick={() => onOpenKey?.(window.video.frame!.object_key!)}
+        >
+          <span className="artifact-icon">帧</span>
+          <div><strong>打开本段视频代表帧</strong><small>{window.video.frame.object_key}</small></div>
+        </button>
+      ) : (
+        <p className="preview-summary" style={{ marginTop: 8 }}>
+          本段无视频代表帧：{window.video.frame?.reason ?? window.video.reason ?? '视频不可用'}
+        </p>
+      )}
+
       <ModalityNote
         title="焊缝图片"
         slot={window.seam_image}
@@ -102,6 +126,7 @@ export function SliceDetailPanel({ window, preview, cropKey, cropUrl, onOpenKey 
           ? `沿 ROI 长边投影：${window.seam_image.spatial_range.start_px.toFixed(1)} – ${window.seam_image.spatial_range.end_px.toFixed(1)} px`
           : null}
         calibrated={window.seam_image.calibrated}
+        missingLabel={window.seam_image.excluded ? '未参与本轮分段' : undefined}
       />
 
       {(cropKey || cropUrl) && (
@@ -131,7 +156,7 @@ export function SliceDetailPanel({ window, preview, cropKey, cropUrl, onOpenKey 
 }
 
 function ModalityNote({
-  title, slot, ready, detail, extra, calibrated,
+  title, slot, ready, detail, extra, calibrated, missingLabel,
 }: {
   title: string;
   slot: { reason?: string | null };
@@ -139,6 +164,8 @@ function ModalityNote({
   detail: string | null;
   extra?: string | null;
   calibrated?: boolean;
+  /** 不可用时的前缀；默认「不可用」，被用户排除的模态用「未参与本轮分段」。 */
+  missingLabel?: string;
 }) {
   return (
     <div className="split-ratio-note" style={{ marginTop: 12 }}>
@@ -151,7 +178,7 @@ function ModalityNote({
             <br />标定：{calibrated ? '已标定' : '未标定（关键帧按假设对齐，见上方警告）'}
           </>
         ) : (
-          <>不可用：{slot.reason ?? '源未附加'}</>
+          <>{missingLabel ?? '不可用'}：{slot.reason ?? '源未附加'}</>
         )}
       </small>
     </div>

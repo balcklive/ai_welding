@@ -691,3 +691,28 @@ button { border: 0; cursor: pointer; }
 .segment-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:14px; }
 .segment-actions .primary-button, .segment-actions .outline-button, .segment-actions .ghost-button { display:flex; align-items:center; gap:7px; margin:0; padding:10px 15px; font-size:14px; }
 .segment-actions .ghost-button { color:#8a5a5f; }
+
+/* 焊缝图片 ROI 标定（对齐页标定层）：图上拖拽框选 + 只读回显。坐标恒为**原始图片像素**，
+   下方覆盖框按自然尺寸换算成百分比，故显示尺寸变化不影响框的位置与保存值。 */
+.seam-roi-panel { margin-top:16px; padding:20px; }
+.seam-roi-stage { max-height:340px; overflow:auto; padding:10px; background:#f4f9f8; border:1px solid #e7efed; border-radius:8px; }
+.seam-roi-canvas { position:relative; line-height:0; }
+.seam-roi-image { display:block; width:100%; height:auto; border-radius:4px; cursor:crosshair; user-select:none; touch-action:none; -webkit-user-drag:none; }
+.seam-roi-box { position:absolute; border:2px solid #2c9caf; border-radius:3px; background:rgba(44,156,175,.18); box-shadow:0 0 0 9999px rgba(16,45,53,.34); pointer-events:none; }
+.seam-roi-box.draft { border-style:dashed; border-color:#c08a4e; background:rgba(192,138,78,.18); }
+.seam-roi-meta { display:flex; gap:18px; flex-wrap:wrap; margin-top:10px; color:#5f7275; font:12px 'DM Mono',monospace; }
+.seam-roi-empty { margin:0; color:#5f7275; font-size:13px; line-height:1.7; }
+/* 分段页图片轨的"未参与"空态：沿用深底空态，但补一条去对齐页的引导链接 */
+.seam-lane-empty { gap:6px; padding:0 14px; text-align:center; line-height:1.6; }
+.seam-lane-link { color:#a7e3d2; font-size:13px; text-decoration:underline; }
+.seam-lane-link:hover { color:#e9fffb; }
+
+/* 分段代表帧：真帧铺满缩略框；取不到时浅底 + 原因文字——不拿渐变或全局首帧冒充缩略图。 */
+.sample-thumb img { display:block; width:100%; height:100%; object-fit:cover; }
+.sample-thumb-no { position:absolute; top:7px; left:8px; color:#fff; font:12px 'DM Mono',monospace; text-shadow:0 1px 3px rgba(13,34,38,.75); }
+.sample-thumb-empty { padding:0 8px; text-align:center; line-height:1.5; }
+.sample-thumb-empty span { position:static; color:#5f7275; }
+.sample-thumb-empty .sample-thumb-no { position:absolute; top:7px; left:8px; color:#5f7275; text-shadow:none; }
+.slice-frame { margin:12px 0 0; }
+.slice-frame img { display:block; width:100%; max-width:520px; border-radius:6px; background:#0d2226; }
+.slice-frame figcaption { margin-top:6px; color:#5f7275; font:12px 'DM Mono',monospace; }

@@ -117,7 +117,11 @@ class CalibrationUpdate(BaseModel):
     **合并语义**：只更新给出的组，省略的组保持原值，显式 `null` 清除该组。
 
     - `video.offset_seconds`：视频零点在信号轴上的时刻，`t_video = t_signal - offset`；
-    - `seam_image.roi`：焊缝照片上包住焊缝条带的轴对齐矩形 `{x,y,w,h}`（像素）。
+    - `seam_image.roi`：焊缝照片上包住焊缝条带的轴对齐矩形 `{x,y,w,h}`（像素）；
+    - `seam_image.excluded`：`true` = 用户**明确选择**「不对焊缝图片进行分段」，该模态在
+      分段预览与样本 manifest 中一律记 `available=false` + 原因（只生成时序/视频样本）。
+      与"没框 ROI"（未完成的标定）是两件事，引导文案也不同。给 `excluded=true` 时不需要
+      ROI，因而也不下载图片做越界校验。
     """
 
     video: dict | None = None
@@ -849,7 +853,7 @@ def preview_split_task(
             event_bounds=(effective_range["start"], effective_range["end"]),
             tail_policy=tail_policy,
         )
-        return ok(splitting.build_preview(
+        preview = splitting.build_preview(
             bundle=bundle,
             mapping=mapping,
             rules=_split_rules(
@@ -859,6 +863,18 @@ def preview_split_task(
             effective_range=effective_range,
             weld_id=weld_id,
             version_id=version_id,
+        )
+        # 逐段代表帧：预览必须给出**本段自己的**画面（占位图不算数）。**视频覆盖范围内的每一段
+        # 都要有自己的帧**（不设段数上限），抽帧结果按段挂短期 URL；某段真的抽不到就逐段记不可用
+        # 并写明原因，不伪造、也不拿别的段顶替。
+        from app.storage import get_storage
+
+        return ok(splitting.attach_preview_frames(
+            preview,
+            storage=get_storage(),
+            weld_id=weld_id,
+            mapping=mapping,
+            windows=windows,
         ))
     except splitting.SplitInputError as exc:
         return err(40000, str(exc), status=400)

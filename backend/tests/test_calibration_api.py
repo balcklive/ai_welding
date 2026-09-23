@@ -209,7 +209,9 @@ def test_get_calibration_uncalibrated_defaults(as_user, record) -> None:
     assert data["calibration"] == {}
     assert data["anchored_version_id"] == record.latest_version_id
     assert data["video"] == {"offset_seconds": 0.0, "calibrated": False}
-    assert data["seam_image"] == {"roi": None, "calibrated": False, "object_key": SEAM_KEY}
+    assert data["seam_image"] == {
+        "roi": None, "excluded": False, "calibrated": False, "object_key": SEAM_KEY,
+    }
 
 
 def test_put_then_get_roundtrip(as_user, record, db_session) -> None:
@@ -244,6 +246,26 @@ def test_put_roi_within_bounds(as_user, record, storage, db_session) -> None:
     body = res.json()["data"]
     assert body["seam_image"]["calibrated"] is True
     assert body["seam_image"]["roi"] == {"x": 10.0, "y": 20.0, "w": 300.0, "h": 50.0}
+
+
+def test_put_excluded_without_any_image(as_user, record, storage, db_session) -> None:
+    """「不对焊缝图片进行分段」必须**无条件可表达**：这条焊缝根本没有照片时也要存得下。
+
+    与框 ROI 不同（那时服务端要下载图片校验越界），这里不写 ROI——若沿用了"先要图片"的
+    前置校验，没有照片的焊缝就连"明确不参与"都存不了，而它恰恰最需要这个开关。
+    其余 excluded 分支见 `test_seam_image_excluded.py`。
+    """
+    v10 = db_session.get(DataVersion, record.latest_version_id)
+    v10.object_keys = [VIDEO_KEY]
+    db_session.add(v10)
+    db_session.commit()
+
+    res = client.put(_url(record, record.latest_version_id), json={"seam_image": {"excluded": True}})
+    assert res.status_code == 200, res.text
+    body = res.json()["data"]["seam_image"]
+    assert body["excluded"] is True
+    assert body["roi"] is None and body["calibrated"] is False
+    assert body["object_key"] is None
 
 
 # ── PUT：校验 ────────────────────────────────────────────────────────

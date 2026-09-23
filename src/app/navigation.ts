@@ -62,7 +62,8 @@ export const navStructure: {
     { route: 'analysis/analysis', label: '起收弧识别' },
     { route: 'analysis/split', label: '样本分段' },
     { route: 'analysis/sample-annotation', label: '分段样本标注' },
-    { route: 'analysis/annotation', label: '数据标注' },
+    // 旧「数据标注」（框/多边形/时序区间）暂不开放新流程：保留路由、接口和历史数据兼容，
+    // 以便后续恢复精细定位能力；当前业务主链统一走「样本分段 → 分段样本标注」。
     { route: 'analysis/features', label: '特征提取' },
   ] },
   { id: 'model-center', label: '模型中心', icon: TrainFront, children: [

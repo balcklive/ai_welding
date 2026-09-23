@@ -102,11 +102,16 @@ def _run_v3(session: Session, task: SplitTask, job: Job, record: DataRecord,
     storage = get_storage()
     base = f"processed/{record.weld_id}/split/{task.id}"
     uploaded: list[str] = []
+    # 逐段视频代表帧：与预览走**同一个** `splitting.representative_frame_time`，
+    # 所以样本里存的那一帧就是预览里显示的那一帧（设计 §6.2 的"预览 == 产物"）。
+    frames = _extract_video_frames(storage, record, task, mapping, windows)
+    uploaded.extend(frames.values())
     try:
         for window in windows:
             crop_key = _crop_seam_image(storage, record, task, window, mapping)
             if crop_key:
                 uploaded.append(crop_key)
+            frame_key = frames.get(window.index)
             manifest = splitting.map_window_to_modalities(
                 window,
                 mapping=mapping,
@@ -114,8 +119,9 @@ def _run_v3(session: Session, task: SplitTask, job: Job, record: DataRecord,
                 weld_id=record.weld_id,
                 version_id=version.id,
                 crop_key=crop_key,
+                video_frame_key=frame_key,
             )
-            object_keys = [crop_key] if crop_key else []
+            object_keys = [key for key in (frame_key, crop_key) if key]
             # 单样本 JSON 让一个切片能独立读取（设计 §6.3），与 manifest.json 的清单互为冗余
             sample_json_key = f"{base}/samples/{window.index:06d}.json"
             sample_json = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -195,6 +201,52 @@ def _run_v3(session: Session, task: SplitTask, job: Job, record: DataRecord,
         "mapping_hash": splitting.mapping_hash(mapping),
         "manifest_key": manifest_key,
     })
+
+
+def _extract_video_frames(storage, record: DataRecord, task: SplitTask, mapping: dict,
+                          windows: list) -> dict[int, str]:
+    """为每个窗口抽**本段自己的**视频代表帧，返回 `{段号: 对象键}`。
+
+    时刻由 `splitting.representative_frame_time` 给（窗口中点），换算到视频轴由
+    `media_probe.analyze_video(seek_offset=)` 做——**预览用的是同一条链路**，所以"预览里
+    看到的那一帧"就是"样本里存下来的那一帧"。
+
+    视频是增强模态：整批抽帧失败（视频不可读/超限/ffmpeg 不可用）只告警并返回空，
+    样本照常成立，manifest 里 `video.frame` 如实记不可用原因——与 `_crop_seam_image` 同一取舍。
+    `ponytail:` 每个窗口一次 ffmpeg 调用（与预览同量级）；窗口上千时改批量 seek 再优化。
+    """
+    video = (mapping.get("mappings") or {}).get("video") or {}
+    video_key = video.get("object_key")
+    if not video.get("available") or not video_key:
+        return {}
+    points = [
+        (str(window.index), t)
+        for window in windows
+        if (t := splitting.representative_frame_time(window, video)) is not None
+    ]
+    if not points:
+        return {}
+    try:
+        data = storage.get_object(video_key)
+        if len(data) > media_probe.MAX_VIDEO_PROBE_BYTES:
+            raise ValueError(f"视频 {len(data)} 字节超过抽帧上限 {media_probe.MAX_VIDEO_PROBE_BYTES}")
+        _meta, frames = media_probe.analyze_video(
+            data, points, seek_offset=float(video.get("offset_seconds") or 0.0)
+        )
+    except Exception as exc:  # noqa: BLE001 - 增强模态，失败不阻断样本产出
+        logger.warning("Split video frame extraction failed, samples kept without frames: {}", exc)
+        return {}
+    keys: dict[int, str] = {}
+    for frame in frames:
+        # 键名带 `.frame.jpg` 后缀，避免与同目录的焊缝图片切片 `{段号:06d}.jpg` 互相覆盖
+        key = f"processed/{record.weld_id}/split/{task.id}/samples/{int(frame['event']):06d}.frame.jpg"
+        try:
+            storage.upload_stream(key, io.BytesIO(frame["bytes"]), len(frame["bytes"]), "image/jpeg")
+        except Exception as exc:  # noqa: BLE001 - 同上
+            logger.warning("Split video frame upload failed for sample {}: {}", frame["event"], exc)
+            continue
+        keys[int(frame["event"])] = key
+    return keys
 
 
 def _crop_seam_image(storage, record: DataRecord, task: SplitTask, window, mapping: dict) -> str | None:

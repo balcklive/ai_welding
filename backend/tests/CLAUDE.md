@@ -51,6 +51,25 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 - `test_media_probe.py`（对齐真实化新增，不连 DB）：`parse_ffmpeg_info` 纯函数（Duration/fps/WxH 解析 + 缺字段 None）；`analyze_video` 对 imageio-ffmpeg 生成的 2s/10fps/320x240 mp4 端到端探测（duration/fps/宽高近似断言）；空数据/伪类型文本 → ValueError；超出视频时长的事件跳过（EOF 附近 `-ss` 抽不到帧）、负时刻跳过；`get_ffmpeg_exe` 在 imageio_ffmpeg 导入失败（monkeypatch `sys.modules`）时抛 RuntimeError。
 - `test_alignment_mapping.py`（**2026-09-22 多模态统一坐标系，不连 DB**）：`alignment` 的坐标映射纯函数。覆盖 `position_ratio_at` 插值 + 区间外**钳制不外推**；`arc_length_profile` 三级降级（`channel` 恒速时退化为时间比例 / `channel` 变速时**必须偏离**时间比例——中点 `≈9.8/15` 而非 0.5 / 负速度截零不计入 / 无通道退回 `scalar`→`none` 且两者折线相同 / 全程零速不除零）；`_normalize_roi` 形状校验（w/h ≤ 0、字段缺失、非数值全拒）；`build_coordinate_mapping` 结构（`identity` 时序恒对齐、**未标定 offset 时视频轨 `calibrated=false` 且 reason 含"未标定"并把 offset 落 0 供换算**、标定后带 offset、无视频文件时 `offset_seconds=None`、焊缝图片 `calibrated` 由 ROI 决定、`speed_source=none` 时仍产出可用的纯比例折线、统一轴/事件边界取自 bundle）；末尾断言映射可 `json.dumps`（**不得带 numpy 标量**，它要写 JSON 列与 `mapping.json`）。
 - `test_calibration_api.py`（**2026-09-22 标定 API + 对齐 offset 消费，E2E**）：内存 SQLite + StaticPool + 真实 TestClient + 依赖覆盖 + `app.storage.get_storage` → 内存假存储；视频用 imageio-ffmpeg 现生成，信号用**真实导入**（`SignalIngest` + `run_ingest` + Parquet——`load_signal_bundle` 已无 generated 回退，缺导入直接抛）。覆盖 `GET`/`PUT …/calibration` 往返、**offset 正负**、未标定默认值、**ROI 形状/越界/图片不可读/无图片一律 400 且不落半成品**、**任何版本写入都锚定 v1.0**（v1.1 自身 `calibration` 仍为 NULL 但读到 v1.0 那份）、鉴权 401/403/404、`update/calibration` 审计落库（含 detail）、**对齐任务写 `mapping` 且 `aligned` 随 `calibrated` 变化**、**换 offset 换一批关键帧**（人造信号事件固定在信号轴 0.59/2.61，视频 2s，offset=0 抽到早事件、offset=1.0 抽到晚事件）、**重新标定不改历史 `alignment_tasks.mapping` 与已落盘的 `mapping.json`**。**坑**：`run_ingest` 与 `run_alignment` 都**不自己 commit**（executor 职责），测试须自行 `db_session.commit()`，否则断言看到的是回滚后的旧值。
+- `test_seam_image_excluded.py`（**2026-09-23 焊缝图片「不参与分段」，不连远程库**）：内存 SQLite +
+  StaticPool + 真实 TestClient + 依赖覆盖 + 假 Storage（**记录被读过的对象键**）。覆盖
+  `PUT …/calibration` 的 `{seam_image:{excluded:true}}` 写入（**不下载图片**，`downloads == []`）、
+  给 `{roi}` 撤销不参与（显式回写 `excluded:false`）、`excluded` 覆盖旧 ROI、`{seam_image:null}`
+  清回"未标定"（与"不参与"区分）、非布尔 400；`build_coordinate_mapping` 的
+  `available=true`+`excluded=true`+`calibrated=false`+`SEAM_EXCLUDED_REASON`；**未框选与不参与
+  的原因必须不同**；样本 manifest（`map_window_to_modalities`）记 `available=false` + `excluded=true`
+  且无 `spatial_range`；预览 warnings 在已明确不参与时**不再催去标定**、`_preview_modalities`
+  透出 `excluded`；`_seam_image_track` 不声称 `aligned`。
+- **逐段视频代表帧（2026-09-23）**：`test_splitting_v3.py` 增 4 条纯函数用例——代表帧 = 窗口中点
+  （信号轴）且 `t_video = t_signal - offset`、帧号 = `t_video × fps`；中点落在视频覆盖范围外
+  **返回 None**（不钳端点）；视频不可用/无帧率 → 没有代表帧（不猜时刻）；不可用分支也带
+  `frame.reason`。`test_split_v3_api.py` 增 5 条 E2E——每段拿到**自己的**真帧（对象键互不相同、
+  落盘字节是真 JPEG、JSON 里只有短期 URL 无二进制）、**预览与 Job 的帧逐字段一致**
+  （`t_signal`/`t_video`/`frame_no` + 产物键在 `object_keys` 里且为 `.frame.jpg`）、视频对象缺失时
+  逐段给"抽帧失败"原因、**段数不设上限**（造 26 段——正好越过已删除的旧上限 `PREVIEW_FRAME_LIMIT = 24`
+  ——每段都必须有自己的帧，回归"第 25 段起没有代表帧"）、窗口落在覆盖范围外时
+  "整段不可用"与"仅中点越界"两种原因分开。该文件另加**逐用例清 `splitting._PREVIEW_CACHE`**
+  的 autouse fixture（缓存键含 version_id，各用例的库都是新的、id 从 1 重来 → 会跨用例误命中）。
 - `test_splitting_v3.py`（**2026-09-22 分段 v3 纯函数，不连 DB**）：`build_time_windows`（默认 2/2、重叠、尾片 `drop`/`keep`、**刚好整除时 `keep` 不多出零长尾片**、`ceil` 派生采样点、非法输入报错）；`map_window_to_modalities`（offset **正负号**、整段落在视频外记 `available=false` 不伪造帧号、部分重叠钳到 0、首/中/末帧只留覆盖范围内的、ROI 弧长投影、无 ROI 不可用带原因、manifest 的 `schema_version`/`source.mapping_hash`）；`preview_token`（往返、**改一字节即失效**、过期、格式错）；`rules_hash`/`mapping_hash` 稳定性与内容敏感性。
 - `test_sample_annotation.py`（**2026-09-22 分段样本段级标注**）：服务层 + `/split-tasks/{id}/annotation-samples` 端点。
   内存 SQLite + StaticPool + 真实 TestClient + 依赖覆盖 + 假 Storage + `executor.SessionLocal` 指到测试引擎。

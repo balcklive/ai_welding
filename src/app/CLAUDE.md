@@ -5,8 +5,8 @@
 ## 文件
 
 - `navigation.ts`：
-  - `Route`：全部 18 个路由联合类型（`overview` + `data-center/*` + `analysis/*` + `model-center/*` + `settings`）。
-    **2026-09-22** 新增 `analysis/sample-annotation`（分段样本标注工作台，菜单 label「分段样本标注」，紧跟在「样本分段」之后）。
+  - `Route`：全部 18 个可寻址路由联合类型（`overview` + `data-center/*` + `analysis/*` + `model-center/*` + `settings`）。
+    **2026-09-22** 新增 `analysis/sample-annotation`（分段样本标注工作台，菜单 label「分段样本标注」，紧跟在「样本分段」之后）。旧 `analysis/annotation` 仍可解析历史深链，但不展示在侧边栏；当前可见主链是「样本分段 → 分段样本标注 → 特征提取」。
   - `workspaceHeaders`：三个一级工作区（数据管理/分析与标注/模型中心）+ 系统设置的页头 `{eyebrow, title, description}`。
   - `navStructure`：侧边栏导航树（一级模块 + 二级子菜单），图标用 lucide-react。
 - `route-url.ts`（阶段一 2026-09-14）：

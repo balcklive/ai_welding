@@ -226,6 +226,8 @@ def build_coordinate_mapping(
             "type": "linear",
             "available": True,
             "calibrated": calibrated,
+            # 对象键：下游按需取帧（分段预览的逐段代表帧没有它就抽不了帧）
+            "object_key": video_key,
             "offset_seconds": float(raw_offset) if calibrated else 0.0,
             "fps": video_meta.get("fps"),
             "duration": (
@@ -246,23 +248,34 @@ def build_coordinate_mapping(
     # ── 焊缝图片：arc_length（沿焊缝长度按比例切分） ─────────────────
     image_cal = cal.get("seam_image") if isinstance(cal.get("seam_image"), dict) else {}
     roi = _normalize_roi(image_cal.get("roi"))
+    #: 用户**明确选择**「不对焊缝图片进行分段」（标定 `seam_image.excluded`）。与"还没框 ROI"
+    #: 是两件事：后者是未完成的标定，前者是已完成的决定——引导文案与 manifest 原因都不同。
+    excluded = image_cal.get("excluded") is True
     if seam_image_key:
         speed_source, profile = arc_length_profile(
             bundle, bounds, has_scalar_speed=has_scalar_speed
         )
+        if excluded:
+            reason = SEAM_EXCLUDED_REASON
+        elif roi is None:
+            reason = "焊缝图片未框选 ROI：无法建立长度↔时间映射"
+        else:
+            reason = None
         maps["seam_image"] = {
             "type": "arc_length",
             "available": True,
-            "calibrated": roi is not None,
+            "calibrated": roi is not None and not excluded,
+            "excluded": excluded,
             "object_key": seam_image_key,
             "roi": roi,
             "speed_source": speed_source,
             "arc_profile": profile,
-            "reason": None if roi else "焊缝图片未框选 ROI：无法建立长度↔时间映射",
+            "reason": reason,
         }
     else:
         maps["seam_image"] = {
             "type": "arc_length", "available": False, "calibrated": False,
+            "excluded": False,
             "object_key": None, "roi": None, "speed_source": None, "arc_profile": None,
             "reason": "无焊缝图片文件",
         }
@@ -291,6 +304,10 @@ def build_coordinate_mapping(
 #
 # 写入**只改 `calibration` 一列**——不碰 `object_keys`、不重算历史 `alignment_tasks.mapping`、
 # 不动任何 `split_tasks`。重新标定只影响此后新发起的对齐/分段，历史产物保持当时的口径。
+
+#: 焊缝图片被用户明确排除时的统一原因。**与"还没框 ROI"必须分开说**：前者是已完成的决定
+#: （不该再催去标定），后者是未完成的标定（必须给引导）。
+SEAM_EXCLUDED_REASON = "焊缝图片已被标记为不参与分段：本轮不生成图片样本"
 
 #: `offset_seconds` 的绝对上限（秒）。**手误护栏**（把 `-1.1` 敲成 `-1100`），不是物理约束——
 #: 真实零点偏移由现场标定决定，代码不替业务设上限。
@@ -411,19 +428,27 @@ def validate_calibration_patch(
         if seam is None:
             patch["seam_image"] = None
         elif isinstance(seam, dict):
-            roi = _normalize_roi(seam.get("roi"))
-            if roi is None:
-                raise CalibrationError("seam_image.roi 必须是 {x,y,w,h} 四个有限数且 w/h > 0")
-            if image_size is None:
-                raise CalibrationError("读不到该焊缝的图片，无法校验 ROI 是否落在图片范围内")
-            width, height = image_size
-            if (roi["x"] < 0 or roi["y"] < 0
-                    or roi["x"] + roi["w"] > width or roi["y"] + roi["h"] > height):
-                raise CalibrationError(
-                    f"ROI 超出图片范围（图片 {width}×{height}，ROI "
-                    f"x={roi['x']:g} y={roi['y']:g} w={roi['w']:g} h={roi['h']:g}）"
-                )
-            patch["seam_image"] = {"roi": roi}
+            excluded = seam.get("excluded", False)
+            if not isinstance(excluded, bool):
+                raise CalibrationError("seam_image.excluded 必须是布尔值")
+            if excluded:
+                # 明确「不参与分段」：不需要 ROI，也就不必下载图片做越界校验
+                patch["seam_image"] = {"excluded": True}
+            else:
+                roi = _normalize_roi(seam.get("roi"))
+                if roi is None:
+                    raise CalibrationError("seam_image.roi 必须是 {x,y,w,h} 四个有限数且 w/h > 0")
+                if image_size is None:
+                    raise CalibrationError("读不到该焊缝的图片，无法校验 ROI 是否落在图片范围内")
+                width, height = image_size
+                if (roi["x"] < 0 or roi["y"] < 0
+                        or roi["x"] + roi["w"] > width or roi["y"] + roi["h"] > height):
+                    raise CalibrationError(
+                        f"ROI 超出图片范围（图片 {width}×{height}，ROI "
+                        f"x={roi['x']:g} y={roi['y']:g} w={roi['w']:g} h={roi['h']:g}）"
+                    )
+                # 显式写 `excluded: False`：撤销"不参与"必须能覆盖掉旧值（合并语义是整组替换）
+                patch["seam_image"] = {"roi": roi, "excluded": False}
         else:
             raise CalibrationError("seam_image 必须是对象或 null")
 
@@ -455,6 +480,7 @@ def calibration_payload(v10: DataVersion | None, calibration: dict) -> dict:
     has_offset = isinstance(offset, (int, float)) and not isinstance(offset, bool)
     seam = calibration.get("seam_image")
     roi = _normalize_roi(seam.get("roi")) if isinstance(seam, dict) else None
+    excluded = seam.get("excluded") is True if isinstance(seam, dict) else False
     return {
         "calibration": calibration,
         "anchored_version_id": v10.id if v10 is not None else None,
@@ -464,7 +490,9 @@ def calibration_payload(v10: DataVersion | None, calibration: dict) -> dict:
         },
         "seam_image": {
             "roi": roi,
-            "calibrated": roi is not None,
+            #: 用户明确选择「不对焊缝图片进行分段」——与"没框 ROI"（未标定）区分开。
+            "excluded": excluded,
+            "calibrated": roi is not None and not excluded,
             "object_key": seam_image_key(v10.object_keys if v10 is not None else None),
         },
     }
@@ -910,7 +938,12 @@ def _seam_image_track(key: str | None, mapping: dict | None) -> dict:
         "availability": "available", "source": "real",
         "aligned": bool(seam.get("calibrated")),
         "asset": None, "object_key": key,
-        "metadata": {"roi": seam.get("roi"), "speed_source": seam.get("speed_source")},
+        "metadata": {
+            "roi": seam.get("roi"),
+            "speed_source": seam.get("speed_source"),
+            #: 用户明确「不对焊缝图片进行分段」——有图、但该模态不入样本，别把 ROI 读成"会投影"。
+            "excluded": bool(seam.get("excluded")),
+        },
         "reason": seam.get("reason"),
     }
 

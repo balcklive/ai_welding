@@ -303,7 +303,26 @@ def test_validate_patch_roi_within_image_bounds() -> None:
     roi = {"x": 10, "y": 20, "w": 100, "h": 30}
     assert alignment.validate_calibration_patch(
         {"seam_image": {"roi": roi}}, image_size=(400, 120)
-    ) == {"seam_image": {"roi": {"x": 10.0, "y": 20.0, "w": 100.0, "h": 30.0}}}
+    ) == {"seam_image": {"roi": {"x": 10.0, "y": 20.0, "w": 100.0, "h": 30.0},
+                         "excluded": False}}
+
+
+def test_validate_patch_excluded_needs_no_roi_nor_image_size() -> None:
+    """「不对焊缝图片进行分段」是显式决定：不需要 ROI，也就不必下载图片核实范围。
+
+    撤回该决定（改回给 ROI）时补丁里带 `excluded=False`——`seam_image` 是**整组替换**，
+    不显式写回 False 的话旧的 `excluded=True` 会残留，框了 ROI 却仍被判不参与。
+    """
+    assert alignment.validate_calibration_patch(
+        {"seam_image": {"excluded": True}}, image_size=None
+    ) == {"seam_image": {"excluded": True}}
+
+
+def test_validate_patch_rejects_non_boolean_excluded() -> None:
+    with pytest.raises(alignment.CalibrationError):
+        alignment.validate_calibration_patch(
+            {"seam_image": {"excluded": "yes"}}, image_size=None
+        )
 
 
 @pytest.mark.parametrize(
@@ -372,7 +391,9 @@ def test_calibration_payload_shape_and_defaults() -> None:
     payload = alignment.calibration_payload(None, {})
     assert payload["anchored_version_id"] is None
     assert payload["video"] == {"offset_seconds": 0.0, "calibrated": False}
-    assert payload["seam_image"] == {"roi": None, "calibrated": False, "object_key": None}
+    assert payload["seam_image"] == {
+        "roi": None, "excluded": False, "calibrated": False, "object_key": None,
+    }
 
 
 def test_calibration_payload_reflects_calibration() -> None:

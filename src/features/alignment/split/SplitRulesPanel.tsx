@@ -125,18 +125,20 @@ export function SplitRulesPanel({
         </small>
       </div>
 
-      {/* 标定状态：**只读**摘要 + 跳转（§4.3） */}
+      {/* 标定状态：**只读**摘要 + 跳转（§4.3）。本页不可改标定——这里的每个字都必须来自服务端。 */}
       <div className="split-ratio-note">
         <span className="file-badge">标定状态（只读）</span>
         <small>
           视频零点：{video?.calibrated ? '已标定' : '未标定'}
           {video && !video.available ? '（视频不可用）' : ''}
           <br />
-          焊缝图片 ROI：{seam?.calibrated ? '已框选' : '未框选'}
-          {seam?.speed_source ? `（速度来源 ${seam.speed_source}）` : ''}
+          焊缝图片 ROI：
+          {seam?.excluded ? '已选择不参与分段（只产时序 / 视频样本）'
+            : seam?.calibrated ? '已框选' : '未框选（该模态不参与本轮分段）'}
+          {!seam?.excluded && seam?.speed_source ? `（速度来源 ${seam.speed_source}）` : ''}
         </small>
         <button type="button" className="full-button studio-reset" onClick={onGoToAlignment}>
-          前往对齐页标定
+          {seam?.excluded ? '去对齐页改回参与' : '前往对齐页框选并保存 ROI'}
         </button>
       </div>
 

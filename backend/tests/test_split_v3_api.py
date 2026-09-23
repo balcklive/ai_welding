@@ -75,6 +75,9 @@ class FakeStorage:
     def delete_object(self, object_key: str) -> None:
         self.objects.pop(object_key, None)
 
+    def presign_get(self, object_key: str, expires: int = 3600) -> str:
+        return f"https://fake-minio.local/{object_key}?expires={expires}"
+
 
 def _png(width: int = IMAGE_W, height: int = IMAGE_H) -> bytes:
     buffer = io.BytesIO()
@@ -133,6 +136,15 @@ def run_job(monkeypatch, engine):
         "app.jobs.executor.SessionLocal", lambda: Session(engine, expire_on_commit=False)
     )
     return _run_job
+
+
+@pytest.fixture(autouse=True)
+def _clear_preview_cache():
+    """预览缓存的键是 (version_id, rules_hash, mapping_hash)——各用例的库是全新的、id 从 1 重来，
+    缓存会**跨用例命中**（上一个用例没放视频，这一个放了却拿到旧 payload）。逐用例清掉。"""
+    splitting._PREVIEW_CACHE.clear()
+    yield
+    splitting._PREVIEW_CACHE.clear()
 
 
 @pytest.fixture()
@@ -292,6 +304,68 @@ def test_preview_reports_modalities_and_warnings(api, ready) -> None:
     assert data["modalities"]["seam_image"]["available"] is True
     assert data["modalities"]["seam_image"]["calibrated"] is False
     assert any("Roi" in w or "ROI" in w for w in data["warnings"]), data["warnings"]
+
+
+def test_preview_marks_excluded_seam_image_as_not_participating(api, ready) -> None:
+    """「不对焊缝图片进行分段」：预览里如实记未参与，且**不再催去标定**。
+
+    这是「已完成的决定」与「还没框 ROI」的分界（两者都让该模态不可用）：只清 ROI 表达不参与，
+    用户会一直被引导去对齐页；`excluded` 位让预览与 manifest 说"本次只产时序/视频样本"。
+    """
+    _record, version_id = ready
+    # 先框一个 ROI，再改成"不参与"——后者压过前者（seam_image 组整组替换）
+    _ok(api.put(_url(version_id, "calibration"), json={
+        "seam_image": {"roi": {"x": 10, "y": 10, "w": 300, "h": 60}},
+    }))
+    calibration = _ok(api.put(_url(version_id, "calibration"), json={
+        "seam_image": {"excluded": True},
+    }))
+    assert calibration["seam_image"]["excluded"] is True
+    assert calibration["seam_image"]["roi"] is None
+    assert calibration["seam_image"]["calibrated"] is False
+
+    data = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    seam = data["modalities"]["seam_image"]
+    assert seam["excluded"] is True
+    assert seam["available"] is True, "源文件还在，只是不参与——别把可用的图说成缺失"
+    assert seam["calibrated"] is False
+    projection = data["timeline"]["seam_image_projection"]
+    assert projection["available"] is False, "未参与就不该在预览里铺整张原图"
+    assert projection["excluded"] is True
+    # 每个窗口都标不可用（预览 == 产物：正式任务走的是同一个 map_window_to_modalities）
+    assert all(w["seam_image"]["available"] is False for w in data["windows"])
+    assert all(w["seam_image"].get("excluded") is True for w in data["windows"])
+    assert not any("未框选" in w for w in data["warnings"]), data["warnings"]
+    assert any("不参与" in w for w in data["warnings"]), data["warnings"]
+
+
+def test_excluded_seam_image_produces_timeseries_samples_without_crop(
+    api, ready, db_session, run_job, storage, mp4_bytes
+) -> None:
+    """确认"只生成时序/视频样本"：样本仍然出，但**不产图片切片**，meta/manifest 如实标未参与。"""
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    _ok(api.put(_url(version_id, "calibration"), json={
+        "video": {"offset_seconds": 0.0},
+        "seam_image": {"excluded": True},
+    }))
+
+    preview = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    created = _ok(api.post(_url(version_id, "split-tasks"), json={"preview_token": preview["preview_token"]}))
+    task = _run_split(db_session, run_job, created["job_id"])
+
+    assert task.sample_count == preview["sample_count"] > 0
+    rows = db_session.exec(select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)).all()
+    first = rows[0]
+    assert first.meta["seam_image"]["available"] is False
+    assert first.meta["seam_image"]["excluded"] is True
+    assert "crop_key" not in (first.meta["seam_image"] or {})
+    # 没有**焊缝图片切片**（`samples/{段号:06d}.jpg`）；视频代表帧是另一个模态的产物，不算进来
+    # （判据按具体键形状，别用 `.jpg` 后缀扫全表——那会把别的模态的图片产物一并误判）
+    crop_key = f"processed/{WELD_ID}/split/{task.id}/samples/{first.frame_no:06d}.jpg"
+    assert crop_key not in first.object_keys, first.object_keys
+    # 时序模态照常产出——图片是增强模态，不参与不阻断分段
+    assert first.meta["signal"]["available"] is True
 
 
 def test_preview_does_not_create_any_task(api, ready, db_session) -> None:
@@ -481,3 +555,127 @@ def _run_split(db_session, run_job, job_uid: str) -> SplitTask:
     task = db_session.exec(select(SplitTask).where(SplitTask.job_id == job.id)).first()
     assert task is not None
     return task
+
+
+# ── 逐段视频代表帧（2026-09-23） ─────────────────────────────────────
+
+
+def _assert_jpeg(storage, key: str) -> None:
+    raw = storage.objects[key]
+    assert raw.startswith(b"\xff\xd8"), f"{key} 不是 JPEG"
+    with Image.open(io.BytesIO(raw)) as img:
+        assert img.width > 0 and img.height > 0
+
+
+def test_each_segment_gets_its_own_real_frame(api, ready, storage, mp4_bytes) -> None:
+    """每段卡片都能拿到**本段自己的**真帧：窗口/覆盖范围各不相同，且是真 JPEG 字节。
+
+    防回归：不许拿全局首帧充数（判据是各段对象键互不相同），也不许用占位图（判据是
+    落盘的字节真的是 JPEG、且 JSON 里只有短期 URL 没有二进制）。
+    """
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    _ok(api.put(_url(version_id, "calibration"), json={"video": {"offset_seconds": 1.0}}))
+    data = _preview(api, version_id, event_start=1.0, event_end=7.0)
+
+    frames = [w["video"]["frame"] for w in data["windows"]]
+    assert [w["start"] for w in data["windows"]] == [1.0, 3.0, 5.0]
+    # 代表帧 = 窗口中点（信号轴），换算到视频轴要减 offset
+    assert [f["t_signal"] for f in frames] == [2.0, 4.0, 6.0]
+    assert [f["t_video"] for f in frames] == [1.0, 3.0, 5.0]
+    assert [f["frame_no"] for f in frames] == [25, 75, 125]  # 25 fps
+
+    assert all(f["available"] is True and f["url"] for f in frames)
+    keys = [f["object_key"] for f in frames]
+    assert len(set(keys)) == len(keys), "每段必须是自己的帧，不能复用同一张"
+    assert all(k.startswith(f"processed/{WELD_ID}/split-preview/") for k in keys)
+    for key in keys:
+        _assert_jpeg(storage, key)
+
+    # 二进制不进 JSON：载荷里只有短期 URL/对象键
+    assert "base64" not in json.dumps(data, ensure_ascii=False)
+    assert len(json.dumps(data)) < 200_000
+
+
+def test_preview_frame_time_matches_job_sample_frame(api, ready, db_session, run_job, storage, mp4_bytes) -> None:
+    """§5.4「所见即所得」：预览显示的那一帧 == 正式任务存进样本的那一帧。
+
+    两侧都得自 `splitting.representative_frame_time`；一旦有人只改一边（比如产物改回首帧），
+    这条断言就会红。
+    """
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    _ok(api.put(_url(version_id, "calibration"), json={"video": {"offset_seconds": 1.0}}))
+    preview = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    created = _ok(api.post(_url(version_id, "split-tasks"), json={"preview_token": preview["preview_token"]}))
+    task = _run_split(db_session, run_job, created["job_id"])
+
+    rows = db_session.exec(select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)).all()
+    assert len(rows) == len(preview["windows"])
+    for row, window in zip(rows, preview["windows"]):
+        produced, shown = row.meta["video"]["frame"], window["video"]["frame"]
+        assert produced["available"] is shown["available"] is True
+        assert produced["t_signal"] == shown["t_signal"]
+        assert produced["t_video"] == shown["t_video"]
+        assert produced["frame_no"] == shown["frame_no"]
+        # 产物真的落盘：样本 object_keys 里有帧，且是 JPEG
+        frame_key = produced["object_key"]
+        assert frame_key in row.object_keys
+        assert frame_key.endswith(".frame.jpg"), "帧不能和焊缝图片切片共用同一个键"
+        _assert_jpeg(storage, frame_key)
+    # 抽查一帧：与窗口自身时间范围一致（t_video 落在 [start-offset, end-offset) 内）
+    first = rows[0].meta["video"]["frame"]
+    assert 0.0 <= first["t_video"] < 2.0
+
+
+def test_frame_reports_real_reason_when_video_object_missing(api, ready, storage) -> None:
+    """视频对象不在库里（映射说可用）→ 逐段给出**真实**抽帧失败原因，不伪造图片。"""
+    _record, version_id = ready
+    data = _preview(api, version_id, event_start=1.0, event_end=7.0)
+    for window in data["windows"]:
+        frame = window["video"]["frame"]
+        assert frame["available"] is False
+        assert frame.get("url") is None
+        assert "抽帧失败" in frame["reason"]
+
+
+def test_every_segment_gets_a_frame_no_segment_cap(api, ready, storage, mp4_bytes) -> None:
+    """**段数不设上限**：视频覆盖范围内有多少段，就抽多少段——一段都不能凭空没有代表帧。
+
+    回归背景：预览曾按 `PREVIEW_FRAME_LIMIT = 24` 截断，第 25 段起在 `frame.reason` 里写
+    "超出上限不提供代表帧"。那是拿"预览慢"换"后半段没有画面"，用户看到的是同一个任务里
+    前 24 段有图、后面的段集体缺失。这里刻意造 26 段（正好越过旧上限）。
+    """
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    _ok(api.put(_url(version_id, "calibration"), json={"video": {"offset_seconds": 1.0}}))
+    data = _preview(
+        api, version_id, event_start=1.0, event_end=6.2, window_seconds=0.2, stride_seconds=0.2
+    )
+
+    assert data["sample_count"] == 26, "0.2s 窗 × 26 段：造满旧上限以外的段"
+    frames = [w["video"]["frame"] for w in data["windows"]]
+    assert all(f["available"] is True and f["url"] for f in frames), [
+        f.get("reason") for f in frames if not f["available"]
+    ]
+    keys = [f["object_key"] for f in frames]
+    assert len(set(keys)) == len(keys), "每段仍是自己的帧"
+    for key in keys:
+        _assert_jpeg(storage, key)
+
+
+def test_frame_available_false_when_window_outside_video_coverage(api, ready, storage, mp4_bytes) -> None:
+    """窗口落在视频覆盖范围外（视频 8s、信号 8s、offset=-4 → 视频只到信号 4s）→ 逐段给原因。"""
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    _ok(api.put(_url(version_id, "calibration"), json={"video": {"offset_seconds": -4.0}}))
+    data = _preview(api, version_id, event_start=1.0, event_end=7.0)
+
+    first, middle, last = data["windows"]
+    assert [w["start"] for w in data["windows"]] == [1.0, 3.0, 5.0]
+    # 第 1 段整段在视频内；第 2 段只有部分覆盖，但**中点在覆盖外**——两种"没有"要分开说
+    assert first["video"]["frame"]["available"] is True
+    assert middle["video"]["available"] is True and middle["video"]["frame"]["available"] is False
+    assert "覆盖范围" in middle["video"]["frame"]["reason"]
+    assert last["video"]["available"] is False
+    assert "覆盖范围" in last["video"]["frame"]["reason"]

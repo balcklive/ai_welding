@@ -40,7 +40,14 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   的 `rules_version` 分流：**`>= 3` 走 `_run_v3`**（秒级窗口 + `splitting.map_window_to_modalities`
   产出多模态样本包 + `samples.start_time/end_time` 真列 + `samples/{index:06d}.json` +
   任务级 `manifest.json` + **焊缝图片按 ROI 投影裁切**——`_crop_seam_image` 任何失败只告警、
-  样本照常成立，图片是增强模态）；**`<= 2` 走 `_run_legacy`**，行为逐字保留，好让历史
+  样本照常成立，图片是增强模态）+ **逐段视频代表帧**（2026-09-23）——`_extract_video_frames`
+  对每个窗口抽**本段自己的**帧（时刻取自 `splitting.representative_frame_time`，与预览**同一个
+  函数**，故"预览看到的那一帧"就是"样本里存的那一帧"），落
+  `processed/{weld}/split/{task}/samples/{段号:06d}.frame.jpg` 并进样本 `object_keys` 与
+  `meta.video.frame.object_key`；键名带 `.frame.jpg` 后缀是为了**不与同目录的焊缝图片切片
+  `{段号:06d}.jpg` 互相覆盖**（`test_split_v3_api.py` 有断言钉这一点）。整批抽帧失败（视频不可读/
+  超 `media_probe.MAX_VIDEO_PROBE_BYTES`/ffmpeg 不可用）只告警返回空、样本照常——视频同样是
+  增强模态，与 `_crop_seam_image` 同一取舍）；**`<= 2` 走 `_run_legacy`**，行为逐字保留，好让历史
   `failed` 任务仍能重试（不能拿 v3 去重切历史口径）。Job **不做任何时间换算**——换算全在
   `splitting.map_window_to_modalities`，且预览走同一个函数。历史 `_run_legacy` 口径：
   `handle(job_id, session)`（`@register_handler("split")`）→

@@ -67,9 +67,30 @@
     **唯一把"秒"换算到各模态坐标的地方**（§3.3 schema_version=3）。视频按
     `t_video = t_signal - offset` 换算帧号；焊缝图片按弧长比例投影像素区间；任一模态越界记
     `available=false` + reason，**不伪造**。**预览与 Job 共用它**，所以"预览 == 产物"。
+  - **逐段视频代表帧（2026-09-23）**：`representative_frame_time(window, video)` 是**取哪一刻**的
+    **唯一实现**（默认窗口中点，落在视频覆盖范围外返回 `None`）——预览抽帧、Job 落盘、manifest
+    三处都读它，所以"预览里看到的那一帧"就是"样本里存下来的那一帧"（各写一份必然漂移）。
+    `_frame_part` 把它装配成 `{available, reason?, t_signal, t_video, frame_no, object_key}`
+    ；`map_window_to_modalities(..., video_frame_key=)` 把产物键塞进 `video.frame`。**每个窗口
+    都必须能回答"为什么没有代表帧"**：视频不可用 / 该段落在覆盖外 / 中点越界 / 抽帧失败，
+    四种原因都由服务端给，前端不自己编。帧时刻到视频轴的换算
+    （`t_video = t_signal - offset`）交给 `media_probe.analyze_video(..., seek_offset=)`，本模块
+    不重复实现。
+  - `attach_preview_frames(payload, *, storage, weld_id, mapping, windows)`（**2026-09-23**）：
+    预览**逐段真的下视频抽帧**并挂**短期预签名 URL**（占位图/全局首帧都是在骗人）。
+    **不设段数上限**（2026-09-23 删掉 `PREVIEW_FRAME_LIMIT = 24`）：视频覆盖范围内有多少段就抽
+    多少段——按段截断等于让后半段凭空少一个模态。代价是一次预览要下视频 + 跑 N 次 ffmpeg。
+    对象键按（焊缝, 映射哈希, 段号）复用
+    （重复预览覆盖同一批对象、不累积），URL 有效期 `PREVIEW_FRAME_EXPIRES_SECONDS = 3600`。
+    视频超 `media_probe.MAX_VIDEO_PROBE_BYTES`、抽帧失败、上传失败一律**逐段**记原因，
+    预览其余部分照常返回。**坑**：这只缓冲预览**不写 `processed/` 之外的东西**，
+    也**不改 `build_preview` 的纯函数性质**——抽帧在路由层、缓存之后做，所以缓存里存的是
+    不含 URL 的 payload（URL 会过期，不能进缓存）。
   - `resolve_coordinate_mapping(session, record, version, bundle)`：分段侧取映射——**不下载视频**，
     fps/duration 读该焊缝最近一次对齐产物；从未对齐则视频模态不可用并给原因（不阻断分段）。
     标定每次从 v1.0 权威标定现读，所以改完标定下次预览即生效、不必先重跑对齐。
+    **例外**：`attach_preview_frames` 会为逐段代表帧下视频（这是"预览要显示真帧"的必然代价，
+    §6.4 的"预览不下载视频"只对那个函数不成立）。
   - `build_preview(...)` / `sign_preview_token` / `verify_preview_token`：预览响应与**短期令牌**
     （HMAC-SHA256 无状态，15 分钟）。token 自带完整规则 + 规则哈希 + 映射哈希 + 有效区间，
     客户端改不了——这是"所见即所得"的技术基础（§5.4）。进程内 60s 预览缓存（§6.4）。
@@ -144,7 +165,8 @@
     `welding_speed` → `scalar`；皆无 → `none`；**后两级数学上都是恒速假设、折线相同**，区别
     只在如实标注用了哪一级依据。负速度截零不计入弧长，折线平移到区间起点保证 `r(t0)=0`）。
     `build_coordinate_mapping(...)` 组装统一轴 + 各模态映射：`identity`（时序）/ `linear`
-    （视频，`offset_seconds` 来自源版本 `data_versions.calibration`）/ `arc_length`（焊缝图片，
+    （视频，`offset_seconds` 来自源版本 `data_versions.calibration`，**2026-09-23 起另带
+    `object_key`**——分段预览的逐段代表帧要它才抽得了帧，此前只给元信息不给源）/ `arc_length`（焊缝图片，
     ROI 来自同一标定）。`position_ratio_at(profile, t)` 供下游按 `t` 插值取 `r`（区间外**钳制
     不外推**）。**标定缺失不阻断任务**——对应模态记 `calibrated=false` + reason。
   - **标定读写（2026-09-22，闭环打通）**：`calibration` 的权威归属固定钉在该焊缝的
@@ -156,7 +178,14 @@
     `validate_calibration_patch(payload, image_size=)` 校验并返回**只含本次给出键**的补丁
     （合并语义；组值为 `None` 表示清除）：offset 要求有限数值且 ≤`MAX_ABS_OFFSET_SECONDS`
     （±3600s **手误护栏**，非物理约束）；ROI 要求四数有限、`w/h>0`、**且落在真实图片像素范围内**
-    ——`image_size` 为 None 时**拒绝**（核实不了的断言不放行）。`read_image_size(storage, key)`
+    ——`image_size` 为 None 时**拒绝**（核实不了的断言不放行）。
+    **`seam_image.excluded`（2026-09-23）**：用户**明确选择**「不对焊缝图片进行分段」。
+    与"还没框 ROI"必须在服务端分开——两者都让图片模态在分段预览/manifest 里记
+    `available=false`，但原因与引导不同（前者是已完成的决定、`SEAM_EXCLUDED_REASON`，
+    后者是未完成的标定、"请前往对齐页标定"）。写 `{roi}` 时**显式带上 `excluded: false`**
+    （合并语义是整组替换，否则撤销"不参与"覆盖不掉旧值）；`excluded=true` 时不需要 ROI，
+    路由也就不下载图片、不付读图成本。`build_coordinate_mapping` 据它给
+    `calibrated=false` + `excluded=true` + 专属 reason。`read_image_size(storage, key)`
     用 Pillow 读**文件头**取 `(w,h)`（不全图解码）；`merge_calibration` 合并；`save_calibration`
     写 v1.0 的 `calibration` **一列**（不 commit）。`calibration_payload(v10, calibration)`
     是 GET/PUT 共用响应体。**写入不碰 `object_keys`、不重算历史 `alignment_tasks.mapping`、

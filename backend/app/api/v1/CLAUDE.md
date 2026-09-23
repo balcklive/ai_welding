@@ -68,6 +68,12 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     + `modalities`（含 `calibrated`）+ `warnings[]`。**请求体不含标定**——映射恒从源版本
     `calibration` 与对齐产物经 `splitting.resolve_coordinate_mapping` 读取（不下载视频）。
     预览**不建 Job、不写任何产物**。`GET/PUT …/calibration` 见上。
+    **逐段视频代表帧（2026-09-23）**：响应后段调 `splitting.attach_preview_frames`——
+    **每个窗口**的 `video.frame` 给出**本段自己的**帧（窗口中点，`t_video = t_signal - offset`）
+    与**短期预签名 URL**（二进制不进 JSON），抽不到的段逐段写明原因；**视频覆盖范围内的每一段
+    都要有自己的帧，不设段数上限**（2026-09-23 删除 `PREVIEW_FRAME_LIMIT`）。这一步**会下视频**
+    并对每段跑一次 ffmpeg，是"预览要显示真帧"的必然代价；
+    它在 60s 预览缓存**之后**执行，所以缓存里不会存会过期的 URL。
   - `POST /welds/{weld_id}/versions/{version_id}/split-tasks`（**v3**）：请求体**只有
     `{preview_token}`**——服务端用 token 里签过的规则重建窗口（禁止客户端另交一套，否则
     "所见即所得"失效）。校验 token 的焊缝/版本/规则哈希/**映射哈希**/有效区间，任一变更

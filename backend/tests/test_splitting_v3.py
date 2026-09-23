@@ -254,3 +254,54 @@ def test_hashes_are_stable_and_content_sensitive() -> None:
     assert splitting.mapping_hash(mapping) == splitting.mapping_hash(_mapping())
     assert splitting.mapping_hash(mapping) != splitting.mapping_hash(_mapping(offset=1.5))
     assert splitting.mapping_hash(None) == splitting.mapping_hash({})
+
+
+# ── 逐段代表帧的换算（预览与产物共用同一处） ─────────────────────────
+
+
+def test_representative_frame_is_window_midpoint_on_signal_axis() -> None:
+    """代表帧默认取**本段窗口中点**（信号轴），不是首帧、也不是全局某一帧。"""
+    _m, video = _mapping().get("mappings"), _mapping()["mappings"]["video"]
+    window = _window(3, start=8.0, end=10.0)
+    assert splitting.representative_frame_time(window, video) == 9.0
+
+    part = splitting.map_window_to_modalities(
+        window, mapping=_mapping(), sample_rate=1000, weld_id="W", version_id=1
+    )["video"]["frame"]
+    assert part["available"] is True
+    assert part["t_signal"] == 9.0
+    assert part["t_video"] == 8.5, "t_video = t_signal - offset（offset=0.5）"
+    assert part["frame_no"] == 212, "帧号 = t_video × fps（25 fps）"
+
+
+def test_representative_frame_time_is_none_outside_video_coverage() -> None:
+    """中点落到视频覆盖范围外 → None（调用方据此记"本段没有代表帧"+原因），不钳到端点。"""
+    video = _mapping(offset=0.5)["mappings"]["video"]
+    # 视频覆盖视频轴 [0, 99)，即信号轴 [0.5, 99.5)
+    assert splitting.representative_frame_time(_window(1, start=0.0, end=0.4), video) is None
+    assert splitting.representative_frame_time(_window(1, start=100.0, end=102.0), video) is None
+    assert splitting.representative_frame_time(_window(1, start=98.0, end=100.0), video) is not None
+
+
+def test_representative_frame_time_needs_usable_video() -> None:
+    """视频不可用 / 没有帧率 → 没有代表帧（宁可不给，也不猜一个时刻去抽帧）。"""
+    window = _window(1, start=8.0, end=10.0)
+    assert splitting.representative_frame_time(window, {"available": False}) is None
+    assert splitting.representative_frame_time(
+        window, {"available": True, "fps": None, "duration": 99.0}
+    ) is None
+    assert splitting.representative_frame_time(
+        window, {"available": True, "fps": 0, "duration": 99.0}
+    ) is None
+
+
+def test_video_part_always_carries_a_frame_reason_when_unavailable() -> None:
+    """每一段都要能回答"为什么没有代表帧"——不可用分支也带 `frame.reason`。"""
+    unavailable = splitting.map_window_to_modalities(
+        _window(1, start=8.0, end=10.0),
+        mapping={**_mapping(), "mappings": {**_mapping()["mappings"],
+                                            "video": {"available": False, "reason": "无可用视频文件"}}},
+        sample_rate=1000, weld_id="W", version_id=1,
+    )["video"]
+    assert unavailable["frame"]["available"] is False
+    assert unavailable["frame"]["reason"] == "无可用视频文件"
