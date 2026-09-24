@@ -3,6 +3,11 @@ name: CI and ACR Docker Deploy
 on:
   push:
     branches: [main]
+    # 纯文档提交不触发构建/发布（Dockerfile 不 COPY docs，镜像内容不受影响）。
+    # 含代码的提交只要有一个非忽略路径变更，仍会正常触发。
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
@@ -82,8 +87,11 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # BuildKit 缓存写到自己的 ACR，而非 GitHub Actions cache 后端。
+          # type=gha 会把每次构建的全量缓存算进账号 Actions 存储（实测本仓库累积
+          # 75 条 / 1.36 GB），私有仓库共用额度极易触顶；ACR 侧存储自有额度。
+          cache-from: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache
+          cache-to: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
 
   deploy:
     name: Deploy pulled image
