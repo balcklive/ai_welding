@@ -54,6 +54,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # 清理 Actions 缓存需要 actions: write（`gh cache delete`）；只用仓库自带 GITHUB_TOKEN，
+      # 不引入额外 secret。
+      actions: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -87,16 +90,46 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # **BuildKit 缓存当前关闭**（2026-09-28 实测两次，ACR 个人版这条路走不通）：
-          #   - `cache-to type=registry,...,image-manifest=true,oci-mediatypes=true`：
-          #     缓存被推成 artifactType 为 `application/vnd.buildkit.cacheconfig.v0` 的 OCI
-          #     manifest，ACR 直接拒收（`denied: unknown manifest class for ...cacheconfig.v0`）；
-          #   - 去掉这两个标志（index 形式）：不再报错，但缓存导出**挂死**——build 步骤
-          #     1 小时无进展（同一段路径，上一次是重试 4 次后报错）。
-          # 两者都表现为"镜像其实已推成功、只有缓存导出出问题，但 build job 判失败/卡住，
-          # deploy 不执行"。故暂时走冷构建（约 5-8 分钟，Dockerfile 层序不变仍有部分命中）。
-          # 想恢复缓存时的选项：type=gha（已知可用，代价是账号 Actions 存储，实测 75 条/1.36GB）、
-          # type=inline（不推额外 manifest，多阶段命中弱）、换 ACR 企业版/独立 registry 再试 registry cache。
+          # BuildKit 缓存用 **GitHub Actions cache**（type=gha），配合下一步的**自动清理**：
+          # 配额被旧缓存塞满是当初改走 ACR 的原因，而 ACR 那条路两条形式都不通（见
+          # .github/workflows/CLAUDE.md 的 2026-09-28 实测记录），所以回到已知可用的 gha，
+          # 并用「只保留最近 N 条 / 总量封顶」把存储压住。
+          # `scope` 固定成一个常量：缓存键前缀可预测（buildcache-…），清理规则才敢按家族收敛；
+          # 默认 scope 是分支名，键前缀会随分支漂移。
+          cache-from: type=gha,scope=buildcache
+          cache-to: type=gha,mode=max,scope=buildcache
+
+      # 缓存清理：只留最近 N 条（每个"缓存家族"各留 KEEP_PER_FAMILY 条），其余一律删除；
+      # 再加一道总量封顶兜底——家族识别万一不中（键格式变了），也不会悄悄涨回配额上限。
+      # `if: always()`：构建失败/被取消也要清，否则失败轮次留下的缓存会越攒越多。
+      - name: Prune Actions caches
+        if: always()
+        # 清理是维护动作，**绝不能因为它失败而挡住发布**（本 job 失败 → deploy 不执行）。
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_PER_FAMILY: "2"
+          MAX_TOTAL_MB: "2048"
+        run: |
+          set -uo pipefail
+          keep="$KEEP_PER_FAMILY"
+          # 家族 = 键去掉尾部哈希段（node-cache-Linux-x64-npm-<sha> → node-cache-Linux-x64-npm；
+          # buildcache-<…> 同理）；保留每个家族最新的 $keep 条。
+          gh cache list --limit 100 --json id,key,createdAt \
+            --jq "sort_by(.createdAt) | reverse | group_by(.key | sub(\"-[0-9a-fA-F]{8,}$\"; \"\")) | map(.[$keep:] | .[]) | .[].id" \
+            | while read -r id; do
+                [ -n "$id" ] || continue
+                gh cache delete "$id" && echo "pruned cache id=$id" || echo "skip cache id=$id"
+              done
+          # 总量兜底：超上限就从最旧的开始删（只可能在家族识别失效时触发）。
+          for _ in $(seq 1 20); do
+            total="$(gh cache list --limit 100 --json sizeInBytes --jq 'map(.sizeInBytes) | add // 0')"
+            if [ "$total" -le $((MAX_TOTAL_MB * 1048576)) ]; then break; fi
+            oldest="$(gh cache list --limit 100 --json id,createdAt --jq 'sort_by(.createdAt) | [.[0].id] | .[0] // empty')"
+            [ -n "$oldest" ] || break
+            gh cache delete "$oldest" && echo "pruned oldest cache id=$oldest (total $((total / 1048576))MB)" || break
+          done
+          gh cache list --limit 100 --json sizeInBytes --jq '"Actions cache now: \(length) entries / \(map(.sizeInBytes) | add // 0 | . / 1048576 | floor) MB"'
 
   deploy:
     name: Deploy pulled image
