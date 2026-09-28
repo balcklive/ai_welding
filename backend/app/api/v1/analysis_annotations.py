@@ -386,6 +386,9 @@ def save_annotation_labels(
     new_annotations = annotation.save_labels(
         session, task, sample, body.labels, _operator(current_user)
     )
+    # 标注完成闭环（2026-09-28，P1-04）：被推过 LS 的任务里，主应用保存即视作该样本已回写，
+    # 全部样本保存完 → 任务 synced + job succeeded。否则这类任务永远停在 running。
+    ls_svc.mark_sample_synced(session, task, sample)
     write_audit(
         session,
         current_user.id,

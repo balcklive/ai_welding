@@ -210,14 +210,33 @@ def _register(api, dataset_id: int, weld_name: str, sample_rate: str = "2 kHz") 
     )
 
 
-def _attach(api, record_id: int, keys: list[str], storage_bytes: int = 4096) -> dict:
-    """挂载文件：同一事务里会**自动**新建数据集版本 + 构建任务（登记链路的生产路径）。"""
-    return _ok(
+def _attach(api, record: dict, keys: list[str], storage_bytes: int = 4096,
+            verify: bool = True) -> dict:
+    """挂载文件：同一事务里会**自动**新建数据集版本 + 构建任务（登记链路的生产路径）。
+
+    `verify=True`（默认）：挂载后立即跑一次核验——**2026-09-28 起构建有核验准入**，登记后
+    从未核验的记录（quality 初值就是「待复核」）不进数据集成员清单。生产流程同样是
+    「登记 → 挂载 → 核验 → 构建」，所以这里按生产流程走；要复现"未核验"场景传 `verify=False`。
+
+    核验必须在挂载**之后**跑：规则读的是版本的 `object_keys`，登记那一刻 v1.0 还没有文件，
+    那时核验只会得到「异常」。
+    """
+    payload = _ok(
         api.post(
-            f"{API}/registrations/{record_id}/raw-files",
+            f"{API}/registrations/{record['id']}/raw-files",
             json={"object_keys": keys, "storage_bytes": storage_bytes},
         )
     )
+    if verify:
+        # 挂载返回的是**数据版本**载荷：`id` 即被挂载的 v1.0（核验规则读它的 object_keys）。
+        report = _ok(
+            api.post(
+                f"{API}/welds/{record['weld_id']}/versions/{payload['id']}/validation"
+            )
+        )
+        # 有告警（如"缺少图像/视频文件"）→ 待复核，仍可进成员；失败 → 异常，会被准入挡掉。
+        assert report["failed"] == 0, report
+    return payload
 
 
 def _latest_dataset_version(db, dataset_id: int) -> DatasetVersion:
@@ -276,7 +295,7 @@ def test_video_anchor_never_becomes_a_dataset_member(api, db, storage, run_job):
     record = _register(api, dataset_id, "E2E 锚点样本")
     storage.put("raw/e2e-demo.mp4", b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 64)
 
-    _attach(api, record["id"], ["raw/e2e-demo.mp4"])
+    _attach(api, record, ["raw/e2e-demo.mp4"])
     version = _latest_dataset_version(db, dataset_id)
 
     # 视频锚点标注任务：后端会为它建一条 `meta.source="video-anchor"` 的锚点样本。
@@ -297,7 +316,7 @@ def test_video_anchor_never_becomes_a_dataset_member(api, db, storage, run_job):
 
     # 再挂一个文件 → 第二次构建：基础样本复用同一条，不堆积新样本
     storage.put("raw/e2e-extra.bin", b"x" * 8)
-    _attach(api, record["id"], ["raw/e2e-extra.bin"])
+    _attach(api, record, ["raw/e2e-extra.bin"])
     second = _latest_dataset_version(db, dataset_id)
     assert second.id != version.id
     _run(db, run_job, _build_job_uid(db, second.id))
@@ -325,7 +344,7 @@ def test_build_keeps_only_the_latest_succeeded_split_slices(api, db, storage, ru
     record = _register(api, dataset_id, "E2E 分段样本")
     storage.put("raw/e2e-signal.csv", synthetic_signal_csv())
 
-    _attach(api, record["id"], ["raw/e2e-signal.csv"])
+    _attach(api, record, ["raw/e2e-signal.csv"])
     first_version = _latest_dataset_version(db, dataset_id)
 
     # 信号导入：CSV 必须真的过校验并落 Parquet，分段才有真实输入
@@ -357,7 +376,7 @@ def test_build_keeps_only_the_latest_succeeded_split_slices(api, db, storage, ru
     assert second_slices > first_slices
 
     storage.put("raw/e2e-trigger.bin", b"y" * 8)
-    _attach(api, record["id"], ["raw/e2e-trigger.bin"])
+    _attach(api, record, ["raw/e2e-trigger.bin"])
     second_version = _latest_dataset_version(db, dataset_id)
     assert _run(db, run_job, _build_job_uid(db, second_version.id)).status == "succeeded"
 
@@ -384,7 +403,7 @@ def test_invalid_split_window_is_rejected_and_does_not_feed_members(api, db, sto
     record = _register(api, dataset_id, "E2E 非法窗口样本")
     storage.put("raw/e2e-fail.csv", synthetic_signal_csv())
 
-    _attach(api, record["id"], ["raw/e2e-fail.csv"])
+    _attach(api, record, ["raw/e2e-fail.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     # 窗口比整段有效区间（0.602 秒）还长 → 一个完整窗口都放不下
@@ -403,7 +422,7 @@ def test_invalid_split_window_is_rejected_and_does_not_feed_members(api, db, sto
 
     # 再挂一个文件触发构建：没有任何切片 → 只收基础样本
     storage.put("raw/e2e-fail-trigger.bin", b"z" * 8)
-    _attach(api, record["id"], ["raw/e2e-fail-trigger.bin"])
+    _attach(api, record, ["raw/e2e-fail-trigger.bin"])
     version = _latest_dataset_version(db, dataset_id)
     assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
 
@@ -424,7 +443,7 @@ def test_sample_rate_written_without_hz_unit_still_ingests(api, db, storage, run
     record = _register(api, dataset_id, "E2E 无时间列样本", sample_rate="20K")
     storage.put("raw/e2e-no-time.csv", synthetic_signal_csv(fs=20000, seconds=0.6, with_time=False))
 
-    _attach(api, record["id"], ["raw/e2e-no-time.csv"])
+    _attach(api, record, ["raw/e2e-no-time.csv"])
     ingest = _run(db, run_job, _latest_job_uid(db, "signal_ingest"))
     assert ingest.status == "succeeded", ingest.error
 
@@ -443,7 +462,7 @@ def test_delete_impact_matches_actual_delete(api, db, storage, run_job):
     dataset_id = _create_dataset(api, "E2E 删除预检")
     record = _register(api, dataset_id, "E2E 删除预检样本")
     storage.put("raw/e2e-del.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-del.csv"])
+    _attach(api, record, ["raw/e2e-del.csv"])
     version = _latest_dataset_version(db, dataset_id)
     assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
 
@@ -478,7 +497,7 @@ def test_attach_exposes_build_ticket_and_version_build_status(api, db, storage, 
     record = _register(api, dataset_id, "E2E 构建状态样本")
     storage.put("raw/e2e-status.bin", b"s" * 8)
 
-    attached = _attach(api, record["id"], ["raw/e2e-status.bin"])
+    attached = _attach(api, record, ["raw/e2e-status.bin"])
     ticket = attached.get("dataset_build")
     assert ticket is not None, "挂载响应应带出自动构建任务（dataset_build）"
     assert ticket["job_id"].startswith("job_")
@@ -521,10 +540,10 @@ def test_out_of_order_build_does_not_move_the_current_pointer(api, db, storage, 
     storage.put("raw/e2e-old.bin", b"o" * 8)
     storage.put("raw/e2e-new.bin", b"n" * 8)
 
-    _attach(api, record["id"], ["raw/e2e-old.bin"])
+    _attach(api, record, ["raw/e2e-old.bin"])
     old_version = _latest_dataset_version(db, dataset_id)
     old_job = _build_job_uid(db, old_version.id)
-    _attach(api, record["id"], ["raw/e2e-new.bin"])
+    _attach(api, record, ["raw/e2e-new.bin"])
     new_version = _latest_dataset_version(db, dataset_id)
     assert new_version.id > old_version.id
 
@@ -579,7 +598,7 @@ def test_v3_second_windows_preview_matches_execution_and_drops_the_tail(api, db,
     dataset_id = _create_dataset(api, "E2E v3 秒级窗口", "时序分类")
     record = _register(api, dataset_id, "E2E v3 样本", sample_rate="10 kHz")
     storage.put("raw/e2e-83s.csv", synthetic_signal_csv(fs=10000, seconds=83.0))
-    _attach(api, record["id"], ["raw/e2e-83s.csv"])
+    _attach(api, record, ["raw/e2e-83s.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     rules = {
@@ -630,7 +649,7 @@ def test_v3_split_without_video_marks_modality_unavailable(api, db, storage, run
     dataset_id = _create_dataset(api, "E2E 无视频分段", "时序分类")
     record = _register(api, dataset_id, "E2E 无视频样本", sample_rate="2 kHz")
     storage.put("raw/e2e-2k.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-2k.csv"])
+    _attach(api, record, ["raw/e2e-2k.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     preview, job_uid = _split(api, record, **{
@@ -655,7 +674,7 @@ def test_v3_tail_policy_keep_preserves_the_partial_window(api, db, storage, run_
     dataset_id = _create_dataset(api, "E2E 尾片策略", "时序分类")
     record = _register(api, dataset_id, "E2E 尾片样本", sample_rate="2 kHz")
     storage.put("raw/e2e-tail.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-tail.csv"])
+    _attach(api, record, ["raw/e2e-tail.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     base = {"window_seconds": 0.25, "stride_seconds": 0.25,
@@ -688,8 +707,16 @@ def test_dataset_version_freezes_annotation_snapshot(api, db, storage, run_job):
     for index in range(6):
         record = _register(api, dataset_id, f"E2E 冻结样本-{index}")
         storage.put(f"raw/e2e-freeze-{index}.csv", synthetic_signal_csv())
-        _attach(api, record["id"], [f"raw/e2e-freeze-{index}.csv"])
+        _attach(api, record, [f"raw/e2e-freeze-{index}.csv"])
         records.append(record)
+
+    # 训练准入读的是**真实导入成功的通道**（R3：时序维度认 `signal_ingests.column_map`，不认
+    # 文件名），生产里这些导入任务由执行器消费——先跑完，否则适配检查会因"Current、Voltage、
+    # GasSpeed 均完整"未通过而拒绝训练（这正是准入闸门该给的结论）。
+    for ingest_job in db.exec(
+        select(Job).where(Job.type == "signal_ingest", Job.status == "pending")
+    ).all():
+        assert _run(db, run_job, ingest_job.job_uid).status == "succeeded"
 
     version = _latest_dataset_version(db, dataset_id)
     assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
@@ -705,7 +732,7 @@ def test_dataset_version_freezes_annotation_snapshot(api, db, storage, run_job):
 
     # 重新构建一次（新版本）——快照在这次构建时写入
     storage.put("raw/e2e-freeze-trigger.bin", b"t" * 8)
-    _attach(api, records[0]["id"], ["raw/e2e-freeze-trigger.bin"])
+    _attach(api, records[0], ["raw/e2e-freeze-trigger.bin"])
     fresh_version = _latest_dataset_version(db, dataset_id)
     assert _run(db, run_job, _build_job_uid(db, fresh_version.id)).status == "succeeded"
     db.expire_all()
@@ -750,7 +777,7 @@ def test_partial_feature_extraction_writes_no_version(api, db, storage, run_job,
     dataset_id = _create_dataset(api, "E2E 特征闸门", "时序分类")
     record = _register(api, dataset_id, "E2E 特征样本", sample_rate="2 kHz")
     storage.put("raw/e2e-feat.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-feat.csv"])
+    _attach(api, record, ["raw/e2e-feat.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     body = {"weld_id": record["weld_id"], "version_id": record["latest_version_id"]}
@@ -786,7 +813,7 @@ def test_ingest_status_walks_upload_import_ready(api, db, storage, run_job):
 
     # 挂载 CSV（挂载会自动建 signal_ingest 任务，但执行器还没跑）→ 导入中
     storage.put("raw/e2e-status.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-status.csv"])
+    _attach(api, record, ["raw/e2e-status.csv"])
     state = _ok(api.get(f"{API}/registrations/{record['id']}/ingest-status"))
     assert state["status"] == "importing", state
     assert state["csv_total"] == 1
@@ -807,7 +834,7 @@ def test_attach_existing_csv_returns_dedicated_conflict_code(api, db, storage):
     dataset_id = _create_dataset(api, "E2E 重复挂载", "时序分类")
     record = _register(api, dataset_id, "E2E 重复挂载样本")
     storage.put("raw/e2e-dup.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-dup.csv"])
+    _attach(api, record, ["raw/e2e-dup.csv"])
 
     second = api.post(
         f"{API}/registrations/{record['id']}/raw-files",
@@ -827,7 +854,7 @@ def test_reimport_requeues_failed_ingest(api, db, storage, run_job):
     record = _register(api, dataset_id, "E2E 重新导入样本")
     # 内容不是合法时序：导入必然失败（第一次执行器跑出来的就是 failed 行）
     storage.put("raw/e2e-bad.csv", b"not,a,signal\n\x00\x01\x02")
-    _attach(api, record["id"], ["raw/e2e-bad.csv"])
+    _attach(api, record, ["raw/e2e-bad.csv"])
     failed = _run(db, run_job, _latest_job_uid(db, "signal_ingest"))
     assert failed.status == "failed", failed.result
 
@@ -851,7 +878,7 @@ def test_reimport_without_failed_rows_is_rejected(api, db, storage, run_job):
     dataset_id = _create_dataset(api, "E2E 无失败", "时序分类")
     record = _register(api, dataset_id, "E2E 无失败样本")
     storage.put("raw/e2e-ok.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-ok.csv"])
+    _attach(api, record, ["raw/e2e-ok.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     response = api.post(f"{API}/registrations/{record['id']}/reimport")
@@ -868,7 +895,7 @@ def test_succeeded_version_cannot_be_rebuilt_in_place(api, db, storage, run_job)
     dataset_id = _create_dataset(api, "E2E 冻结版本", "时序分类")
     record = _register(api, dataset_id, "E2E 冻结样本")
     storage.put("raw/e2e-freeze.csv", synthetic_signal_csv())
-    attached = _attach(api, record["id"], ["raw/e2e-freeze.csv"])
+    attached = _attach(api, record, ["raw/e2e-freeze.csv"])
     assert _run(db, run_job, attached["dataset_build"]["job_id"]).status == "succeeded"
 
     version_id = attached["dataset_build"]["dataset_version_id"]
@@ -893,7 +920,7 @@ def test_failed_version_can_still_be_retried(api, db, storage, run_job, monkeypa
     dataset_id = _create_dataset(api, "E2E 失败可重试", "时序分类")
     record = _register(api, dataset_id, "E2E 失败样本")
     storage.put("raw/e2e-retry.csv", synthetic_signal_csv())
-    attached = _attach(api, record["id"], ["raw/e2e-retry.csv"])
+    attached = _attach(api, record, ["raw/e2e-retry.csv"])
     ticket = attached["dataset_build"]
 
     # 注意：不要用 `monkeypatch.undo()`——`run_job` fixture 借的是**同一个** monkeypatch 实例，
@@ -919,7 +946,7 @@ def test_version_detail_reports_annotation_freeze_state(api, db, storage, run_jo
     dataset_id = _create_dataset(api, "E2E 冻结标记", "时序分类")
     record = _register(api, dataset_id, "E2E 冻结标记样本")
     storage.put("raw/e2e-flag.csv", synthetic_signal_csv())
-    attached = _attach(api, record["id"], ["raw/e2e-flag.csv"])
+    attached = _attach(api, record, ["raw/e2e-flag.csv"])
     assert _run(db, run_job, attached["dataset_build"]["job_id"]).status == "succeeded"
     version_id = attached["dataset_build"]["dataset_version_id"]
 
@@ -939,7 +966,7 @@ def test_repeated_split_task_generates_one_version(api, db, storage, run_job):
     dataset_id = _create_dataset(api, "E2E 分段幂等", "时序分类")
     record = _register(api, dataset_id, "E2E 分段幂等样本")
     storage.put("raw/e2e-idem.csv", synthetic_signal_csv())
-    _attach(api, record["id"], ["raw/e2e-idem.csv"])
+    _attach(api, record, ["raw/e2e-idem.csv"])
     assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
 
     _preview, job_uid = _split(api, record, window_seconds=0.1, stride_seconds=0.1)
@@ -955,3 +982,129 @@ def test_repeated_split_task_generates_one_version(api, db, storage, run_job):
     assert _run(db, run_job, job_uid).status == "succeeded"
     assert len(_split_versions()) == 1, "同一任务重入不得产生第二个「样本分段」版本"
     assert _split_versions()[0]["id"] == first_id
+
+
+# ── 训练准入与核验准入（2026-09-28，客户视角审查 P1-01/P1-02/P1-03/P1-05） ──
+
+
+def _ingest_all(db, run_job) -> None:
+    """跑完所有待处理的信号导入任务（生产由执行器消费）。
+
+    适配检查的时序维度读的是**真实导入成功的通道**（R3 认 `signal_ingests.column_map`、
+    不认文件名），不跑导入就会因"Current、Voltage、GasSpeed 均完整"未通过而拒绝训练。
+    """
+    for ingest_job in db.exec(
+        select(Job).where(Job.type == "signal_ingest", Job.status == "pending")
+    ).all():
+        assert _run(db, run_job, ingest_job.job_uid).status == "succeeded"
+
+
+def _training_refusal(api, version_id: int) -> str:
+    """建训练任务，断言被拒（40000），返回拒绝原因。"""
+    payload = api.post(
+        f"{API}/training-tasks", json={"dataset_version_id": version_id, "epochs": 2}
+    ).json()
+    assert payload["code"] == 40000, payload
+    return payload["message"]
+
+
+def _six_record_dataset(api, db, storage, run_job, name: str) -> tuple[int, DatasetVersion]:
+    dataset_id = _create_dataset(api, name)
+    for index in range(6):
+        record = _register(api, dataset_id, f"{name}-样本-{index}")
+        storage.put(f"raw/e2e-{name}-{index}.csv", synthetic_signal_csv())
+        _attach(api, record, [f"raw/e2e-{name}-{index}.csv"])
+    _ingest_all(db, run_job)
+    version = _latest_dataset_version(db, dataset_id)
+    assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
+    return dataset_id, version
+
+
+def test_training_admission_uses_version_readiness(api, db, storage, run_job):
+    """P1-01：建训练任务前先过**版本级适配检查**，未过 → 40000 + 具体缺项。
+
+    这批数据"有固定版本、有 train、标注已冻结"——唯一没过的是标注完整度（成员全为空标注）。
+    闸门按版本的 quality/维度判，不按"有没有成员"判：这正是"可训练状态与实际数据质量不一致"
+    的修复点（`datasets.status` 也改用同一个结论）。
+    """
+    dataset_id, version = _six_record_dataset(api, db, storage, run_job, "E2E准入")
+
+    message = _training_refusal(api, version.id)
+    assert "未通过训练适配检查" in message, message
+    assert "异常区段标签已审核" in message, message  # 具体缺项，不是一句"不可训练"
+
+    db.expire_all()
+    dataset = db.get(Dataset, dataset_id)
+    assert dataset is not None
+    assert dataset.status == "暂不可训练", "数据集状态必须与适配结论一致（不再'有成员即可训练'）"
+
+
+def test_training_admission_rejects_version_without_validation_split(api, db, storage, run_job):
+    """P1-02：单焊缝组 → 划分退化只有 train（线上 DS-DEFECT-002 v1.1 就是这个形状）。
+
+    训练内核需要独立验证集，准入必须在建任务前拦——否则用户配完表单、等异步 Job 失败
+    才知道版本不合格。
+    """
+    dataset_id = _create_dataset(api, "E2E无验证集")
+    record = _register(api, dataset_id, "E2E 单样本")
+    storage.put("raw/e2e-single.csv", synthetic_signal_csv())
+    _attach(api, record, ["raw/e2e-single.csv"])
+    _ingest_all(db, run_job)
+    version = _latest_dataset_version(db, dataset_id)
+    assert _run(db, run_job, _build_job_uid(db, version.id)).status == "succeeded"
+
+    db.expire_all()
+    built = db.get(DatasetVersion, version.id)
+    assert (built.split or {}).get("val", 0) == 0, built.split
+    assert "没有验证集样本" in _training_refusal(api, version.id)
+
+
+def test_training_admission_rejects_unfrozen_annotations(api, db, storage, run_job):
+    """P1-05：标注没冻结的版本（历史版本）不进训练——同一版本两次训练可能读到不同标签。
+
+    冻结与否是 `dataset_items.annotations` 是否为 NULL（T16 之前的版本全为 NULL）。
+    """
+    _dataset_id, version = _six_record_dataset(api, db, storage, run_job, "E2E冻结闸门")
+
+    # 把成员行的标注快照抹掉 → 该版本变回"未冻结"（等价于 T16 之前构建的版本）
+    for item in db.exec(
+        select(DatasetItem).where(DatasetItem.dataset_version_id == version.id)
+    ).all():
+        item.annotations = None
+        db.add(item)
+    db.commit()
+
+    assert "标注未冻结" in _training_refusal(api, version.id)
+
+
+def test_build_excludes_records_that_are_not_verified(api, db, storage, run_job):
+    """P1-03：没核验过的登记数据不进固定版本，且被排除的条数如实出现在构建结果里。
+
+    「待复核」的两种含义要分开：**已核验但有告警**（15 条规则第 1 条对纯 CSV 记录必告警
+    "缺少图像/视频"）放行；**登记后从未核验**（quality 初值就是待复核）拦住。
+    """
+    dataset_id = _create_dataset(api, "E2E核验准入")
+    verified = _register(api, dataset_id, "E2E 已核验")
+    storage.put("raw/e2e-verified.csv", synthetic_signal_csv())
+    _attach(api, verified, ["raw/e2e-verified.csv"])  # 默认挂载后即核验
+
+    unverified = _register(api, dataset_id, "E2E 未核验")
+    storage.put("raw/e2e-unverified.csv", synthetic_signal_csv())
+    _attach(api, unverified, ["raw/e2e-unverified.csv"], verify=False)
+
+    version = _latest_dataset_version(db, dataset_id)
+    job = _run(db, run_job, _build_job_uid(db, version.id))
+    assert job.status == "succeeded", job.error
+    assert job.result["excluded_unverified"] == 1, job.result
+    total, _sample_ids = _members(api, dataset_id, version.id)
+    assert total == 1, "只有已核验的那条进来"
+
+    # 候选**全部**没核验 → 构建失败并说明原因，不静默产出空版本
+    empty_id = _create_dataset(api, "E2E全未核验")
+    only = _register(api, empty_id, "E2E 未核验唯一")
+    storage.put("raw/e2e-unverified-only.csv", synthetic_signal_csv())
+    _attach(api, only, ["raw/e2e-unverified-only.csv"], verify=False)
+    empty_version = _latest_dataset_version(db, empty_id)
+    failed = _run(db, run_job, _build_job_uid(db, empty_version.id))
+    assert failed.status == "failed"
+    assert "尚未核验" in str(failed.error), failed.error

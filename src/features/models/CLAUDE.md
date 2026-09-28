@@ -5,9 +5,9 @@
 ## 文件
 
 - `ModelCenter.tsx`：
-  - `TrainingDataPreparation`（`model-center/dataset-build`）：`listDatasets` 选数据集 + 来源单选（manual/split_task/annotation_task）→ `createDatasetVersion` 自动 `createBuildTask` + `useJob` → 展示 8:1:1 划分 + 样本总数/质量/快照。
+  - `TrainingDataPreparation`（`model-center/dataset-build`）：`listDatasets` 选数据集 + 来源单选（manual/split_task/annotation_task）→ `createDatasetVersion` 自动 `createBuildTask` + `useJob` → 展示 8:1:1 划分 + 样本总数/质量/快照。**2026-09-28**：原来用 `dataset.status === '可训练'` 拦"生成训练数据版本"（按钮 + 表单整块隐藏），现在**去掉这道门禁**——`dataset.status` 已改为"上一个已构建版本"的适配结论，拿它拦"还没构建过的新版本"会死锁（当前版本不过检 → 不能重建 → 永远不过检）。改为：进入时按 `getReadiness(dataset.id)` 拉一次适配结论，仅作**提示**（`READY_TEXT.failed` 的 `build-blocked` 提示"仍可生成新版本"）；按钮只按 `datasetId != null && buildJobId == null` 禁用。能不能训练由后端准入（val/冻结标注/适配检查）说了算。
   - `ModelRepository`（`model-center/repository`）：`listModels` 汇总（总数/生产候选/最近训练）+ 模型卡片，「新建模型」← `createModel` + `refreshKey` 刷新计数。**标准模型目录常驻**（时序数据缺陷检测/目标检测/熔池分割三张能力入口卡，不再仅空状态显示），目录下方渲染模型卡片网格，无模型时显示空态文案。卡片图标按 `model.type` 经 `MODEL_TYPE_ICONS` 区分（时序分类→Activity、目标检测→Target、语义分割→ScanLine、多模态回归→BarChart3，未识别回退 `Cpu`，组件 `ModelTypeLogo`）。
-  - `Training`（`model-center/training`）：`createTrainingTask`（超参读表单 `config`）+ `useJob` → 指标/损失曲线（`lossToPath` SVG path）/日志（`getTrainingLogs`）。`modelMetricText` 把 `metric` dict 转文案。
+  - `Training`（`model-center/training`）：`createTrainingTask`（超参读表单 `config`）+ `useJob` → 指标/损失曲线（`lossToPath` SVG path）/日志（`getTrainingLogs`）。`modelMetricText` 把 `metric` dict 转文案。**2026-09-28**：数据集勾选在**明确** `暂不可训练` 时禁用（`selectable = hasTrainingVersion && readiness !== '暂不可训练'`；结论未回来时不拦，避免加载期闪现禁用态），与后端训练准入同一口径（`READY_TEXT` 文案，界面不出现"可训练"字样）。
   - `ModelTestLive`（`model-center/testing`）：`createTestTask` + `useJob` → 指标 + 2×2 混淆矩阵。
   - `InferencePanel`（`model-center/inference`）：上传文件（`uploadFile`<100MB / `presignUpload`≥100MB + PUT，**PUT 后先查 `res.ok`**）→ `createInferenceTask` + `useJob` → 类别/置信度/耗时。
   - `DatasetBuild`：数据集构建（旧入口别名）。

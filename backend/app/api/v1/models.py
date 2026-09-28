@@ -200,6 +200,10 @@ def create_training_task(
 
     同事务建 pending Job(type=training) + `training_tasks` 行（hyperparams 含高级参数），
     返回 `{job_id}`。成功后 handler 自动生成 `model_versions`（实验版本）+ 权重写 MinIO。
+
+    **训练准入（2026-09-28）**：每个版本在建任务前依次校验 有效样本 / train / val /
+    标注已冻结 / 版本级适配检查（`datasets.readiness_for_version`），任一不过 → 40000 +
+    具体缺项。不再"先建任务、等 Job 失败"。
     """
     dataset_version_ids = body.dataset_version_ids or ([body.dataset_version_id] if body.dataset_version_id is not None else [])
     if not dataset_version_ids:
@@ -224,6 +228,31 @@ def create_training_task(
             return err(40000, f"数据集版本 {version.id} 没有有效样本，无法创建训练任务", status=400)
         if (split.get("train") or 0) <= 0:
             return err(40000, f"数据集版本 {version.id} 没有训练集样本，无法创建训练任务", status=400)
+        # 训练准入（2026-09-28，客户视角审查 P1-01/P1-02/P1-05）：训练内核需要独立验证集、
+        # 需要每个成员带冻结标注、需要版本级适配检查通过。这三条**必须在建任务前拦**——
+        # 让客户配完表单、等异步 Job 失败才知道版本不合格，是"状态给出错误操作暗示"。
+        if (split.get("val") or 0) <= 0:
+            return err(
+                40000,
+                f"数据集版本 {version.id} 没有验证集样本：按焊缝分组的组数不足以形成验证集，"
+                "请补充数据后重新构建数据集版本",
+                status=400,
+            )
+        if dataset_svc.annotations_frozen(session, version) is not True:
+            return err(
+                40000,
+                f"数据集版本 {version.id} 的标注未冻结（建于标注冻结机制之前），训练输入不可复现，"
+                "请重新构建数据集版本",
+                status=400,
+            )
+        readiness = dataset_svc.readiness_for_version(session, version_dataset, version)
+        if readiness["readiness"] != "可训练":
+            missing = "、".join(c["name"] for c in readiness["checks"] if not c["passed"])
+            return err(
+                40000,
+                f"数据集版本 {version.id} 未通过训练适配检查：{missing}",
+                status=400,
+            )
     existing_job_id = svc.active_training_job_uid(session, dataset_version.id)
     if existing_job_id is not None:
         return ok({"job_id": existing_job_id})

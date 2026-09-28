@@ -19,6 +19,7 @@ import math
 
 from loguru import logger
 from PIL import Image
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from app.jobs.executor import register_handler
@@ -48,6 +49,29 @@ def _rule_seconds(rules: dict, sample_rate: int) -> tuple[float, float]:
     legacy_window = max(1, int(rules.get("fixed_rate") or 1))
     legacy_stride = max(1, int(rules.get("stride") or legacy_window))
     return legacy_window / sample_rate, legacy_stride / sample_rate
+
+
+def _cleanup_failed(session: Session, storage, task: SplitTask, uploaded: list[str]) -> None:
+    """失败清理：先删**已提交**的样本行（并提交），再删已上传对象。
+
+    为什么需要（客户视角审查 P2-01）：窗口循环每 20 段 `session.commit()` 一次进度，那些 commit
+    顺带把 `Sample` 行落了库——异常时事务回滚**回不掉**它们，于是失败任务会留下一批可见切片，
+    对象键还指向刚刚被删掉的文件。所以样本行必须显式删。
+
+    **顺序**（与 `splitting.delete_split_task` 同一教训）：先提交数据库删除、再删对象。反过来的话，
+    提交一旦失败就留下一批指向不存在对象的样本行。
+    """
+    try:
+        session.rollback()  # 丢弃本次未提交的改动（未落库的样本行、进度、sample_count）
+        session.exec(delete(Sample).where(Sample.split_task_id == task.id))
+        session.commit()
+    except Exception as exc:  # noqa: BLE001 - 清理失败也不能吞掉原始异常
+        logger.warning("Failed to remove committed split samples for task {}: {}", task.id, exc)
+    for key in reversed(uploaded):
+        try:
+            storage.delete_object(key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to clean split artifact {}: {}", key, exc)
 
 
 @register_handler("split")
@@ -140,58 +164,57 @@ def _run_v3(session: Session, task: SplitTask, job: Job, record: DataRecord,
             if window.index % 20 == 0 or window.index == len(windows):
                 job.progress = round(window.index / len(windows) * 100)
                 session.commit()
+
+        task.sample_count = len(windows)
+        task.rules = {**rules, "event_bounds": list(bounds), "sample_count": len(windows)}
+        session.add(task)
+
+        slice_rows = session.exec(
+            select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
+        ).all()
+        manifest_key = f"{base}/manifest.json"
+        manifest = {
+            "schema_version": 3,
+            "task_id": task.id,
+            "rules_version": splitting.RULES_VERSION,
+            "rules": task.rules,
+            "source_version_id": version.id,
+            "mapping_hash": splitting.mapping_hash(mapping),
+            "mapping": mapping,
+            "sample_count": len(windows),
+            "samples": [
+                {
+                    "sample_id": row.id,
+                    "sample_index": row.frame_no,
+                    "start_time": row.start_time,
+                    "end_time": row.end_time,
+                    "object_keys": row.object_keys,
+                }
+                for row in slice_rows
+            ],
+        }
+        manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        storage.upload_stream(
+            manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json"
+        )
+        uploaded.append(manifest_key)
+
+        source_keys = list(version.object_keys or [])
+        segmentation_version, created = reuse_or_create_version(
+            session,
+            record,
+            action="样本分段",
+            note=f"分段任务 #{task.id} 自动生成（{len(windows)} 个多模态样本，规则版本 {splitting.RULES_VERSION}）",
+            object_keys=[*source_keys, *([manifest_key] if manifest_key not in source_keys else [])],
+            operator="算法任务",
+        )
+        if not created:
+            logger.info("Split task {} reused existing 样本分段 version {}", task.id, segmentation_version.version_no)
     except Exception:
-        for key in reversed(uploaded):
-            try:
-                storage.delete_object(key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to clean split artifact {}: {}", key, exc)
+        # 尾部的 manifest 上传 / 版本复用**同样在清理范围内**：只护住窗口循环的话，"第 N 段之后的
+        # 失败"仍会留下一批可见样本行（任务已 failed，样本却在列表里）。
+        _cleanup_failed(session, storage, task, uploaded)
         raise
-
-    task.sample_count = len(windows)
-    task.rules = {**rules, "event_bounds": list(bounds), "sample_count": len(windows)}
-    session.add(task)
-
-    slice_rows = session.exec(
-        select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
-    ).all()
-    manifest_key = f"{base}/manifest.json"
-    manifest = {
-        "schema_version": 3,
-        "task_id": task.id,
-        "rules_version": splitting.RULES_VERSION,
-        "rules": task.rules,
-        "source_version_id": version.id,
-        "mapping_hash": splitting.mapping_hash(mapping),
-        "mapping": mapping,
-        "sample_count": len(windows),
-        "samples": [
-            {
-                "sample_id": row.id,
-                "sample_index": row.frame_no,
-                "start_time": row.start_time,
-                "end_time": row.end_time,
-                "object_keys": row.object_keys,
-            }
-            for row in slice_rows
-        ],
-    }
-    manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    storage.upload_stream(
-        manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json"
-    )
-
-    source_keys = list(version.object_keys or [])
-    segmentation_version, created = reuse_or_create_version(
-        session,
-        record,
-        action="样本分段",
-        note=f"分段任务 #{task.id} 自动生成（{len(windows)} 个多模态样本，规则版本 {splitting.RULES_VERSION}）",
-        object_keys=[*source_keys, *([manifest_key] if manifest_key not in source_keys else [])],
-        operator="算法任务",
-    )
-    if not created:
-        logger.info("Split task {} reused existing 样本分段 version {}", task.id, segmentation_version.version_no)
 
     mark_succeeded(session, job, {
         "sample_count": len(windows),
@@ -381,48 +404,47 @@ def _run_legacy(session: Session, task: SplitTask, job: Job, record: DataRecord,
             if index % 20 == 0 or index == len(windows):
                 job.progress = round(index / len(windows) * 100)
                 session.commit()
+
+        task.sample_count = len(windows)
+        task.rules = {**rules, "event_bounds": [bounds["start"], bounds["end"]]}
+        session.add(task)
+
+        slice_rows = session.exec(
+            select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
+        ).all()
+        manifest_key = f"processed/{record.weld_id}/split/{task.id}/manifest.json"
+        manifest = {
+            "task_id": task.id,
+            "task_format": task.task_format,
+            "rules": task.rules,
+            "rules_version": rules.get("rules_version", 1),
+            "sample_count": len(windows),
+            "slices": [
+                {"sample_id": row.id, "frame_no": row.frame_no, "object_keys": row.object_keys}
+                for row in slice_rows
+            ],
+        }
+        manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        storage.upload_stream(manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json")
+        uploaded.append(manifest_key)
+        source_keys = list(version.object_keys or [])
+        segmentation_version, created = reuse_or_create_version(
+            session,
+            record,
+            action="样本分段",
+            note=f"分段任务 #{task.id} 自动生成（{len(windows)} 个切片，规则版本 {rules.get('rules_version', 1)}）",
+            object_keys=[*source_keys, *[key for key in (manifest_key,) if key not in source_keys]],
+            operator="算法任务",
+        )
+        if not created:
+            logger.info(
+                "Split task {} reused the existing 样本分段 version {}", task.id, segmentation_version.version_no
+            )
     except Exception:
-        for key in reversed(uploaded):
-            try:
-                storage.delete_object(key)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Failed to clean split artifact {}: {}", key, exc)
+        # 同 `_run_v3`：清理点覆盖到尾部（manifest + 版本复用），见 `_cleanup_failed`。
+        _cleanup_failed(session, storage, task, uploaded)
         raise
 
-    task.sample_count = len(windows)
-    task.rules = {**rules, "event_bounds": [bounds["start"], bounds["end"]]}
-    session.add(task)
-
-    slice_rows = session.exec(
-        select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.id)
-    ).all()
-    manifest_key = f"processed/{record.weld_id}/split/{task.id}/manifest.json"
-    manifest = {
-        "task_id": task.id,
-        "task_format": task.task_format,
-        "rules": task.rules,
-        "rules_version": rules.get("rules_version", 1),
-        "sample_count": len(windows),
-        "slices": [
-            {"sample_id": row.id, "frame_no": row.frame_no, "object_keys": row.object_keys}
-            for row in slice_rows
-        ],
-    }
-    manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    storage.upload_stream(manifest_key, io.BytesIO(manifest_bytes), len(manifest_bytes), "application/json")
-    source_keys = list(version.object_keys or [])
-    segmentation_version, created = reuse_or_create_version(
-        session,
-        record,
-        action="样本分段",
-        note=f"分段任务 #{task.id} 自动生成（{len(windows)} 个切片，规则版本 {rules.get('rules_version', 1)}）",
-        object_keys=[*source_keys, *[key for key in (manifest_key,) if key not in source_keys]],
-        operator="算法任务",
-    )
-    if not created:
-        logger.info(
-            "Split task {} reused the existing 样本分段 version {}", task.id, segmentation_version.version_no
-        )
     result = {
         "sample_count": len(windows),
         "task_format": task.task_format,

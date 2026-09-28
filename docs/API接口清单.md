@@ -187,7 +187,7 @@
 | GET | `/api/v1/annotation-tasks/{task_id}/samples` | 标注样本列表（分页，如样本 0248/1209） | query: `page`, `page_size` |
 | GET | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}` | 单个样本详情（图像/信号 + 现有标注）；返回样本级 `confidence`（AI 预标注平均置信度，人工修正后为最新值，供标注信息面板展示） | — 需登录 |
 | POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/ai-pretag` | AI 预标注（同步）：返回疑似缺陷区域+置信度 | 需登录 |
-| POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/labels` | 保存/更新标注（同步） | body: `labels[]`（类别 + `kind`(`box`/`segment`/`polygon`)；`box`=[x,y,w,h] / `start_time,end_time`=区间秒 / `points`=多边形顶点，按 kind 分支校验） |
+| POST | `/api/v1/annotation-tasks/{task_id}/samples/{sample_id}/labels` | 保存/更新标注（同步） | body: `labels[]`（类别 + `kind`(`box`/`segment`/`polygon`)；`box`=[x,y,w,h] / `start_time,end_time`=区间秒 / `points`=多边形顶点，按 kind 分支校验）。**完成闭环（2026-09-28）**：被推过 Label Studio 的样本保存成功后即视作已回写——该任务全部样本保存完 → 任务 `ls_status=synced` + Job `succeeded`；未走 LS（无 `annotation_ls_sync` 行）的任务不受影响 |
 | POST | `/api/v1/annotation-tasks/{task_id}/frames` | 视频标注：创建帧样本锚点（`meta.mode='frame'`，weld/version/video_key 从任务视频锚点继承） | body: `timestamp`(秒, 非负), `frame_width?`, `frame_height?`（捕获帧像素尺寸，导出掩膜缩放用） |
 | POST | `/api/v1/annotation-tasks/{task_id}/export` | 标注产物导出（**同步**）：video → 帧图+熔池掩膜 PNG；signal → segment JSON 标签，写 MinIO `processed/{weld_id}/annotate/` | 需登录 |
 | GET | `/api/v1/annotation-tasks/{task_id}` | 标注任务整体状态（进度/当前样本） | 轮询（Job 结构） |
@@ -207,13 +207,17 @@
 | POST | `/api/v1/datasets/{dataset_id}/versions` | 新建版本（固定快照，不覆盖旧版，保证可复现） | body: `name`, `note` |
 | GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}` | 版本详情（固定样本清单、划分） | — 需登录。**`annotations_frozen`（R4）**：`true` = 每个成员行都带构建时的标注快照（训练输入不随以后改标注而变）；`false` = 历史版本（T16 之前构建）快照为 NULL，训练只能现查当前标注、**不可复现**，界面如实提示；`null` = 空版本 |
 | GET | `/api/v1/datasets/{dataset_id}/versions/{version_id}/items` | 版本成员分页列表（样本粒度，不按焊缝去重） | query: `q`(weld_id/weld_name/registration_no 包含匹配), `quality`(精确), `split`(train/val/test), `page`, `page_size`；response: `Page<DatasetItemRow>` |
-| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source`。**已构建成功的版本不能原地重建**（R4：`run_build` 会清空旧成员，等于把已用于训练的版本换成另一份数据）→ `40000`；要换规则/样本请新建数据集版本 |
-| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry` | **T8**：重试构建（绕过手工闸门、幂等，已有进行中任务返回它 `created=false`）。失败版本可重试；**已成功版本 → `40000`**（R4） | body 无 |
+| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks` | 数据集构建任务（**异步**：从切分样本/标注生成固定版本） | body: `source`。**已构建成功的版本不能原地重建**（R4：`run_build` 会清空旧成员，等于把已用于训练的版本换成另一份数据）→ `40000`；要换规则/样本请新建数据集版本。**2026-09-28 起不再有 `dataset.status != 可训练 → 400` 的闸门**（那是"上一个版本"的结论，拿它拦新版本会死锁） |
+| POST | `/api/v1/datasets/{dataset_id}/versions/{version_id}/build-tasks/retry` | **T8**：重试构建（幂等，已有进行中任务返回它 `created=false`）。失败版本可重试；**已成功版本 → `40000`**（R4） | body 无 |
 | GET | `/api/v1/datasets/{dataset_id}/lineage` | 数据血缘：原始焊缝→标注任务→数据集版本→模型训练 | — 需登录 |
 
 > **§3.5 成员快照**：`GET /datasets/{dataset_id}/versions/{version_id}/items` 固定从 `dataset_items` 读取，返回 `DatasetItemRow`（sample_id、焊缝/登记/来源/焊机/模态/核验/划分/帧号/时间）；前端不得用全局 `/welds` 加载后过滤。
 >
 > **§3.5 成员来源与幂等（T11 / T16.3）**：构建成员按登记数据二选一（最近一次成功分段任务的切片 / 一条基础样本），排除标注锚点样本；分析产物版本（样本分段 / 特征提取）**同一个产物只生成一个版本**（幂等键 = action + note + object_keys，R7）。
+>
+> **§3.5 核验准入（2026-09-28）**：固定版本是训练输入，成员必须来自**已核验且无失败**的登记数据——`quality ∈ {通过, 待复核}` 且该记录任一数据版本存在核验报告（"登记后从未核验"的 `待复核` 拦住，"已核验但有告警"的放行；`异常` 一律拦住）。候选**全部**被排除时构建失败并给出原因；部分被排除时 `job.result.excluded_unverified` 给出条数（不静默）。无归属登记数据的样本（如标注任务直接导入的外来文件）无核验对象，不受本准入约束。
+>
+> **§3.5 `dataset.status`（2026-09-28）**：构建成功后取**版本级适配结论**（`可训练`/`暂不可训练`，与 `GET /datasets/{id}/readiness` 同一口径），不再是"有成员即置 `可训练`"。它是**展示/提示**字段，不再是构建或训练的闸门（训练准入见 §3.6）。
 >
 > **§3.5 错误语义**：`40401` = 数据集不存在；`40402` = 数据集版本不存在（含版本不属于该数据集）；`GET /datasets/{dataset_id}/versions/{version_id}/items` 的 `split` 仅允许 `train/val/test`，否则返回 `40000`。
 >
@@ -227,7 +231,7 @@
 | GET | `/api/v1/models/{model_id}` | 模型详情 | — 需登录 |
 | POST | `/api/v1/models` | 新建模型（登记模型仓库条目，对应模型仓库工具栏"新建模型"） | body: `name`, `type`, `description?` |
 | PATCH | `/api/v1/models/{model_id}/versions/{model_version_id}` | 更新模型版本状态/备注（如置为生产候选） | body: `status?`(生产候选/训练中/实验版本), `note?` |
-| POST | `/api/v1/training-tasks` | 创建训练任务（**异步**） | body: `dataset_version_id`, `base_model_id`, `epochs`, `batch_size`, `learning_rate`, `val_ratio`, 高级参数 |
+| POST | `/api/v1/training-tasks` | 创建训练任务（**异步**） | body: `dataset_version_id`, `base_model_id`, `epochs`, `batch_size`, `learning_rate`, `val_ratio`, 高级参数。**训练准入（2026-09-28）**：每个版本依次校验 有效样本 / `train>0` / `val>0` / 标注已冻结（`annotations_frozen=true`）/ 版本级适配检查通过，任一不过 → `40000` + **具体缺项**（如"未通过训练适配检查：异常区段标签已审核"），不再"先建任务、等 Job 失败" |
 | GET | `/api/v1/training-tasks/{task_id}` | 训练状态：mAP@50/精确率/召回率 + 训练/验证损失曲线 + 进度 | 轮询（Job 结构） |
 | GET | `/api/v1/training-tasks/{task_id}/logs` | 训练日志 | 需登录 |
 | POST | `/api/v1/test-tasks` | 创建测试任务（**异步**） | body: `model_version_id`, `dataset_version_id`, `tasks[]`(异常分类/质量预测/推理延迟) |

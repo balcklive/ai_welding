@@ -835,11 +835,10 @@ def create_retry_build_task(
 ) -> tuple[Job, bool]:
     """重试某个数据集版本的构建（T8）。返回 `(job, created)`。
 
-    **必须绕过手工闸门**：手工接口 `POST …/build-tasks` 有 `status != 可训练 → 400` 的闸门，而
-    自动构建走服务层直建任务、本就不经闸门——于是"首次自动构建失败后用现有接口重试"会被挡住。
-    这里按自动构建的来源（`dataset_records`）重建任务，并且**幂等**：该版本已有 pending/running
-    的构建任务时直接返回它，不重复建。**已构建成功的版本不允许重试**（R4，调用方先过
-    `ensure_version_rebuildable`）。
+    按自动构建的来源（`dataset_records`）重建任务，**幂等**：该版本已有 pending/running 的构建
+    任务时直接返回它，不重复建。**已构建成功的版本不允许重试**（R4，调用方先过
+    `ensure_version_rebuildable`）。手工与自动两个入口现在同一套规则（2026-09-28 删掉了手工
+    入口那条 `status != 可训练` 的假闸门，见 `api/v1/datasets.py`）。
     """
     existing = session.exec(
         select(DatasetBuildTask, Job)
@@ -1304,6 +1303,63 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
             len(orphans),
             orphans[:10],
         )
+    # 核验准入（2026-09-28，客户视角审查 P1-03）：固定版本是训练输入，成员必须来自**已核验且
+    # 无失败**的登记数据——否则客户会把"已有固定版本"读成"数据已通过质量确认"。这里对**全部来源**
+    # 生效（手工指定切分/标注任务也一样），但只拦"有归属登记数据、核验没通过"的样本；
+    # 无归属样本（如标注任务直接导入的外来文件）没有可核验的对象，保持原样并沿用上面的孤儿告警。
+    #
+    # 「待复核」有两种含义，必须分开（15 条规则第 1 条对纯 CSV 记录**必告警**"缺少图像/视频"，
+    # 一律要求「通过」等于把信号数据集永远挡在门外）：
+    #   ① 已核验但有告警 → 放行（已核验过，情况告知即可）；
+    #   ② 登记后从未核验（quality 初值就是「待复核」）→ 拦住。
+    # 判据 = 质量 ∈ {通过, 待复核} **且** 该记录当前版本存在核验报告；「异常」一律拦住。
+    resolved_ids = [rid for rid in record_ids.values() if rid is not None]
+    records = (
+        session.exec(
+            select(DataRecord.id, DataRecord.quality).where(DataRecord.id.in_(resolved_ids))
+        ).all()
+        if resolved_ids
+        else []
+    )
+    # 「核验过」= 该记录的**任一**数据版本有核验报告。不能只看 `latest_version_id`：分段/特征提取
+    # 会把自己的产物版本推上 latest，那条版本天然没有核验报告——按 latest 判会让"分过段的记录"
+    # 全部变成未核验（实测踩过）。
+    validated_records = (
+        set(
+            session.exec(
+                select(DataVersion.record_id)
+                .join(ValidationReport, ValidationReport.version_id == DataVersion.id)
+                .where(DataVersion.record_id.in_(resolved_ids))
+            ).all()
+        )
+        if resolved_ids
+        else set()
+    )
+    verified_ids = {
+        rid
+        for rid, quality in records
+        if quality in ("通过", "待复核") and rid in validated_records
+    }
+    excluded_unverified = sum(
+        1
+        for s in samples
+        if (rid := record_ids.get(s.id)) is not None and rid not in verified_ids
+    )
+    if excluded_unverified:
+        samples = [
+            s for s in samples if (rid := record_ids.get(s.id)) is None or rid in verified_ids
+        ]
+        logger.warning(
+            "Dataset build version {} excluded {} member(s) from 登记数据 that is not verified "
+            "(quality=异常, or never validated)",
+            version.id,
+            excluded_unverified,
+        )
+        if not samples:
+            raise ValueError(
+                f"没有可用于构建数据集的真实样本：{excluded_unverified} 条候选样本所属登记数据"
+                "尚未核验（或核验为异常），请先完成数据核验后重新构建"
+            )
     if len(samples) > MEMBER_WARN_THRESHOLD:
         logger.warning(
             "Dataset build gathered {} members (> {}); check the split rules "
@@ -1362,7 +1418,14 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     if previous_id is None or version.id > previous_id:
         dataset.current_version_id = version.id
         dataset.sample_count = len(item_rows)
-        dataset.status = "可训练" if len(item_rows) > 0 else "标注中"
+        # 状态取**版本级适配检查结论**（与 `GET /datasets/{id}/readiness` 同一口径），不再是
+        # "有成员即可训练"（2026-09-28，客户视角审查 P1-01）：标注不全/模态缺失的版本在这里
+        # 就是「暂不可训练」，免得客户把它读成"数据质量已确认"。
+        dataset.status = (
+            readiness_for_version(session, dataset, version)["readiness"]
+            if item_rows
+            else "标注中"
+        )
         dataset.progress = Decimal(str(round((1 - quality["empty_label_rate"]) * 100, 2)))
     else:
         logger.info(
@@ -1379,6 +1442,9 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
         "split": split_counts,
         "quality": quality,
         "snapshot_id": snapshot_id,
+        # 被核验准入挡掉的候选数（0 = 本次全部候选都已核验通过）。不静默——前端可据此提示
+        # "还有 N 条数据没核验，未纳入本版本"。
+        "excluded_unverified": excluded_unverified,
     }
     mark_succeeded(session, job, result)
     return result

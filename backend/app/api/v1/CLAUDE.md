@@ -120,7 +120,11 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     confidence 缺省沿用先前同类别值，类别须在 label_categories，**按 `kind` 分支校验几何**：
     `box`→[x,y,w,h] 四元组 / `segment`→`start_time`/`end_time` 且 0<=start<end / `polygon`→
     `points` ≥3 个 [x,y] 顶点 / 未知 kind→400，**confidence 给定时须在 [0,1]**（越界如 >=10
-    撞 Numeric(4,3) 列 → 400 而非 500），写审计 `update`）。
+    撞 Numeric(4,3) 列 → 400 而非 500），写审计 `update`）。**完成闭环（2026-09-28，P1-04）**：
+    保存成功后调 `annotation_ls.mark_sample_synced`——被推过 LS 的任务里"主应用保存"即视作该样本
+    已回写，全部样本保存完 → 任务 `synced` + Job `succeeded`；无 sync 行的 legacy 任务不受影响
+    （它们的 job 早已由 handler 收尾）。**不加这一步**，推过 LS 的任务在主应用里保存多少次都停在
+    `running`（线上实测 29 个）。
   - **坑**：标注任务相关 `{task_id}`（samples/import/labels/ai-pretag 路径）兼容 job_uid 与
     annotation_tasks 表 DB id（`annotation.resolve_annotation_task` 双解析）；`split_task_id`
     同理双解析。业务错误码 40401（焊缝/任务/样本不存在）、40402（版本不存在）、40000（参数）。
@@ -166,8 +170,11 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     服务端按 `sample_id` 稳定排序，SQL 侧过滤/计数/offset/limit，40401/40402/40000 对齐）；**Task 2–4 前端**以 `listDatasetVersionItems(datasetId, versionId, {q,quality,split,page,page_size})` 消费该端点，数据管理成员列表不得改走全局 `/welds`。
   - `GET /datasets`（**T9**）：默认服务端分页 `{items,total,page,page_size}` + `q`；`?options=1` 回
     选择器专用的轻量全量数组（D19）。
-  - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks/retry`（**T8**）：重试构建，
-    绕过手工闸门、幂等（已有进行中任务返回它，`created=false`）。
+  - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks/retry`（**T8**）：重试构建，幂等
+    （已有进行中任务返回它，`created=false`）。**2026-09-28**：手工入口原先那条
+    `dataset.status != 可训练 → 400` 的闸门已**删除**——`dataset.status` 改取版本级适配结论，
+    而它是"上一个已构建版本"的结论，拿它拦"还没构建过的新版本"会死锁（当前版本不过检 → 不能重建
+    → 永远不过检）。两个入口现在同规则：只过 `ensure_version_rebuildable`（R4）。
   - `POST /datasets/{dataset_id}/versions/{version_id}/build-tasks`（**异步**，body `{source}` =
     DatasetSource 字典或类型字符串；类型白名单校验 → 40000；同事务建 pending Job +
     `dataset_build_tasks` 行 → `{job_id}`；完整来源经 `create_job(result={"source":...})` 携带；
@@ -192,7 +199,9 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     不属于该模型 40402）。
   - `POST /training-tasks`（**异步**：body `{dataset_version_id, base_model_id?, epochs,
     batch_size, learning_rate, val_ratio, ...高级参数}`，`extra=allow` 收集高级参数进
-    hyperparams；数据集版本/基础模型版本不存在 → 40401；**指定版本 readiness=暂不可训练 → 40000 拒绝**；**同 dataset_version 的 pending/running 训练任务返回既有 `job_id`（防重复活动 job）**；同事务建 pending Job(type=training) +
+    hyperparams；数据集版本/基础模型版本不存在 → 40401；**训练准入（2026-09-28）**：每个版本依次校验
+    有效样本 / `train>0` / `val>0` / `annotations_frozen is True` / `readiness_for_version` 通过，
+    任一不过 → 40000 + **具体缺项**（如"未通过训练适配检查：异常区段标签已审核"）；**同 dataset_version 的 pending/running 训练任务返回既有 `job_id`（防重复活动 job）**；同事务建 pending Job(type=training) +
     `training_tasks` 行 → `{job_id}`）、`GET /training-tasks/{task_id}`（Job 信封，result 内嵌
     metrics/loss_curve/model_version）、`GET /training-tasks/{task_id}/logs`（确定性日志文本）。
   - `POST /test-tasks`（body `{model_version_id, dataset_version_id, tasks[]}` → `{job_id}`；**模型/数据集版本不匹配**或**无 test split** → 40000）、

@@ -274,7 +274,7 @@
   - `list_datasets`（批量预查当前版本防 N+1）/ `create_dataset`（同名抛 ValueError → 路由 409）/
     `dataset_payload`（详情新增 `label_distribution`）/ `label_distribution_for_version`（当前版本标签分布，供详情页最小可消费字段）；`get_dimensions` = 7 项输入维度 `{name, status(已具备|必需|缺失), required}`
     （照 App.tsx inputDimensions/requiredByTask，可用性由当前版本样本 object_keys 启发式判定）；
-    `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）；`readiness_for_version` 复用于训练服务端闸门（按指定 dataset_version 而非仅 current_version 判定，且保留 seed 旧版本 `status=可训练` 的兼容放行）。
+    `get_readiness` = `{readiness, checks:[{name, passed}]}`（照 App.tsx ModelReadiness，全过 → 可训练）；`readiness_for_version` 按指定 dataset_version 而非仅 current_version 判定（保留 seed 旧版本 `status=可训练` 的兼容放行）。**2026-09-28 起它有两个消费方**：`GET /datasets/{id}/readiness`（前端展示）与**训练准入闸门**（`api/v1/models.py` 建任务前判定，未过 → 40000 列出失败检查项），以及 `run_build` 末尾用于计算 `datasets.status`。
   - `list_versions` / `create_version`（下一版本号 v1.<n>）/ `version_payload`；
     **`name`/`note` 仅接受不落库**（`dataset_versions` 表 §3.15 无对应列）。
   - `list_version_items`：`dataset_items → samples → split_tasks/annotation_tasks → data_versions → data_records` 固定快照成员列表；支持 `q`
@@ -286,11 +286,17 @@
     `record_id` 仍要求 `,`/`}` 值边界、weld_id 要求完整闭引号，故不使用 JSON path/dialect 函数且避免
     `12` 误配 `123`。页内仍批量补查未关联的 meta，避免列表循环 `session.get(...)`。
   - `run_build`（构建 handler 领域逻辑）：来源 gather（annotation_task/split_task/manual/filter）→
-    空则报"没有可用于构建数据集的真实样本"（**不再兜底合成样本**）→ 按 record_id 分组 →
-    稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落
+    空则报"没有可用于构建数据集的真实样本"（**不再兜底合成样本**）→ **核验准入**（2026-09-28，
+    P1-03：只收"已核验且无失败"的登记数据成员——`quality ∈ {通过, 待复核}` 且该记录**任一**数据
+    版本有核验报告；`异常` 与"登记后从未核验"一律排除，全部被排除则报错并给出条数，部分排除写进
+    `job.result.excluded_unverified`。**判据不能只看 `latest_version_id`**：分段/特征提取会把产物
+    版本推上 latest，那条版本天然没有核验报告，按 latest 判会让"分过段的记录"全变成未核验）→
+    按 record_id 分组 → 稳定 seed=42 打乱组序 → 8:1:1（组数 <3 退化为 train / train+test，不泄漏）→ 落
     `dataset_items` → 计算 quality（repeat_rate/empty_label_rate/dimension_missing_rate）→
     快照 JSON 写 MinIO `datasets/{version.id}/snapshot.json`（**尽力而为**，失败仅告警）→
-    回填 version + dataset（current_version_id/sample_count/status 可训练）。
+    回填 version + dataset（current_version_id/sample_count/**status=版本级适配结论**——
+    2026-09-28 起取 `readiness_for_version` 的 `可训练`/`暂不可训练`，不再是"有成员即可训练"；
+    它只是展示字段，**不是**构建或训练的闸门）。
     **坑（review 修复）**：quality 的 `dimension_missing_rate` 必须用**本次构建的 in-flight
     samples**（`_dimension_availability_from_samples`）判维度——`datasets.current_version_id`
     在 quality 计算之后才回填，按当前版本查样本会让首次构建的维度缺失率恒为 1.0。
@@ -483,9 +489,13 @@
   永无回写 → job 永久 running 卡死；媒体导出桥落地后移除该 guard（届时 POST /frames 也需接
   re-push））、`_maybe_complete_task`（**任务完成 = 全部 `annotation_ls_sync`
   行回写**——`handle_annotation_event` 不再无条件把任务置 synced；全回写才任务 `synced` + job
-  `succeeded`，幂等：重复 webhook/对账不重复落行）。策略：业务库权威 + LS 捕获层；
+  `succeeded`，幂等：重复 webhook/对账不重复落行）、**`mark_sample_synced`（2026-09-28，P1-04）**：
+  主应用保存标注 → 该样本视作已回写（sync 行置 `synced`）并调 `_maybe_complete_task`。图像标注
+  已不嵌 LS、用户在主应用画布上直写，而终态原先只由 LS webhook 驱动——推过 LS 的任务在主应用里
+  保存多少次都停在 `running`（线上实测 29 个）。**无 sync 行（legacy/off）直接返回 False**，
+  不去改 `ls_status`。终态仍只有一个来源（全部 sync 行已回写）。策略：业务库权威 + LS 捕获层；
   等待态与 Job 快速终态解耦（决策 2）。测试 `tests/test_labelstudio_integration.py` +
-  `tests/test_labelstudio_handler.py`；真实 e2e
+  `tests/test_labelstudio_handler.py` + `tests/test_annotation_completion.py`；真实 e2e
   `scripts/premise_validation/e2e_ls_roundtrip.py`。
 
 - `sample_annotation.py`：**分段样本段级标注（2026-09-22）**。一期只做**段级分类**：一个 v3 `Sample`

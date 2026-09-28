@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, func
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, select
 
@@ -1000,3 +1000,64 @@ def test_delete_split_task_guards(api, ready, db_session, run_job, storage, mp4_
     app.dependency_overrides.pop(get_current_user, None)
     assert api.delete(f"/api/v1/split-tasks/{job_uid}").status_code == 401
     app.dependency_overrides[get_current_user] = lambda: db_session.get(User, 1)
+
+
+# ── 失败任务的清理（2026-09-28，客户视角审查 P2-01） ───────────────────
+
+
+def test_failed_split_leaves_no_samples_and_no_objects(
+    api, ready, db_session, run_job, storage, monkeypatch
+) -> None:
+    """窗口循环中途存储失败：job failed，且**一条样本行、一个产物对象都不留**。
+
+    为什么必须清：循环每 20 段 `session.commit()` 一次进度，那些 commit 顺带把 `Sample` 行
+    落库——异常时事务回滚回不掉它们，失败任务会留下一批可见切片，对象键还指向刚被删掉的文件
+    （清理顺序反了会更糟：提交失败就留下指向不存在对象的行）。
+
+    注入点选在**第 25 次上传**（窗口 0.1s/6 秒 → 60 段）：此时至少已经提交过一次进度，
+    正是"已落库的样本行需要显式删"的场景。
+    """
+    from app.models.jobs import Job
+
+    _record, version_id = ready
+    preview = _preview(
+        api, version_id,
+        window_seconds=0.1, stride_seconds=0.1, event_start=1.0, event_end=7.0,
+    )
+    assert preview["sample_count"] > 25, "注入点必须落在第一次进度提交之后"
+    created = _ok(api.post(_url(version_id, "split-tasks"), json={"preview_token": preview["preview_token"]}))
+
+    real_upload = storage.upload_stream
+    calls = {"n": 0}
+
+    def failing_upload(object_key, fileobj, size, content_type):  # noqa: ANN001
+        calls["n"] += 1
+        if calls["n"] == 25:
+            raise OSError("injected storage failure")
+        real_upload(object_key, fileobj, size, content_type)
+
+    monkeypatch.setattr(storage, "upload_stream", failing_upload)
+
+    run_job(created["job_id"])  # 不走 _run_split：那次 helper 断言 succeeded
+    db_session.expire_all()
+    job = db_session.exec(select(Job).where(Job.job_uid == created["job_id"])).one()
+    task = db_session.exec(select(SplitTask).where(SplitTask.job_id == job.id)).one()
+
+    assert job.status == "failed", job.status
+    assert calls["n"] == 25
+    assert db_session.exec(
+        select(func.count()).select_from(Sample).where(Sample.split_task_id == task.id)
+    ).one() == 0, "失败任务不能留下切片行"
+    assert [key for key in storage.objects if f"/split/{task.id}/" in key] == [], "产物对象必须清干净"
+    assert task.sample_count is None
+
+    # 重试（同规则再建一次任务）：成员数正确、**没有上一次的残留混进来**
+    monkeypatch.setattr(storage, "upload_stream", real_upload)
+    retry = _ok(api.post(_url(version_id, "split-tasks"), json={"preview_token": preview["preview_token"]}))
+    retried = _run_split(db_session, run_job, retry["job_id"])
+    assert retried.id != task.id
+    assert retried.sample_count == preview["sample_count"]
+    total = db_session.exec(
+        select(func.count()).select_from(Sample).where(Sample.split_task_id.in_((task.id, retried.id)))
+    ).one()
+    assert total == preview["sample_count"], "只有重试那次留下切片，失败那次必须为零"

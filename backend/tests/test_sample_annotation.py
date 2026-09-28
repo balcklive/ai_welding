@@ -33,7 +33,7 @@ from app.core.seed import seed_reference_data
 from app.main import app
 from app.models import User
 from app.models.analysis import Annotation, Sample, SampleAnnotation, SplitTask
-from app.models.data import DataRecord, DataVersion
+from app.models.data import DataRecord, DataVersion, ValidationReport
 from app.models.datasets import Dataset, DatasetBuildTask, DatasetItem, DatasetVersion
 from app.models.jobs import Job
 from app.models.settings import OptionItem
@@ -171,6 +171,9 @@ def _seed_split_task(
     db.add(version)
     db.commit()
     db.refresh(version)
+    # 构建有核验准入（2026-09-28）：质量「通过」+ 该记录至少一个版本有核验报告才进得了成员清单。
+    db.add(ValidationReport(version_id=version.id, score=95, passed=15, warning=0, failed=0, duration=1.0))
+    db.commit()
 
     job = create_job(db, type="split")
     task = SplitTask(

@@ -52,6 +52,34 @@ def mark_synced(session: Session, task: AnnotationTask) -> None:
     session.add(task)
 
 
+def mark_sample_synced(session: Session, task: AnnotationTask, sample: Sample) -> bool:
+    """主应用保存标注 → 该样本视作**已回写**，并尝试收尾任务。返回任务是否因此完成。
+
+    **为什么需要**（2026-09-28，客户视角审查 P1-04）：图像标注已不嵌 LS 工作台，用户在主应用
+    自己的画布上 `saveAnnotation` 直写；而任务完成原先只由 LS webhook 回写驱动——于是被推过 LS
+    的任务（sync 行停在 `annotating`）在主应用里保存多少次都不会离开 `running`。
+
+    终态仍**只有一个来源**：`_maybe_complete_task`（全部 sync 行已回写）。这里只是把"主应用保存"
+    也算作回写，不另立一套完成规则。
+
+    未走 LS 的任务（无 sync 行，即 `ls_status=legacy`/LS off 的模拟路径）直接返回 False——
+    它们的 job 早已由 handler 收尾，保存标注不该去改 `ls_status`。
+    """
+    row = session.exec(
+        select(AnnotationLsSync).where(
+            AnnotationLsSync.annotation_task_id == task.id,
+            AnnotationLsSync.sample_id == sample.id,
+        )
+    ).first()
+    if row is None:
+        return False
+    if row.sync_status != "synced":
+        row.sync_status = "synced"
+        row.updated_at = _now()
+        session.add(row)
+    return _maybe_complete_task(session, task)
+
+
 # ── 建 LS task（创建标注任务后，逐样本推 LS） ────────────────────────────
 
 

@@ -109,8 +109,12 @@ def retry_build_task(
 ) -> dict:
     """重试某个数据集版本的构建（T8）。
 
-    **不走手工闸门**（`status != 可训练` 那一条）：自动构建本就不经闸门，首次自动构建失败后若只能用
-    手工接口重试就会被挡住。幂等：该版本已有 pending/running 的构建任务时返回它（`created=false`）。
+    与手工入口同规则：只过 `ensure_version_rebuildable`（已构建成功的版本不能原地重建，R4）。
+    幂等：该版本已有 pending/running 的构建任务时返回它（`created=false`）。
+
+    **2026-09-28**：手工入口原先还多一条 `dataset.status != 可训练 → 400` 的闸门，已删除——
+    `dataset.status` 现在是**上一个版本**的适配结论，拿它拦"还没构建过的新版本"是错的（会死锁：
+    当前版本不过检 → 无法重建 → 永远不过检）。构建能不能出合格版本由 run_build 的结果说了算。
     """
     dataset = svc.get_dataset_by_identifier(session, dataset_id)
     if dataset is None:
@@ -319,12 +323,6 @@ def create_build_task(
     dataset = svc.get_dataset_by_identifier(session, dataset_id)
     if dataset is None:
         return err(40401, "数据集不存在", status=404)
-    if dataset.status != "可训练":
-        return err(
-            40000,
-            "当前数据集仍在标注中，不满足训练数据版本生成要求",
-            status=400,
-        )
     version = session.get(DatasetVersion, version_id)
     if version is None or version.dataset_id != dataset.id:
         return err(40402, "数据集版本不存在", status=404)

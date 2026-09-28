@@ -19,6 +19,14 @@
   工艺列还是旧窗口的中位数。首次执行（2026-09-15）修正 4 条：`WLD-20260903-0002` 焊接段
   0.133s→18.196s、`WLD-20260815-0003` 83.204s→83.244s。
 
+- `close_stuck_annotation_jobs.py`（**2026-09-28 一次性运维**）：关闭"长期 `running` 且确实没有任何
+  标注成果"的标注任务 Job（背景：客户视角审查 P1-04，线上 29 个 `annotation` Job 从 9/6 起一直
+  running）。判定**三条同时满足**才算：① `running` 且创建早于 `--min-age-days`（默认 3）；② 该任务
+  全部样本上没有任何 `annotations` 行；③ 全部 `annotation_ls_sync` 行里没有一条 `synced`。**不批量
+  置成功**（那会谎称有标注成果），也**不改 `annotation_tasks.ls_status`**（`pending_ls` 如实反映
+  "推过 LS、没回来"）。默认 dry-run，`--confirm` 才写；`--job-uid` 可逐条核实。首次执行（2026-09-28）
+  线上命中 29 个、跳过 0 个。
+
 ## 子目录
 
 - `premise_validation/`：集成 MLflow/Label Studio 的验证与实况 e2e 脚本（`run_premise_validation.py` 本机可自动化 4 项 + `probe_live.py` 真实 LS 2 项 + `probe_ls_sdk.py` SDK 方法名核对 + `probe_ls_region.py` region JSON 回读 + `e2e_ls_roundtrip.py` **真实全链路 e2e**：真样本→推 LS→SDK 标注→模拟 webhook 回写→幂等），命名不匹配 pytest 收集规则、不污染门禁，详见其目录 CLAUDE.md；结论文档 `docs/superpowers/specs/2026-09-05-integration-premise-verification.md`。

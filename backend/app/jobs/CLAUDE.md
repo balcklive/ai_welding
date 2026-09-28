@@ -36,7 +36,13 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   （真实信号事件 + ffmpeg 视频探测/关键帧 + 真实产物 CSV/JPG/tracks.json，部分成功语义；
   自动生成「时间对齐」版本 + 回填 task 域字段与 job.result；MinIO 任一写失败会清理已写对象）。
 - **分析产物版本幂等（T16.3/R7，2026-09-14）**：`split.py` 与 `features.py` 生成「样本分段」/「特征提取」版本时统一走 `services.welds.reuse_or_create_version`——**同一个产物只产生一个版本**（幂等身份 = action + note + object_keys：note 里带任务 id/维度、object_keys 里带产物键，所以"同任务重入复用、换参数重跑新建"）。`features.py` 的产物键另带**提取参数的短哈希**（`features/{version_id}-{params_tag}.json`），否则"同源版本换归一化/输出格式重跑"会互相覆盖同一个文件。**对齐不接入**（产物键与 note 都不带任务身份）。
-- `split.py`：**Task 14 + T10 + v3 分流（2026-09-22）**。`handle(job_id, session)` 按 `rules`
+- `split.py`：**Task 14 + T10 + v3 分流（2026-09-22）**。**失败清理（2026-09-28，P2-01）**：
+  `_cleanup_failed(session, storage, task, uploaded)` 在两个分支的 `except` 里调用，**try 覆盖到
+  尾部（manifest 上传 + 版本复用）**——循环每 20 段 `session.commit()` 一次进度，那些 commit 顺带
+  把 `Sample` 行落了库，异常时事务回滚回不掉，失败任务会留下一批可见切片且对象键指向已删文件
+  （实测注入第 25 次上传失败：不清理留下 20 行）。顺序**先提交数据库删除、再删对象**（同
+  `splitting.delete_split_task` 的教训：反过来的话提交失败就留下指向不存在对象的行）。
+  `handle(job_id, session)` 按 `rules`
   的 `rules_version` 分流：**`>= 3` 走 `_run_v3`**（秒级窗口 + `splitting.map_window_to_modalities`
   产出多模态样本包 + `samples.start_time/end_time` 真列 + `samples/{index:06d}.json` +
   任务级 `manifest.json` + **焊缝图片按 ROI 投影裁切**——`_crop_seam_image` 任何失败只告警、
