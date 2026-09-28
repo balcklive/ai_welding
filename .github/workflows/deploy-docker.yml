@@ -90,8 +90,16 @@ jobs:
           # BuildKit 缓存写到自己的 ACR，而非 GitHub Actions cache 后端。
           # type=gha 会把每次构建的全量缓存算进账号 Actions 存储（实测本仓库累积
           # 75 条 / 1.36 GB），私有仓库共用额度极易触顶；ACR 侧存储自有额度。
+          #
+          # **不要加 `image-manifest=true,oci-mediatypes=true`**（2026-09-28 实测）：
+          # 那会把缓存推成 artifactType 为 `application/vnd.buildkit.cacheconfig.v0` 的
+          # OCI manifest，ACR 个人版直接拒收——
+          # `error writing manifest blob: denied: unknown manifest class for
+          # application/vnd.buildkit.cacheconfig.v0`（镜像本身已推成功，只有缓存导出失败，
+          # 但整个 build job 因此判失败、deploy 不执行）。去掉这两个标志后走 registry cache
+          # 默认的 index 形式，ACR 接受。
           cache-from: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache
-          cache-to: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache,mode=max,image-manifest=true,oci-mediatypes=true
+          cache-to: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache,mode=max
 
   deploy:
     name: Deploy pulled image
