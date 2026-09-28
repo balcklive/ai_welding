@@ -87,19 +87,16 @@ jobs:
           provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # BuildKit 缓存写到自己的 ACR，而非 GitHub Actions cache 后端。
-          # type=gha 会把每次构建的全量缓存算进账号 Actions 存储（实测本仓库累积
-          # 75 条 / 1.36 GB），私有仓库共用额度极易触顶；ACR 侧存储自有额度。
-          #
-          # **不要加 `image-manifest=true,oci-mediatypes=true`**（2026-09-28 实测）：
-          # 那会把缓存推成 artifactType 为 `application/vnd.buildkit.cacheconfig.v0` 的
-          # OCI manifest，ACR 个人版直接拒收——
-          # `error writing manifest blob: denied: unknown manifest class for
-          # application/vnd.buildkit.cacheconfig.v0`（镜像本身已推成功，只有缓存导出失败，
-          # 但整个 build job 因此判失败、deploy 不执行）。去掉这两个标志后走 registry cache
-          # 默认的 index 形式，ACR 接受。
-          cache-from: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache
-          cache-to: type=registry,ref=${{ env.ACR_REGISTRY }}/${{ env.ACR_REPOSITORY }}:buildcache,mode=max
+          # **BuildKit 缓存当前关闭**（2026-09-28 实测两次，ACR 个人版这条路走不通）：
+          #   - `cache-to type=registry,...,image-manifest=true,oci-mediatypes=true`：
+          #     缓存被推成 artifactType 为 `application/vnd.buildkit.cacheconfig.v0` 的 OCI
+          #     manifest，ACR 直接拒收（`denied: unknown manifest class for ...cacheconfig.v0`）；
+          #   - 去掉这两个标志（index 形式）：不再报错，但缓存导出**挂死**——build 步骤
+          #     1 小时无进展（同一段路径，上一次是重试 4 次后报错）。
+          # 两者都表现为"镜像其实已推成功、只有缓存导出出问题，但 build job 判失败/卡住，
+          # deploy 不执行"。故暂时走冷构建（约 5-8 分钟，Dockerfile 层序不变仍有部分命中）。
+          # 想恢复缓存时的选项：type=gha（已知可用，代价是账号 Actions 存储，实测 75 条/1.36GB）、
+          # type=inline（不推额外 manifest，多阶段命中弱）、换 ACR 企业版/独立 registry 再试 registry cache。
 
   deploy:
     name: Deploy pulled image
