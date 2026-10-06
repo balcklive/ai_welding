@@ -22,7 +22,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     `POST /registrations` 在生成编号前先抢占同 payload 的自然幂等锁（MySQL `GET_LOCK` / SQLite 进程内锁），
     正在提交中的重复请求直接 `40900`（`重复登记请求：相同表单正在提交`），避免 MySQL 顺序编号锁把双击/重放串行成两条 200；
   - `POST /registrations/{registration_id}/raw-files`（body `{object_keys[], storage_bytes?}`，
-    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务。**Task 5 P2 修复**：若请求中的任一 CSV 已有 `signal_ingests` 行，则整个挂载直接 `40900`，并保持容量不重复累计。**视频预处理**：本次挂载含**新**视频扩展名 key 时为每个建 `media_prep` Job（同事务，探测编码→非浏览器友好转 H.264+faststart 预览版；同 key 已有 pending/running/succeeded job 不重复建））；
+    挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务。**Task 5 P2 修复**：若请求中的任一 CSV 已有 `signal_ingests` 行，则整个挂载直接 `40900`，并保持容量不重复累计。**视频预处理**：本次挂载含**新**视频扩展名 key 时为每个建 `media_prep` Job（同事务，探测编码→非浏览器友好转 H.264+faststart 预览版；同 key 已有 pending/running/succeeded job 不重复建））；**2026-10 音频收口**：请求里任一 key 以 `_AUDIO_EXTS`（wav/mp3/flac/m4a）结尾一律 `40000` 拒收——三类数据集的必需维度里都没有 `Sound_feature`，且上传的 wav 不参与任何计算（`features.generate_audio` 按焊缝 ID 确定性合成），前端登记页也已撤掉音频上传区，这里挡的是绕过 UI 的直传）；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
     `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
     的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；

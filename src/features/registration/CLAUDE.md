@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `RegistrationPage.tsx`：`RegistrationPage()`——登记表单 + 4 区文件上传（时序 CSV/图片/视频/WAV，`UPLOAD_ZONES` 配置，各带 `accept` + `zoneAccepts` 类型校验、独立上传状态与 file input）。流程：`createRegistration`（部分失败重试复用 `regRef` 防重复登记）→ 逐文件**预签名直传**（`presignUpload` + `putFileDirect` XHR 带进度）→ `attachRawFiles` 统一挂载。**2026-09**：工艺参数区新增可空输入「送丝速度 / 焊接速度」（`wire_feed_speed`/`welding_speed`，登记即存；挂载标准多模态 CSV 后由导入按稳态中位数自动回填）。**2026-09 可选项字典化**：焊机型号/焊接方法改为读系统设置字典（`listOptionGroups()` 的 `machine`/`weld_method` 组，只取 `active` 项），数据来源/关联产品信息改为**输入框 + `<datalist>` 候选**（保留自由填写）。
+- `RegistrationPage.tsx`：`RegistrationPage()`——登记表单 + **3 区**文件上传（时序 CSV/图片/视频，`UPLOAD_ZONES` 配置，各带 `accept` + `zoneAccepts` 类型校验、独立上传状态与 file input）。**2026-10**：音频（WAV）区已撤（见「关键规则/坑」）。流程：`createRegistration`（部分失败重试复用 `regRef` 防重复登记）→ 逐文件**预签名直传**（`presignUpload` + `putFileDirect` XHR 带进度）→ `attachRawFiles` 统一挂载。**2026-09**：工艺参数区新增可空输入「送丝速度 / 焊接速度」（`wire_feed_speed`/`welding_speed`，登记即存；挂载标准多模态 CSV 后由导入按稳态中位数自动回填）。**2026-09 可选项字典化**：焊机型号/焊接方法改为读系统设置字典（`listOptionGroups()` 的 `machine`/`weld_method` 组，只取 `active` 项），数据来源/关联产品信息改为**输入框 + `<datalist>` 候选**（保留自由填写）。
 
 ## 调用链
 
@@ -21,6 +21,7 @@
 - **延迟上传**：选择文件只锚定（`files` state 存 File，状态 `pending`「已选择（待上传）」，不发网络请求），点「登记数据」才提交。
 - **必填项 UX**：5 个启用条件（dataset（T4a 起看 `lockedDatasetId`）/source/collected_at/weld_name/hasFile）由 `missingFields` 统一驱动，按钮不用原生 `disabled` 而是 `.full-button--disabled` + `aria-disabled`，点击列出缺失项并对输入区红色闪烁。
 - **对象键前缀固定 `raw/`**，勿用 `uploads/`（有 30 天生命周期清理）。
+- **2026-10 撤掉音频（WAV）上传区**：`UploadZoneKey` 只剩 `csv|image|video`，`UPLOAD_ZONES` 与 `zoneAccepts` 同步删掉 `audio` 分支。**为什么**：三类数据集（语义分割 / 目标检测 / 多模态回归）的 `REQUIRED_BY_TASK` 与模型必需维度里都没有 `Sound_feature`，且挂上来的 wav **不参与任何计算**——`features.generate_audio(weld_id)` 是按焊缝 ID 确定性合成的（`alignment` 里 audio 轨也只是登记元数据）。保留入口只会让人登记一份谁也读不到的文件。**后端同步收口**：`POST /registrations/{id}/raw-files`（`backend/app/api/v1/welds.py`）拒收 `_AUDIO_EXTS` 扩展名 → `40000`，挡住绕过 UI 的直传。**恢复条件**：真要做弧声分析时，把音频区加回来并**同时**改 `REQUIRED_BY_TASK`/`_MODEL_REQUIRED_DIMS`，否则仍是无消费方的死数据。
 - PUT 后先查 `res.ok`，失败抛错丢弃 object_key；回调读 `regIdRef`/`pendingKeysRef` 修 stale-closure 竞态；file input 重选需清空。
 - 最近上传 ← `listWelds({tab:'recent'})`；采集时间用 `datetime-local`（默认当前本地时间）。
 - **可选项字典（2026-09）**：`optionValues` 初值**为空数组**（字典到达前不闪现兜底品牌），`listOptionGroups()` 单独发请求（失败不影响数据集/最近登记加载）。**T3.2/T3.3（2026-09-14）**：`FALLBACK_OPTIONS` 已删除——字典失败置 `optionsError`（页面内 `ErrorState` + 重试），且**字典不全时禁止提交**（按钮禁用 + 点击提示）。焊机型号/焊接方法默认值改为**字典首个启用项**（原写死 `Fronius CMT`/`MAG焊`），只在用户未填时回填。`withCurrent()` 会把当前值补进候选——这样某型号被停用后，**编辑老数据仍能回显与提交**，不会因字典变更丢失既有值。

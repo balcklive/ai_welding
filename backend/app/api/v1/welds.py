@@ -498,6 +498,11 @@ def attach_raw_files(
     forbid_unless_record_owned(session, current_user, record)
     if not body.object_keys:
         return err(40000, "object_keys 不能为空", status=400)
+    # 2026-10 防呆：当前三类数据集（语义分割 / 目标检测 / 多模态回归）都不需要音频，
+    # 且挂上来的 wav 不参与任何计算（`features.generate_audio` 按焊缝 ID 确定性合成电弧音频）。
+    # UI 已撤掉音频上传区，这里挡住绕过 UI 的直传。扩展名清单与 services.welds 共用一份。
+    if any((key or "").strip().lower().endswith(svc._AUDIO_EXTS) for key in body.object_keys):
+        return err(40000, "暂不支持音频文件：当前数据集类型不需要音频输入", status=400)
     csv_keys = []
     seen_csv_keys: set[str] = set()
     for key in body.object_keys:

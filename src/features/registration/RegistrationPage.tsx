@@ -18,7 +18,10 @@ import { TERMS } from '../../shared/lib/terms';
 import { ingestStatusText, useIngestStatus } from '../../hooks/useIngestStatus';
 import { useJob } from '../../hooks/useJob';
 
-type UploadZoneKey = 'csv' | 'image' | 'video' | 'audio';
+// 2026-10：去掉 'audio'——当前三类数据集（语义分割 / 目标检测 / 多模态回归）都不需要音频，
+// 而且上传的 wav 根本不参与任何计算（`features.generate_audio` 是按焊缝 ID 确定性合成的）。
+// 保留入口只会让人登记一份谁也读不到的文件（后端 `POST …/raw-files` 同步拒收音频扩展名）。
+type UploadZoneKey = 'csv' | 'image' | 'video';
 
 // T3.2/T3.3：`FALLBACK_OPTIONS` 已删除——可选项字典（系统设置）是唯一来源，
 // 拉取失败就走错误态 + 重试并禁止提交，不再用硬编码值顶替（顶替会写入现场不存在的型号）。
@@ -37,7 +40,6 @@ const UPLOAD_ZONES: { key: UploadZoneKey; label: string; accept: string; hint: s
   { key: 'csv', label: '时序数据（CSV）', accept: '.csv', hint: '支持 .csv 时序信号' },
   { key: 'image', label: '图片', accept: 'image/png,image/jpeg,image/webp,image/bmp', hint: '支持 png / jpg / webp / bmp' },
   { key: 'video', label: '视频', accept: 'video/*', hint: '支持 mp4 / mov / avi 等' },
-  { key: 'audio', label: '音频（WAV）', accept: '.wav,audio/wav', hint: '支持 .wav 音频' },
 ];
 
 /**
@@ -459,7 +461,6 @@ export function RegistrationPage({ navigate, lockedDatasetId: inheritedDatasetId
       case 'csv': return name.endsWith('.csv');
       case 'image': return file.type.startsWith('image/') || /\.(png|jpe?g|webp|bmp)$/.test(name);
       case 'video': return file.type.startsWith('video/') || /\.(mp4|mov|avi|mkv|webm)$/.test(name);
-      case 'audio': return name.endsWith('.wav') || file.type === 'audio/wav' || file.type === 'audio/x-wav';
     }
   };
   const handleFile = (key: UploadZoneKey, event: ChangeEvent<HTMLInputElement>) => {
