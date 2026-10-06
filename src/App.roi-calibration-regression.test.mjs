@@ -10,6 +10,7 @@ const read = (...parts) => fs.readFileSync(path.join(__dirname, ...parts), 'utf8
 const analysisApiSource = read('api/analysis.ts');
 const typesSource = read('api/types.ts');
 const editorSource = read('features/alignment/SeamRoiEditor.tsx');
+const offsetPanelSource = read('features/alignment/OffsetCalibrationPanel.tsx');
 const alignmentSource = read('features/alignment/AlignmentWorkspace.tsx');
 const laneSource = read('features/alignment/split/SeamImageLane.tsx');
 const rulesPanelSource = read('features/alignment/split/SplitRulesPanel.tsx');
@@ -86,6 +87,74 @@ test('图片模态在分段预览与切片详情里标「未参与」，而不�
   assert.match(detailSource, /missingLabel \?\? '不可用'/);
   // 后端 manifest 的同一事实（原因由服务端给，前端不自己编）
   assert.match(splittingPy, /"excluded": True,/);
+});
+
+test('视频零点偏移也复用既有 PUT …/calibration，面板自身不发任何网络请求', () => {
+  // 标定写入仍然只有一个入口（对齐页父组件的 handleSaveOffset）——面板只回写草稿
+  assert.match(analysisApiSource, /export async function updateCalibration\(/);
+  assert.match(alignmentSource, /video:\s*\{\s*offset_seconds:/);
+  assert.match(alignmentSource, /video: null \}\)/);   // 「清除标定」= 回到未标定
+  // 面板是受控组件：不 import 接口层、不自己发请求（否则会出现第二条写入路径）
+  assert.doesNotMatch(offsetPanelSource, /updateCalibration|fetch\(|\brequest\(/);
+  assert.match(offsetPanelSource, /onDraft/);
+  // 后端零改动：校验与手误护栏仍在服务端
+  assert.match(alignmentPy, /MAX_ABS_OFFSET_SECONDS/);
+  assert.match(alignmentPy, /def validate_calibration_patch\(/);
+  assert.match(analysisPy, /class CalibrationUpdate/);
+});
+
+test('seek 写入与 onTimeUpdate 回写成对读同一个瞬时偏移（ref），且不重挂事件监听', () => {
+  // 两处必须成对：只改一处 → seek 后游标被立刻拨回（历史上出过的坑）
+  assert.match(alignmentSource, /Math\.max\(0,\s*next\s*-\s*effectiveOffsetRef\.current\)/);
+  assert.match(alignmentSource, /setPlayhead\(ct \+ effectiveOffsetRef\.current\)/);
+  assert.match(alignmentSource, /ref=\{videoRef\}/);
+  // 拖动草稿即时生效靠 ref；事件委托 effect 的依赖里不得再有偏移量
+  // （否则每拖一格滑块就重挂一次 click 监听器）
+  const deps = alignmentSource.match(/\}, \[dataId, timelineDur, videoUrl, alignRes\]\);/);
+  assert.ok(deps, 'click 委托 effect 的依赖数组不符合预期');
+  assert.doesNotMatch(deps[0], /videoOffset/);
+  assert.match(alignmentSource, /effectiveOffsetRef\.current = effectiveOffset/);
+  // 拖偏移时画面必须跟着游标走（设计 §4.2 的"同屏游标与视频画面同步移动"）——
+  // 只改读数不动画面的话，"对比时间戳"就只剩数字，没法目视对准起弧。
+  assert.match(alignmentSource, /const handleOffsetDraft = /);
+  assert.match(alignmentSource, /Math\.min\(video\.duration, Math\.max\(0, playhead - next\)\)/);
+  assert.match(alignmentSource, /onDraft=\{handleOffsetDraft\}/);
+});
+
+test('反向标定按 offset = 起弧信号时刻 − 视频当前时刻 反解（后端语义 t_video = t_signal − offset）', () => {
+  assert.match(alignmentSource, /events\.arc\s*-\s*video\.currentTime/);
+  // 视频未就绪/无事件时挡在点击前，不拿不可靠的 currentTime 算
+  assert.match(alignmentSource, /readyState < 1/);
+  assert.match(alignmentSource, /Number\.isFinite\(video\.duration\)/);
+  assert.match(alignmentSource, /reverseHint/);
+});
+
+test('时间戳对照读数与未标定语义：读数来自 <video> 元素，未标定必须说「按 0 计算」', () => {
+  // 时长取自视频元素自身（未跑过对齐也拿得到，且与反向标定用同一元素自洽）
+  assert.match(alignmentSource, /onLoadedMetadata=\{\(e\) => setVideoDuration/);
+  assert.match(alignmentSource, /onDurationChange=\{\(e\) => setVideoDuration/);
+  assert.match(offsetPanelSource, /视频当前帧/);
+  assert.match(offsetPanelSource, /覆盖残差|按当前帧对齐起弧/);
+  // 两态分得开，且说清「保存 0 也算已标定」——否则用户会以为没标定
+  assert.match(offsetPanelSource, /'已标定' : '未标定（按 0 计算）'/);
+  assert.match(offsetPanelSource, /保存后（哪怕保存的是 0）即记为已标定/);
+  assert.match(offsetPanelSource, /清除标定/);
+});
+
+test('保存失败保留草稿（写操作 catch 只置错误态，不清用户输入）', () => {
+  const catchLine = alignmentSource.split('\n').find((line) => line.includes('偏移保存失败'));
+  assert.ok(catchLine, 'offset 保存必须有失败分支');
+  assert.doesNotMatch(catchLine, /setVideoOffsetDraft|setVideoOffset\(/);
+  // 草稿只在成功（.then）里清
+  assert.match(alignmentSource, /setVideoOffset\(c\.video\.calibrated \? c\.video\.offset_seconds : 0\);\s*\n\s*setVideoOffsetDraft\(null\);/);
+});
+
+test('偏移面板挂在 alignment-aside 顶部（board 的兄弟），不落进 seek 事件委托的作用域', () => {
+  assert.match(alignmentSource, /<aside className="alignment-aside"><OffsetCalibrationPanel/);
+  // 面板不得出现在 alignment-board 内部（那里挂着点击定位的委托）
+  const board = alignmentSource.match(/<section className="panel alignment-board">([\s\S]*?)<\/section>/);
+  assert.ok(board, '必须能找到 alignment-board');
+  assert.doesNotMatch(board[1], /OffsetCalibrationPanel/);
 });
 
 test('分段页的标定摘要只读：状态取自服务端预览，不在前端复算', () => {

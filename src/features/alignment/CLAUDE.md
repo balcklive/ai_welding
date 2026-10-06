@@ -6,6 +6,7 @@
 
 - `AlignmentWorkspace.tsx`：**多模态对齐 · 时间轴对齐工作室**（**2026-10**：对齐版本 = `selectedVersionId ?? 最新版`，上下文条选了版本就对齐那一版；对齐成功后 `setSelectedVersionId(alignRes.version.id)` **回写全局**，产物版本其他页也要看得到）。`studio-ruler` 共享时间标尺 + 各模态 `lane` 轨道 + 模态勾选 → `createAlignmentTask`；`listVersions` 找 v1.0 → `getFileUrl` 渲染 `<video>`、`getSignals(v1.0)` 画真实波形；`getCalibration` 取标定（offset 供播放器 seek 换算、`seam_image` 供 ROI 面板回显）；ROI 保存走 `handleSaveRoi` → `updateCalibration({seam_image: {roi} | {excluded:true}})`（**本页是全站唯一能改 ROI 的地方**）；成功/失败横幅（`event_source`/`job.error.message`）。内部件：`AvailabilityTag`、`SeamRoiEditor`、常量 `VIDEO_EXTS`/`ALIGN_CHANNEL_MAP`/`ALIGN_TRACK_META`。
 - `SeamRoiEditor.tsx`：**焊缝图片 ROI 标定面板**（2026-09-23）。真实照片上拖拽框选 → 按 `naturalWidth/Height` 把鼠标位置换算回**原始像素**（ROI 是像素坐标，不是归一化值）→ `PUT …/calibration`（越界由服务端比图片宽高拒绝，错误原样显示）；「不对焊缝图片进行分段」写 `excluded: true`。**不写 ROI 的框（draft）绝不影响产出**——分段页与正式任务只认已保存的那份。
+- `OffsetCalibrationPanel.tsx`：**视频零点偏移标定面板**（2026-10）。补上设计 §12.6 缺的那一半（此前 offset 只有 `PUT` 接口、页面无入口）。三件事：① **反向标定**「以当前帧对齐起弧」——用户把播放器停在画面刚起弧那一帧点一下，父组件按 `offset = events.arc − video.currentTime` 反解（后端语义 `t_video = t_signal − offset` 的反解），不必猜数值；② 数值输入 + 滑块手填（滑块 ±10s 仅供粗调，更大的值走数字框，后端护栏 ±3600）；③ **时间戳对照读数**——「视频当前帧 ↔ 换算信号时刻」+ 覆盖残差 `offset + videoDuration − signalDuration`，|残差| > 0.5s 提示「零点可能未对齐」。**是受控组件**（草稿由父组件持有，因为 offset 要即时驱动 `<video>` seek），自身**不发任何网络请求**——写入仍只有父组件一条路径。
 - `split/`：**样本分段工作台（v3）**，见 `split/CLAUDE.md`。
 
 ## 调用链
@@ -17,7 +18,11 @@
 
 - **`splitOnly` 双形态已删除（2026-09-22，v3）**。分段不再是 `AlignmentWorkspace` 的一个变体，而是独立工作台 `split/SplitWorkspace`；本页只负责"建立统一坐标系"（标定）。**不要再把切分规则塞回这一页**——历史上出过"点创建切分任务实跑对齐任务"的错位。
 - **职责边界（§4.1）**：本页 = 标定层（offset / ROI / 焊接速度来源，产出 mapping + 新版本）；分段页 = 切分层（只读标定，改时长/步长、预览、生成样本）。
-- **视频 seek 必须成对换算**：seek 写 `currentTime = Math.max(0, t - videoOffset)`，`onTimeUpdate` 写回 `currentTime + videoOffset`。只改一处，seek 后游标会被立刻拨回原位。
-- **标定 UI 已落地（2026-09-23）**：焊缝图片 ROI 框选在 `SeamRoiEditor`；**左键拖拽是唯一手势**（无缩放手柄，倾斜焊缝的旋转矩形仍留后续）。offset 仍只有 `PUT` 接口、页面暂无滑块（设计 §12.6 的 `CalibrationPanel` 只做了 ROI 这一半）。
+- **视频 seek 必须成对换算**：seek 写 `currentTime = Math.max(0, t - effectiveOffsetRef.current)`，`onTimeUpdate` 写回 `playhead = currentTime + effectiveOffsetRef.current`。只改一处，seek 后游标会被立刻拨回原位。
+- **偏移量的"实时预览"是 ref 而不是 state 依赖（2026-10）**：`effectiveOffset = videoOffsetDraft ?? videoOffset`（草稿优先），同步进 `effectiveOffsetRef`，两处换算都读 ref。**不要把 `videoOffset` 放回 click 委托 effect 的依赖数组**——那样每拖一格滑块就重挂一次监听器（并重跑 `querySelectorAll().setAttribute`）。`alignRes`/`videoUrl` 留在依赖里是有意的：新出现的 `.artifact-row` 要补 tabindex/role。
+- **拖偏移要带着画面一起走**（`handleOffsetDraft`）：草稿一变就把 `<video>` seek 到 `playhead − 新偏移` 并钳在 `[0, duration]`。这是设计 §4.2「拖动 offset 时同屏游标与视频画面同步移动，用户对准起弧时刻即可」——只改读数不动画面，"对比时间戳"就只剩数字，没法目视对准。游标还没落点（`playhead <= 0`）或视频未就绪时不 seek，只更新读数。
+- **标定 UI 两半都落地了（ROI 2026-09-23 / offset 2026-10）**：焊缝图片 ROI 框选在 `SeamRoiEditor`（左键拖拽是唯一手势，无缩放手柄，倾斜焊缝的旋转矩形仍留后续）；视频零点偏移在 `OffsetCalibrationPanel`（反向标定 + 数值/滑块）。**offset 面板挂在 `alignment-aside` 顶部**——aside 是 `.alignment-board` 的**兄弟**，所以点击不会冒进 board 上挂的 seek 事件委托；**别再把它挪进 board 里**。
+- **`videoTime`/`videoDuration` 取自 `<video>` 元素自身**（`onTimeUpdate` / `onLoadedMetadata`），不取对齐产物 `metadata`——未跑过对齐就没有产物，而这两个值本就该是"用户此刻在拖的那个视频"的真值（反向标定用同一元素，两者自洽）。换版本/换焊缝时随 `setVideoUrl(null)` 一起清零，否则读数会显示上一个视频的值。
+- **"未标定"必须可达**：保存 `offset=0` 也算已标定（`aligned = available && calibrated`），所以给了「清除标定」按钮写 `{video: null}`；否则保存过一次 0 之后系统就一直声称视频已对齐，且状态再也回不去。
 - **「不参与分段」与「还没框 ROI」必须在服务端分开**（`calibration.seam_image.excluded`）：两者都让图片模态在预览/manifest 里记 `available=false`，但**原因与引导不同**——前者不该再催用户去标定。只把 ROI 清成 `null` 会把前者显示成后者，所以不参与走 `excluded`、不清 ROI；想回到"未标定"才用 `{seam_image: null}` 清空整组。
 - 对齐/切分 Job 用 `useJob` 轮询；需先选焊缝（`selectedDatasetId + selectedDataId`），否则 `SelectionRequired`。
