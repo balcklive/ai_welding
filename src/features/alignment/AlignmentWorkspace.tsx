@@ -48,9 +48,10 @@ function AvailabilityTag({ track }: { track: AlignmentTrack }) {
  * （`features/alignment/split/SplitWorkspace`，设计 §7.1/§4.3）。本页只负责"建立统一坐标系"
  * ——标定 offset / ROI 属于这里，分段页只读消费。
  */
-export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: string }) {
+export function AlignmentWorkspace({ dataId, selectedVersionId = null, setSelectedVersionId }: { embedded?: boolean; dataId?: string; selectedVersionId?: number | null; setSelectedVersionId?: (id: number | null) => void }) {
   const [jobId, setJobId] = useState<string | null>(null);
-  const [versionId, setVersionId] = useState<number | null>(null);
+  //: 这条焊缝的**最新**版本；实际对齐哪一版见下面的 `versionId`（上下文条选了就用选的那版）
+  const [weldVersionId, setWeldVersionId] = useState<number | null>(null);
   const [inputReady, setInputReady] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -81,6 +82,8 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
     const fps = (videoTrack?.metadata ?? {}).fps;
     return typeof fps === 'number' && fps > 0 ? fps : null;
   }, [alignRes]);
+  // 上下文条选了版本就用它（`null` = 跟随最新）；下游 effect 只依赖 `versionId`。
+  const versionId = selectedVersionId ?? weldVersionId;
   // 焊缝详情：最新版本号（handleRun 目标）+ 登记模态（不再硬编码模态表）
   useEffect(() => {
     if (!dataId) return;
@@ -93,7 +96,7 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
     getWeld(dataId).then((r) => {
       if (cancelled) return;
       setRecord(r);
-      setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null);
+      setWeldVersionId(r.latest_version_id ?? r.latest_version?.id ?? null);
       setModalities(r.modalities?.length ? r.modalities : ['video', 'timeseries']);
       setInputReady(true);
     }).catch((err) => { if (!cancelled) setInputError(`焊缝信息读取失败：${err instanceof Error ? err.message : '请重试'}`); });
@@ -171,11 +174,13 @@ export function AlignmentWorkspace({ dataId }: { embedded?: boolean; dataId?: st
     }).catch((err) => { if (!cancelled) setInputError(`数据版本读取失败：${err instanceof Error ? err.message : '请重试'}`); });
     return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
   }, [dataId, versionId]);
-  // 对齐成功：时间轴切到新版本；视频轨道有源对象 → 用内核实际使用的视频刷新播放器
+  // 对齐成功：切到产物新版本（回写全局上下文，其他页也要看到这一版）；视频轨道有源对象 →
+  // 用内核实际使用的视频刷新播放器。`setSelectedVersionId` 缺省时退化为页内跟随最新。
   useEffect(() => {
     if (!alignRes) return;
-    setVersionId(alignRes.version.id);
-  }, [alignRes]);
+    if (setSelectedVersionId) setSelectedVersionId(alignRes.version.id);
+    else setWeldVersionId(alignRes.version.id);
+  }, [alignRes, setSelectedVersionId]);
   const handleRun = () => {
     if (!dataId || versionId == null) { setCreateError('当前数据版本尚未准备好，请稍后重试。'); return; }
     setCreateError(null);

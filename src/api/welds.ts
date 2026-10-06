@@ -127,6 +127,22 @@ export async function getVersion(
   return request<DataVersion>(`/welds/${weldId}/versions/${versionId}`, { cacheTtlMs: 15 * 1000 });
 }
 
+/**
+ * 重新导入**该版本**失败的 CSV（2026-10）。
+ *
+ * 必须按版本走：加工版的失败行锚在它自己的版本上，`reimportSignals`（v1.0 口径）够不到；
+ * 而 `createVersion` 又会被「相同 action/note/object_keys」判重挡掉——没有这个入口，
+ * 加工版一导入失败就既看不见也修不了。
+ */
+export async function reimportVersionSignals(
+  weldId: string,
+  versionId: string,
+): Promise<IngestStatus> {
+  return request<IngestStatus>(`/welds/${weldId}/versions/${versionId}/reimport`, {
+    method: 'POST',
+  });
+}
+
 /** 执行核验（同步 15 项规则），返回质量评分 + 通过/警告/失败计数。 */
 export async function runValidation(
   weldId: string,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Archive, ArrowUpRight, Box, ChevronLeft, Database, Plus, Search, Waves } from 'lucide-react';
 import { listDatasetOptions } from '../../api/datasets';
-import { createVersion, getWeld, listVersions, runValidation } from '../../api/welds';
+import { createVersion, getWeld, listVersions, reimportVersionSignals, runValidation } from '../../api/welds';
 import { presignUpload, putFileDirect } from '../../api/files';
 import type { DataRecord, DatasetOption, DataVersion } from '../../api/types';
 import { VersionDetailDrawer } from '../versions/VersionDetailDrawer';
@@ -14,12 +14,16 @@ import { toUserMessage } from '../../shared/lib/errors';
 import { TERMS } from '../../shared/lib/terms';
 import { usePagedWelds } from '../../hooks/usePagedWelds';
 
-export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, showContext, onChange, emphasis = false }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; showContext: boolean; onChange?: () => void; emphasis?: boolean }) {
+export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, selectedVersionId, setSelectedVersionId, versionsRefreshKey = 0, showContext, onChange, emphasis = false }: { selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; selectedVersionId: number | null; setSelectedVersionId: (id: number | null) => void; versionsRefreshKey?: number; showContext: boolean; onChange?: () => void; emphasis?: boolean }) {
   const [datasets, setDatasets] = useState<DatasetOption[]>([]);
   // R8：候选拉取失败原先只 `console.warn` 就过去了——界面上看不出区别（选择器空着，像"确实没有
   // 数据集"）。现在清空旧候选 + 给出错误与重试，不让网络故障伪装成没有数据。
   const [datasetsError, setDatasetsError] = useState<unknown>(null);
   const [datasetsReloadKey, setDatasetsReloadKey] = useState(0);
+  // 第三级上下文：这一条样本的**处理历史**里用哪一版算（`selectedVersionId=null` = 跟随最新）。
+  // 分析链各页都读它，所以「在起收弧识别选了 v1.0」到分段页仍是 v1.0。
+  const [versions, setVersions] = useState<DataVersion[]>([]);
+  const [versionsError, setVersionsError] = useState<unknown>(null);
   const [row, setRow] = useState<WeldRow | null>(null);
   // T3.2：读取失败不再回退演示行，改为在上下文条上给出原因（不遮挡选择器）。
   const [rowError, setRowError] = useState<string | null>(null);
@@ -44,6 +48,22 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
   }, [selectedDatasetId, setSelectedDatasetId, datasetsReloadKey]);
   useEffect(() => { setWeldQuery(''); }, [selectedDatasetId]);
   useEffect(() => {
+    if (!selectedDataId) { setVersions([]); setVersionsError(null); return; }
+    let cancelled = false;
+    setVersionsError(null);
+    // `versionsRefreshKey`：新建数据版本后由 AppShell 自增，否则 15s 的 GET 缓存期内这一版
+    // 不在候选里（用户刚建的版本选不到）。
+    listVersions(selectedDataId)
+      .then((list) => { if (!cancelled) setVersions(list); })
+      .catch((err) => {
+        if (cancelled) return;
+        console.warn('[selection-switcher] versions failed', err);
+        setVersions([]);
+        setVersionsError(err);
+      });
+    return () => { cancelled = true; };
+  }, [selectedDataId, versionsRefreshKey]);
+  useEffect(() => {
     if (!selectedDataId) { setRow(null); setRowError(null); return; }
     let cancelled = false;
     setRow(null);
@@ -58,12 +78,17 @@ export function SelectionSwitcher({ selectedDatasetId, setSelectedDatasetId, sel
       });
     return () => { cancelled = true; };
   }, [selectedDataId]);
+  // 版本链按 (created_at, id) 升序返回，链尾即最新版（与后端 `latest_version_id` 指针一致）——
+  // 所以「未显式选版本」时下拉显示的就是它。
+  const latestVersionId = versions.length ? versions[versions.length - 1].id : null;
   return <div id="data-context-switcher" className={`selection-switcher${emphasis ? ' needs-attention' : ''}`} role="region" aria-label="当前数据上下文">
     <div className="selection-switcher-title"><Database size={15} /><span>当前处理数据</span></div>
     {datasetsError ? <span className="selection-context-error" role="alert">数据集候选加载失败 <button className="ghost-button" onClick={() => setDatasetsReloadKey((n) => n + 1)}>重试</button></span> : null}
     <label className="filter-field">数据集<select value={selectedDatasetId ?? ''} onChange={(event) => { const id = event.target.value ? Number(event.target.value) : null; setSelectedDatasetId(id); setSelectedDataId(null); }}><option value="">请选择数据集</option>{datasets.map((d) => <option value={d.id} key={d.id}>{d.name}</option>)}</select></label>
     <label className="filter-field">搜索样本<input className="inline-search" value={weldQuery} onChange={(event) => setWeldQuery(event.target.value)} placeholder="样本 ID / 名称" disabled={selectedDatasetId == null} /></label>
     <label className="filter-field">样本<select value={selectedDataId ?? ''} disabled={selectedDatasetId == null || welds.loading} onChange={(event) => setSelectedDataId(event.target.value || null)}><option value="">{welds.loading && !welds.items.length ? '数据加载中…' : welds.items.length ? '请选择一条样本' : '没有匹配的样本'}</option>{welds.items.map((weld) => <option value={weld.weld_id} key={weld.weld_id}>{weld.weld_id} · {weld.weld_name ?? '未命名'}</option>)}</select></label>
+    {versions.length > 1 && <label className="filter-field">数据版本<select value={selectedVersionId ?? latestVersionId ?? ''} onChange={(event) => setSelectedVersionId(event.target.value ? Number(event.target.value) : null)}>{versions.map((v, index) => <option value={v.id} key={`${v.version_no}-${v.id}`}>{`${v.version_no} ${v.action}${index === versions.length - 1 ? '（最新）' : ''}`}</option>)}</select></label>}
+    {Boolean(versionsError) && <span className="selection-context-error" role="alert">版本链加载失败，已按最新版本计算</span>}
     {/* R5：第 51 条之后也要能选到——服务端搜索 + 翻页追加，而不是硬上限 */}
     {selectedDatasetId != null && welds.hasMore && <button className="ghost-button selection-load-more" onClick={welds.loadMore} disabled={welds.loading}>{welds.loading ? '加载中…' : `加载更多（已显示 ${welds.items.length} / 共 ${welds.total}）`}</button>}
     {Boolean(welds.error) && welds.items.length > 0 && <span className="selection-context-error" role="alert">加载更多失败，请重试</span>}
@@ -126,7 +151,7 @@ export function AnalysisSelect({ onContinue, selectedDatasetId, setSelectedDatas
   return <div className="selection-workspace"><div className="selection-hero"><div className="selection-icon"><Waves size={25} /></div><div><h2>选择数据集，再选择一条样本开始分析</h2><p>先选定数据集，再在数据集内选择样本进入多模态分析流程；核验异常的样本置灰不可选，待复核样本可直接进入。</p></div></div><div className="selection-dataset-bar"><label className="filter-field">所属数据集<select value={selectedDatasetId ?? ''} onChange={(event) => setSelectedDatasetId(Number(event.target.value))}>{datasetOptions.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}</select></label><label className="filter-field keyword">搜索样本<div className="inline-search"><Search size={14} /><input value={weldQuery} onChange={(event) => setWeldQuery(event.target.value)} placeholder="样本 ID / 名称（服务端搜索）" /></div></label></div>{datasetError ? <ErrorState scene="加载数据集" error={datasetError} onRetry={retry} /> : selectedDatasetId == null ? <p className="selection-empty">正在加载数据集…</p> : welds.error && !weldRows.length ? <ErrorState scene="加载样本列表" error={welds.error} onRetry={welds.retry} /> : welds.loading && !weldRows.length ? <p className="selection-empty">正在加载该数据集的样本…</p> : weldRows.length ? <><div className="selection-grid">{weldRows.map((row) => <button className={`selection-card ${row.quality === '异常' ? 'disabled' : ''}`} disabled={row.quality === '异常'} onClick={() => onContinue(row.id)} key={row.id} title={row.quality === '异常' ? '该样本核验异常，不可进入分析' : undefined}><div><span className="file-badge"><Archive size={14} />{row.id}</span><h3>{row.title ?? '未命名样本'}</h3><p>{row.machine ?? '—'} · {row.types}</p></div><StatusPill tone={row.quality === '通过' ? 'green' : row.quality === '异常' ? 'red' : 'orange'}>{row.quality === '通过' ? '核验通过' : row.quality}</StatusPill></button>)}</div>{/* R5：超过一页的样本继续可达（服务端分页，默认每页 20 条） */}{welds.hasMore && <button className="outline-button selection-load-more" onClick={welds.loadMore} disabled={welds.loading}>{welds.loading ? '加载中…' : `加载更多（已显示 ${weldRows.length} / 共 ${welds.total}）`}</button>}</> : <p className="selection-empty">该数据集暂无数据，请先在数据管理登记数据。</p>}</div>;
 }
 
-export function VersionPanel({ dataId }: { dataId?: string }) {
+export function VersionPanel({ dataId, onVersionsChanged }: { dataId?: string; onVersionsChanged?: () => void }) {
   // 初始为空 + 加载中：不得闪现 mock 版本链（v1.0-v1.3），失败时显示明确不可用状态
   const [versions, setVersions] = useState<DataVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(true);
@@ -137,6 +162,7 @@ export function VersionPanel({ dataId }: { dataId?: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [validating, setValidating] = useState<number | null>(null);
+  const [reimporting, setReimporting] = useState<number | null>(null);
   const reload = useCallback(() => {
     if (!dataId) return Promise.resolve();
     setVersionsLoading(true);
@@ -154,6 +180,14 @@ export function VersionPanel({ dataId }: { dataId?: string }) {
     reload().catch(() => undefined);
   }, [dataId, reload]);
   const currentVersion = versions.find((version) => version.id === currentVersionId) ?? versions[versions.length - 1];
+  // 有版本正在导入时按 5s 轮询版本链：导入完成/失败都要在这条链上看得见，否则用户不知道
+  // 「新版到底能不能用」。全部落定即停（不常驻轮询）。
+  const hasImporting = versions.some((version) => version.ingest?.status === 'importing');
+  useEffect(() => {
+    if (!dataId || !hasImporting) return;
+    const timer = window.setInterval(() => { reload().catch(() => undefined); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [dataId, hasImporting, reload]);
   const handleCreate = async (payload: { action: '去噪处理' | '人工修正'; note?: string; file?: File }) => {
     if (!dataId || creating) return;
     setCreating(true);
@@ -170,14 +204,36 @@ export function VersionPanel({ dataId }: { dataId?: string }) {
         await putFileDirect(uploaded.upload_url, payload.file);
         object_keys = [uploaded.object_key];
       }
-      await createVersion(dataId, { action: payload.action, note: payload.note, object_keys });
+      const created = await createVersion(dataId, { action: payload.action, note: payload.note, object_keys });
       setShowCreate(false);
-      setNotice('新版本已创建，请执行核验后再用于分析或训练。');
+      // 带 CSV 的加工版会立刻排队做信号导入；这一版**要导入完**才能作为分析依据
+      // （导入中/失败时读数会明确报错，不会静默回退到旧版本的信号）。
+      setNotice(
+        created.ingest?.status === 'importing'
+          ? '新版本已创建，随附的 CSV 正在导入；导入完成后可在顶部「数据版本」里选它参与计算。'
+          : '新版本已创建，请执行核验后再用于分析或训练。',
+      );
+      // 顶部「数据版本」下拉要立刻能看到这一版（否则 15s 缓存期内选不到刚建的版本）。
+      onVersionsChanged?.();
       await reload();
     } catch (err) {
       setNotice(err instanceof Error ? err.message : '新建数据版本失败，请重试。');
     } finally {
       setCreating(false);
+    }
+  };
+  const handleReimport = async (versionId: number) => {
+    if (!dataId || reimporting != null) return;
+    setReimporting(versionId);
+    setNotice(null);
+    try {
+      await reimportVersionSignals(dataId, String(versionId));
+      setNotice(`${versions.find((v) => v.id === versionId)?.version_no ?? '该版本'}已重新排队导入信号。`);
+      await reload();
+    } catch (err) {
+      setNotice(toUserMessage(err, '重新导入信号').message);
+    } finally {
+      setReimporting(null);
     }
   };
   const handleValidation = async (versionId: number) => {
@@ -194,7 +250,7 @@ export function VersionPanel({ dataId }: { dataId?: string }) {
       setValidating(null);
     }
   };
-  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的不可覆盖版本链路</p></div><div className="toolbar-actions"><StatusPill>当前版本 {currentVersion?.version_no ?? '—'}</StatusPill><button className="primary-button" onClick={() => setShowCreate(true)} disabled={!dataId || creating}><Plus size={14} />新建数据版本</button></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{versionsLoading ? <p className="dataset-empty-state" role="status">版本链路加载中…</p> : versionsUnavailable ? <p className="dataset-empty-state" role="alert">版本信息暂时无法读取，请稍后重试。</p> : versions.length ? <div className="version-line">{versions.map((version) => <div className={version.id === currentVersionId ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{formatDateTime(version.created_at)} · {version.operator ?? '—'}</small></span><div className="toolbar-actions"><button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button><button className="outline-button" disabled={validating === version.id} onClick={() => handleValidation(version.id)}>{validating === version.id ? '核验中…' : '执行核验'}</button></div></div>)}</div> : <p className="dataset-empty-state">该焊缝暂无版本数据。</p>}</section>{showCreate && <VersionCreateDialog baseVersion={currentVersion?.version_no} creating={creating} onCancel={() => setShowCreate(false)} onConfirm={handleCreate} />}{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
+  return <><section className="panel version-panel"><div className="panel-heading"><div><h2>数据版本</h2><p>原始数据与加工结果的不可覆盖版本链路</p></div><div className="toolbar-actions"><StatusPill>当前版本 {currentVersion?.version_no ?? '—'}</StatusPill><button className="primary-button" onClick={() => setShowCreate(true)} disabled={!dataId || creating}><Plus size={14} />新建数据版本</button></div></div>{notice && <p className="toolbar-error" role="status">{notice}</p>}{versionsLoading ? <p className="dataset-empty-state" role="status">版本链路加载中…</p> : versionsUnavailable ? <p className="dataset-empty-state" role="alert">版本信息暂时无法读取，请稍后重试。</p> : versions.length ? <div className="version-line">{versions.map((version) => <div className={version.id === currentVersionId ? 'current' : ''} key={`${version.version_no}-${version.id}`}><i /><span>{`${version.version_no} ${version.action}`}<small>{formatDateTime(version.created_at)} · {version.operator ?? '—'}</small></span><div className="toolbar-actions">{version.ingest && <StatusPill tone={version.ingest.status === 'failed' ? 'red' : version.ingest.status === 'importing' ? 'blue' : 'green'}>{version.ingest.status === 'failed' ? '信号导入失败' : version.ingest.status === 'importing' ? '信号导入中' : '信号导入成功'}</StatusPill>}{version.ingest?.status === 'failed' && <button className="ghost-button" disabled={reimporting === version.id} onClick={() => handleReimport(version.id)}>{reimporting === version.id ? '重排中…' : '重新导入'}</button>}<button className="ghost-button" onClick={() => setSelectedVersionId(String(version.id))}>查看</button><button className="outline-button" disabled={validating === version.id} onClick={() => handleValidation(version.id)}>{validating === version.id ? '核验中…' : '执行核验'}</button></div></div>)}</div> : <p className="dataset-empty-state">该焊缝暂无版本数据。</p>}</section>{showCreate && <VersionCreateDialog baseVersion={currentVersion?.version_no} creating={creating} onCancel={() => setShowCreate(false)} onConfirm={handleCreate} />}{selectedVersionId && <VersionDetailDrawer mode="weld" weldId={dataId ?? ''} versionId={selectedVersionId} onClose={() => setSelectedVersionId(null)} />}</>;
 }
 
 function VersionCreateDialog({ baseVersion, creating, onCancel, onConfirm }: { baseVersion?: string; creating: boolean; onCancel: () => void; onConfirm: (payload: { action: '去噪处理' | '人工修正'; note?: string; file?: File }) => void }) {

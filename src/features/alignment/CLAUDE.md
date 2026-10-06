@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `AlignmentWorkspace.tsx`：**多模态对齐 · 时间轴对齐工作室**。`studio-ruler` 共享时间标尺 + 各模态 `lane` 轨道 + 模态勾选 → `createAlignmentTask`；`listVersions` 找 v1.0 → `getFileUrl` 渲染 `<video>`、`getSignals(v1.0)` 画真实波形；`getCalibration` 取标定（offset 供播放器 seek 换算、`seam_image` 供 ROI 面板回显）；ROI 保存走 `handleSaveRoi` → `updateCalibration({seam_image: {roi} | {excluded:true}})`（**本页是全站唯一能改 ROI 的地方**）；成功/失败横幅（`event_source`/`job.error.message`）。内部件：`AvailabilityTag`、`SeamRoiEditor`、常量 `VIDEO_EXTS`/`ALIGN_CHANNEL_MAP`/`ALIGN_TRACK_META`。
+- `AlignmentWorkspace.tsx`：**多模态对齐 · 时间轴对齐工作室**（**2026-10**：对齐版本 = `selectedVersionId ?? 最新版`，上下文条选了版本就对齐那一版；对齐成功后 `setSelectedVersionId(alignRes.version.id)` **回写全局**，产物版本其他页也要看得到）。`studio-ruler` 共享时间标尺 + 各模态 `lane` 轨道 + 模态勾选 → `createAlignmentTask`；`listVersions` 找 v1.0 → `getFileUrl` 渲染 `<video>`、`getSignals(v1.0)` 画真实波形；`getCalibration` 取标定（offset 供播放器 seek 换算、`seam_image` 供 ROI 面板回显）；ROI 保存走 `handleSaveRoi` → `updateCalibration({seam_image: {roi} | {excluded:true}})`（**本页是全站唯一能改 ROI 的地方**）；成功/失败横幅（`event_source`/`job.error.message`）。内部件：`AvailabilityTag`、`SeamRoiEditor`、常量 `VIDEO_EXTS`/`ALIGN_CHANNEL_MAP`/`ALIGN_TRACK_META`。
 - `SeamRoiEditor.tsx`：**焊缝图片 ROI 标定面板**（2026-09-23）。真实照片上拖拽框选 → 按 `naturalWidth/Height` 把鼠标位置换算回**原始像素**（ROI 是像素坐标，不是归一化值）→ `PUT …/calibration`（越界由服务端比图片宽高拒绝，错误原样显示）；「不对焊缝图片进行分段」写 `excluded: true`。**不写 ROI 的框（draft）绝不影响产出**——分段页与正式任务只认已保存的那份。
 - `split/`：**样本分段工作台（v3）**，见 `split/CLAUDE.md`。
 

@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `SplitWorkspace.tsx`：状态编排（§7.2）。`draftRules`（用户编辑值）/ `appliedPreview`（最后一次**成功**预览 + 其规则指纹）/ `selectedWindowIndex`；300ms 防抖 + `fetchTokenRef` 丢弃在途旧响应；创建任务只提交 `preview_token`。还负责取视频签名 URL 与 v1.0 标定 offset（seek 用）。**焊缝照片的键取服务端预览的 `seam_image_projection.object_key`**（见下"坑"），不再用扩展名启发式去猜。播放器已移到选中切片详情面板，本页**不再持有 `videoRef` / `onSeek`**。
+- `SplitWorkspace.tsx`：状态编排（§7.2）。**2026-10**：分段版本 = `selectedVersionId ?? 链尾`（上下文条第三级下拉）；**默认版本直接取版本链链尾**——此前读 `record.latest_version_id` 而 `record` 由同一 effect 里的 `getWeld` 异步填充、不在依赖里，首跑必然为 null、实际一直回落到链尾（同名同值的时序坑，现已消掉）。`draftRules`（用户编辑值）/ `appliedPreview`（最后一次**成功**预览 + 其规则指纹）/ `selectedWindowIndex`；300ms 防抖 + `fetchTokenRef` 丢弃在途旧响应；创建任务只提交 `preview_token`。还负责取视频签名 URL 与 v1.0 标定 offset（seek 用）。**焊缝照片的键取服务端预览的 `seam_image_projection.object_key`**（见下"坑"），不再用扩展名启发式去猜。播放器已移到选中切片详情面板，本页**不再持有 `videoRef` / `onSeek`**。
 - `SplitRulesPanel.tsx`：秒级规则（时长/步长/事件起止/缓冲/尾片策略）+ **只读标定摘要** + warnings + 创建按钮。
 - `MultimodalTimeline.tsx`：共用比例尺的标尺 + 三条轨道 + 切片卡片；边界线贯穿全部轨道（§4.4）。**切片卡片显示该段自己的视频代表帧**（2026-09-23）：`w.video.frame.url` 是真帧（后端逐段抽帧 + 短期预签名 URL），取不到就显示 `frame.reason`——**不许用占位渐变或全局首帧冒充缩略图**，所以无帧的卡片走 `.sample-thumb-empty` 浅底 + 原因文字。`t_signal`/`t_video`/`frame_no` 一律用服务端给的值，前端不再自己换算。
 - `SignalTimelineLane.tsx`：时序轨。按 `times[]` 的真实秒数画（服务端 min-max 抽稀非均匀，按序号均分会画错尖峰位置）。

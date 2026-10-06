@@ -711,15 +711,17 @@ def _collect_sources(
 def _signal_version_id(
     session: Session, record: DataRecord, task: AlignmentTask, version: DataVersion
 ) -> int:
-    """task.version_id 有 succeeded ingest 用之；否则回退 v1.0（raw CSV 挂载处）；再否则原样。"""
+    """task.version_id 声明过信号来源就用它；否则回退 v1.0（raw CSV 挂载处）；再否则原样。
+
+    **"声明过" = 该版本有任何 `signal_ingests` 行**（不要求 succeeded）：加工版上传的 CSV 会
+    在这一版排队导入，此时它就是这一版的信号来源——返回它、由 loader 决定成功或明确报错，
+    不能让对齐静默改用 v1.0 的信号（用户在下拉里选的正是这一版）。
+    """
 
     def _has_ingest(vid: int) -> bool:
         return (
             session.exec(
-                select(SignalIngest.id).where(
-                    SignalIngest.version_id == vid,
-                    SignalIngest.status == "succeeded",
-                )
+                select(SignalIngest.id).where(SignalIngest.version_id == vid)
             ).first()
             is not None
         )

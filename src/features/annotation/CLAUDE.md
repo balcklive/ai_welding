@@ -9,7 +9,7 @@
 ## 文件
 
 - `AnnotationWorkspace.tsx`：
-  - `AnnotationWorkspace({dataId})`：入口，三模式切换栏（图像/时序/视频）。
+  - `AnnotationWorkspace({dataId, selectedVersionId})`：入口，三模式切换栏（图像/时序/视频）。**2026-10**：时序模式的标注任务绑在 `selectedVersionId ?? 最新版` 上（波形与标注区间必须来自同一版数据，见 `AnnotationSignal`）。
   - **2026-09-09 LS 感知但不嵌入**：图像标注**不再把 Label Studio 工作台嵌入主应用**——后端 LS 只在容器间通信（内网 `aiwelding-net`），主应用始终用自己的 Annotorious 画布标注并 `saveAnnotation` 直写，端用户不接触 LS。`useLabelStudioTask(taskId)` 仅用于感知 `ls_status ∈ {pending_ls, annotating}`（此时 job 保持 running 不到 succeeded），借 `lsActive` 放宽「加载样本」闸门让画布直接标注；`legacy`/`off` 由 job succeeded 触发加载。**仅图像链路端到端可走 LS**（时序/视频媒体导出未落地，计划 Track A line 68）。
   - 图像模式：真实焊缝图 + `AnnotoriousImageEditor`（矩形/多边形）+ 标签类别（`listLabelCategories`，失败兜底 `mockLabelCategories`）+ AI 预标注（`aiPretag`）+ `saveAnnotation` 覆盖写保存。
   - `AnnotationSignal({dataId})`：时序标注（ECharts 波形点击设起点/终点选缺陷区间，kind='segment'）。

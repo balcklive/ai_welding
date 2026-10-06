@@ -5,7 +5,7 @@
 ## 文件
 
 - `AnalysisWorkspace.tsx`：
-  - `AdvancedWeldAnalysis({dataId})`：焊缝深度分析。`getSignals` 拉四通道真实波形（挂载/滤波变化时拉取，勾选仅本地过滤）+ `getAnalysisMode`（psd/stft/dwt/wavelet/phase/pdd，mode/目标通道/滤波联动）+ `getAnalysisResult`（稳定度/三类占比/异常区段 chips）。KPIs 使用真实 `record.quality` 与 `weldDuration`（`ac568ee` 修复，不再硬编码假值）。
+  - `AdvancedWeldAnalysis({dataId, selectedVersionId})`：焊缝深度分析。**2026-10**：分析版本 = `selectedVersionId ?? 该焊缝最新版`（上下文条第三级下拉），6 个下游 effect 全都依赖 `versionId` → 换版本自动连同波形与六种分析图一起重拉。`getSignals` 拉四通道真实波形（挂载/滤波变化时拉取，勾选仅本地过滤）+ `getAnalysisMode`（psd/stft/dwt/wavelet/phase/pdd，mode/目标通道/滤波联动）+ `getAnalysisResult`（稳定度/三类占比/异常区段 chips）。KPIs 使用真实 `record.quality` 与 `weldDuration`（`ac568ee` 修复，不再硬编码假值）。
   - 内部图表组件：`PhasePlot`/`PddChart`/`ExploreWaveform`/`PsdChart`/`StftHeatmap`/`DwtChart`/`WaveletDecomp`。
   - `SampleWaveThumb` + `SplitPreviewSample`：切分预览缩略（供切分产物展示）。
 - `signals/chartData.ts`：演示坐标系常量与工具（`CH/CW/t/SAMPLES/seg/isArc/isWeld` 等）。**仅供图表布局复用，勿作为真实数据源**。
@@ -37,4 +37,4 @@
   `lo/hi/mean` 是滤波后序列的统计（否则高通/带通去均值信号会按原始量程画成贴边直线）；
   `/analysis/pdd` 带滤波时直方图量程同理，避免全部落进首 bin。
 - 波形初始用 `emptyChannels` 占位保留通道骨架，防 `channels[0]` undefined 崩溃。
-- 分析基于当前焊缝最新版本；`getWeld` 带 15s 前端缓存（`api/welds`），异步任务刚完成后重进页面可能短暂读到旧 `latest_version_id`。
+- 分析基于 `selectedVersionId ?? 最新版本`（2026-10，上下文条第三级「数据版本」）。`getWeld` 带 15s 前端缓存（`api/welds`），异步任务刚完成后重进页面可能短暂读到旧 `latest_version_id`（写请求会清 GET 缓存，所以建版/对齐后立刻刷新即可）。

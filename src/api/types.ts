@@ -46,6 +46,17 @@ export interface User {
   avatar: string | null;
 }
 
+/**
+ * 某个数据版本的信号导入摘要（2026-10）。`null` = 这一版没有 CSV 要导入
+ * （从未挂过 CSV，或历史加工版）；后端按该版本自己的 `signal_ingests` 行汇总。
+ */
+export interface VersionIngest {
+  status: 'importing' | 'failed' | 'ready';
+  total: number;
+  failed: number;
+  pending: number;
+}
+
 export interface DataVersion {
   id: number;
   record_id: number;
@@ -55,6 +66,7 @@ export interface DataVersion {
   note: string | null;
   object_keys: string[];
   created_at: string | null;
+  ingest: VersionIngest | null;
 }
 
 /**

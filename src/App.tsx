@@ -47,6 +47,13 @@ function AppShell() {
   const [datasetHomeKey, setDatasetHomeKey] = useState(0);
   const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
   const [selectedDataId, setSelectedDataId] = useState<string | null>(null);
+  // 计算用哪一版数据（2026-10）：`null` = 跟随最新版本。分析链各页统一读它，
+  // 所以「在起收弧识别选了 v1.0」到分段页仍是 v1.0（同一焊缝的处理历史里选一版算）。
+  const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
+  // 版本链刷新计数：新建数据版本后自增，让顶部「数据版本」下拉立刻能看到新版。
+  const [versionsRefreshKey, setVersionsRefreshKey] = useState(0);
+  // 换样本 → 版本回到「跟随最新」：版本是样本的下级，不能跨样本残留。
+  useEffect(() => { setSelectedVersionId(null); }, [selectedDataId]);
   // 深链首屏也要展开所属一级分组，否则侧栏看不到当前子菜单高亮（看起来像没生效）。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     () => new Set([resolveInitialRoute().split('/')[0]]),
@@ -125,7 +132,7 @@ function AppShell() {
     <main className="main-content">
       <Suspense fallback={<div className="dataset-empty-state" role="status">页面加载中…</div>}>
         {route === 'overview' && <OverviewPage />}
-        {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} datasetHomeKey={datasetHomeKey} navigate={navigate} />}
+        {route !== 'overview' && <WorkspaceFrame route={route} selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} selectedVersionId={selectedVersionId} setSelectedVersionId={setSelectedVersionId} versionsRefreshKey={versionsRefreshKey} onVersionsChanged={() => setVersionsRefreshKey((v) => v + 1)} datasetHomeKey={datasetHomeKey} navigate={navigate} />}
       </Suspense>
     </main>
   </div>;
@@ -143,7 +150,7 @@ function App() {
   return <AppShell />;
 }
 
-function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, datasetHomeKey, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; datasetHomeKey: number; navigate: (r: Route) => void }) {
+function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, selectedDataId, setSelectedDataId, selectedVersionId, setSelectedVersionId, versionsRefreshKey, onVersionsChanged, datasetHomeKey, navigate }: { route: Route; selectedDatasetId: number | null; setSelectedDatasetId: (id: number | null) => void; selectedDataId: string | null; setSelectedDataId: (id: string | null) => void; selectedVersionId: number | null; setSelectedVersionId: (id: number | null) => void; versionsRefreshKey: number; onVersionsChanged: () => void; datasetHomeKey: number; navigate: (r: Route) => void }) {
   const ws = route.split('/')[0];
   const header = route === 'model-center/dataset-build'
     ? { eyebrow: '模型研发中心', title: '训练数据准备', description: '基于数据管理的数据集，筛选可用于模型训练的样本并生成固定版本。' }
@@ -189,15 +196,15 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   let content: React.ReactNode = null;
   if (route === 'data-center/datasets') content = <DatasetWorkspace navigate={navigate} onDetailChange={setIsDatasetDetail} datasetHomeKey={datasetHomeKey} selectedDatasetId={selectedDatasetId} setSelectedDataId={setSelectedDataId} setSelectedDatasetId={setSelectedDatasetId} />;
   else if (route === 'data-center/registration') content = <RegistrationPage navigate={navigate} lockedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} setSelectedDataId={setSelectedDataId} />;
-  else if (route === 'data-center/validation') content = selectedDataId ? <ValidationPage embedded dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'data-center/validation') content = selectedDataId ? <ValidationPage embedded dataId={selectedDataId!} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'data-center/versions') content = selectedDataId ? <VersionPanel dataId={selectedDataId!} onVersionsChanged={onVersionsChanged} /> : <SelectionRequired onBack={() => navigate('data-center/datasets')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/select') content = <AnalysisSelect selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
-  else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <SplitWorkspace dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} setSelectedVersionId={setSelectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <SplitWorkspace dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/sample-annotation') content = selectedDatasetId != null && selectedDataId ? <SampleAnnotationWorkspace dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <AnnotationWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtractionPage embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <AnnotationWorkspace embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtractionPage embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'model-center/dataset-build') content = <TrainingDataPreparation />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} navigate={navigate} />;
   else if (route === 'model-center/training') content = <Training />;
@@ -206,7 +213,7 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'settings') content = <SettingsPage />;
 
   const frameAction = ws === 'data-center' && route === 'data-center/datasets' ? () => navigate('data-center/registration') : route === 'model-center/repository' ? handleRepoCreate : undefined;
-  return <div className={`workspace-page ${route === 'model-center/repository' ? 'model-repository-page' : ''}`}><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div>{(toolbarConfig.action || toolbarConfig.secondary) && <Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={frameAction} />}</div>{routeCrumbs[route] && <PageBreadcrumb crumbs={(routeCrumbs[route] ?? []).map((label) => ({ label }))} />}{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} showContext={Boolean(showContext)} emphasis={Boolean(needsDataContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
+  return <div className={`workspace-page ${route === 'model-center/repository' ? 'model-repository-page' : ''}`}><div className="workspace-page-head"><div><div className="eyebrow"><span />{header.eyebrow}</div><h1>{header.title}</h1><p>{header.description}</p></div>{(toolbarConfig.action || toolbarConfig.secondary) && <Toolbar action={toolbarConfig.action} secondary={toolbarConfig.secondary} exportType={exportType} onAction={frameAction} />}</div>{routeCrumbs[route] && <PageBreadcrumb crumbs={(routeCrumbs[route] ?? []).map((label) => ({ label }))} />}{showDataSwitcher && <SelectionSwitcher selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} selectedDataId={selectedDataId} setSelectedDataId={setSelectedDataId} selectedVersionId={selectedVersionId} setSelectedVersionId={setSelectedVersionId} versionsRefreshKey={versionsRefreshKey} showContext={Boolean(showContext)} emphasis={Boolean(needsDataContext)} onChange={ws === 'data-center' ? () => navigate('data-center/datasets') : undefined} />}{content}</div>;
 }
 
 export default App;

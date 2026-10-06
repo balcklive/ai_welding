@@ -20,7 +20,7 @@ from app.api.deps import forbid_unless_record_owned, get_current_user, owned_wel
 from app.core.audit import write_audit
 from app.core.db import get_session
 from app.models.analysis import SignalIngest
-from app.models.data import DataRecord, User
+from app.models.data import DataRecord, DataVersion, User
 from app.models.datasets import Dataset
 from app.models.jobs import Job
 from app.schemas.common import err, ok, paginate
@@ -484,6 +484,55 @@ def update_registration(
     return ok(svc.record_payload(session, record))
 
 
+def _csv_keys_of(object_keys: list[str] | None) -> list[str]:
+    """请求里的 `.csv` 键（去空白 + 去重）——信号导入只看 CSV，其它模态没有导入链。"""
+    keys: list[str] = []
+    seen: set[str] = set()
+    for key in object_keys or []:
+        key = (key or "").strip()
+        if key.lower().endswith(".csv") and key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
+def _queue_signal_ingests(
+    session: Session, version: DataVersion, csv_keys: list[str]
+) -> None:
+    """为某版本的 CSV 建 `signal_ingest` Job + `SignalIngest(pending)`（同一事务，调用方 commit）。
+
+    两个调用方：登记挂载原始文件（v1.0）、新建数据版本（加工版）。加工版这一处是新加的——
+    没有它，新版里上传的 CSV 永远不会被解析，分析与分段会静默回退到 v1.0 的信号。
+    已有导入行的键跳过（`(version_id, source_object_key)` 唯一约束兜底并发重复排队）。
+    """
+    if not csv_keys:
+        return
+    existing = set(
+        session.exec(
+            select(SignalIngest.source_object_key).where(
+                SignalIngest.version_id == version.id
+            )
+        ).all()
+    )
+    for key in csv_keys:
+        if key in existing:
+            continue
+        job = create_job(
+            session,
+            "signal_ingest",
+            result={"version_id": version.id, "source_object_key": key},
+        )
+        session.add(
+            SignalIngest(
+                job_id=job.id,
+                version_id=version.id,
+                source_object_key=key,
+                status="pending",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+
 @router.post("/registrations/{registration_id}/raw-files")
 def attach_raw_files(
     registration_id: str,
@@ -503,13 +552,7 @@ def attach_raw_files(
     # UI 已撤掉音频上传区，这里挡住绕过 UI 的直传。扩展名清单与 services.welds 共用一份。
     if any((key or "").strip().lower().endswith(svc._AUDIO_EXTS) for key in body.object_keys):
         return err(40000, "暂不支持音频文件：当前数据集类型不需要音频输入", status=400)
-    csv_keys = []
-    seen_csv_keys: set[str] = set()
-    for key in body.object_keys:
-        key = (key or "").strip()
-        if key.lower().endswith(".csv") and key not in seen_csv_keys:
-            seen_csv_keys.add(key)
-            csv_keys.append(key)
+    csv_keys = _csv_keys_of(body.object_keys)
 
     auto_build: dict | None = None
     for attempt in range(3):
@@ -570,23 +613,7 @@ def attach_raw_files(
                 )
                 if any(key in existing for key in csv_keys):
                     return err(CSV_INGEST_CONFLICT, "CSV 已存在导入任务", status=409)
-                for key in csv_keys:
-                    if key in existing:
-                        continue
-                    job = create_job(
-                        session,
-                        "signal_ingest",
-                        result={"version_id": version.id, "source_object_key": key},
-                    )
-                    session.add(
-                        SignalIngest(
-                            job_id=job.id,
-                            version_id=version.id,
-                            source_object_key=key,
-                            status="pending",
-                            created_at=datetime.now(timezone.utc),
-                        )
-                    )
+            _queue_signal_ingests(session, version, csv_keys)
             # 视频可播性预处理：本次挂载含**新**视频 key 时为每个建 media_prep Job
             # （探测编码 → 非浏览器友好（如 mpeg4）则转 H.264+faststart 预览版，
             # 写 processed/{weld_id}/video/；已是 h264+faststart 直接标记免转）。
@@ -669,16 +696,22 @@ def attach_raw_files(
 # ── T4.4：登记 → 上传 → 挂载 → 导入的状态与恢复 ───────────────────────
 
 
-def _ingest_state(session: Session, record: DataRecord) -> dict:
-    """登记链路状态：**全部由已有数据推导**（不新增表），刷新/换设备后看到的都一样。
+def _ingest_state(
+    session: Session, record: DataRecord, version: DataVersion | None = None
+) -> dict:
+    """某个版本的信号导入状态：**全部由已有数据推导**（不新增表），刷新/换设备看到的都一样。
+
+    `version` 缺省为 v1.0（登记链路的口径）；显式给定时按该版本算——加工版（去噪/人工修正）
+    有自己的导入行，登记页那套 v1.0 口径看不见它。
 
     判据（与方案 §T4.4 表格一致）：
-    - `awaiting_upload`：记录已建，但 v1.0 的 `object_keys` 为空（文件还没挂上）；
+    - `awaiting_upload`：该版本的 `object_keys` 为空（文件还没挂上）；
     - `importing`：已挂载文件，且有 `signal_ingests` 行还在 `pending`/`running`；
     - `failed`：有 `signal_ingests` 行 `failed`；
     - `ready`：全部导入成功，或本次没有 CSV 需要导入。
     """
-    version = svc.get_v10_version(session, record.id)
+    if version is None:
+        version = svc.get_v10_version(session, record.id)
     keys = list(version.object_keys or []) if version is not None else []
     rows = (
         session.exec(select(SignalIngest).where(SignalIngest.version_id == version.id)).all()
@@ -736,32 +769,17 @@ def get_ingest_status(
     return ok(_ingest_state(session, record))
 
 
-@router.post("/registrations/{registration_id}/reimport")
-def reimport_signals(
-    registration_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user),
-) -> dict:
-    """重新导入**失败**的 CSV（T4.4）：清掉 failed 行与其 Job 后重新入队。
+def _requeue_failed_ingests(session: Session, version: DataVersion) -> int:
+    """清掉该版本 `failed` 的 `signal_ingests` 行与其 Job 后重新入队；返回重排条数。
 
-    为什么要专门开一个入口：`signal_ingests` 对 `(version_id, source_object_key)` 唯一，
-    失败行也会被挂载接口的 409 拦掉，于是"旧代码解析失败、新代码能解析"的文件会**永远卡住**
-    （线上已踩过）。这里让用户能自助恢复，不必删库。
+    为什么要专门开入口：`signal_ingests` 对 `(version_id, source_object_key)` 唯一，失败行也会被
+    排队接口拦掉，于是"旧代码解析失败、新代码能解析"的文件会**永远卡住**（线上已踩过）。
     """
-    record = _record_or_error(session, registration_id)
-    if isinstance(record, dict):
-        return record
-    forbid_unless_record_owned(session, current_user, record)
-    version = svc.get_v10_version(session, record.id)
-    if version is None:
-        return err(40402, "v1.0 原始数据版本不存在", status=404)
     failed_rows = session.exec(
         select(SignalIngest).where(
             SignalIngest.version_id == version.id, SignalIngest.status == "failed"
         )
     ).all()
-    if not failed_rows:
-        return err(40000, "没有导入失败的文件，无需重新导入", status=400)
     for row in failed_rows:
         # 先取出要用的值：`delete` 之后不保证还能读属性
         failed_job_id, source_key = row.job_id, row.source_object_key
@@ -784,16 +802,99 @@ def reimport_signals(
                 created_at=datetime.now(timezone.utc),
             )
         )
+    return len(failed_rows)
+
+
+def _version_of_record(
+    session: Session, record: DataRecord, version_id: int
+) -> DataVersion | None:
+    """取该焊缝下的版本；不存在或不属于该焊缝返回 `None`（由调用方给 40402）。"""
+    version = svc.get_version(session, version_id)
+    if version is None or version.record_id != record.id:
+        return None
+    return version
+
+
+@router.post("/registrations/{registration_id}/reimport")
+def reimport_signals(
+    registration_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """重新导入 **v1.0** 失败的 CSV（T4.4）。加工版走 `/welds/{weld_id}/versions/{version_id}/reimport`。"""
+    record = _record_or_error(session, registration_id)
+    if isinstance(record, dict):
+        return record
+    forbid_unless_record_owned(session, current_user, record)
+    version = svc.get_v10_version(session, record.id)
+    if version is None:
+        return err(40402, "v1.0 原始数据版本不存在", status=404)
+    count = _requeue_failed_ingests(session, version)
+    if not count:
+        return err(40000, "没有导入失败的文件，无需重新导入", status=400)
     write_audit(
         session,
         current_user.id,
         "update",
         "weld",
         record.weld_id,
-        {"action": "重新导入信号", "count": len(failed_rows)},
+        {"action": "重新导入信号", "count": count},
     )
     session.commit()
     return ok(_ingest_state(session, record))
+
+
+@router.get("/welds/{weld_id}/versions/{version_id}/ingest-status")
+def get_version_ingest_status(
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """**某个数据版本**的导入状态。加工版的 CSV 有自己的导入行，登记页那套 v1.0 口径看不见它。"""
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    forbid_unless_record_owned(session, current_user, record)
+    version = _version_of_record(session, record, version_id)
+    if version is None:
+        return err(40402, "版本不存在", status=404)
+    return ok(_ingest_state(session, record, version))
+
+
+@router.post("/welds/{weld_id}/versions/{version_id}/reimport")
+def reimport_version_signals(
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """重新导入**该版本**失败的 CSV。
+
+    必须按版本重排：加工版的失败行锚在它自己的版本上，v1.0 的 reimport 够不到；而
+    `POST /welds/{id}/versions` 又会被"相同 action/note/object_keys"判重挡掉——没有这个入口，
+    加工版一导入失败就既看不见也修不了。
+    """
+    record = svc.get_record_by_weld_id(session, weld_id)
+    if record is None:
+        return err(40401, "焊缝不存在", status=404)
+    forbid_unless_record_owned(session, current_user, record)
+    version = _version_of_record(session, record, version_id)
+    if version is None:
+        return err(40402, "版本不存在", status=404)
+    count = _requeue_failed_ingests(session, version)
+    if not count:
+        return err(40000, "没有导入失败的文件，无需重新导入", status=400)
+    write_audit(
+        session,
+        current_user.id,
+        "update",
+        "weld",
+        record.weld_id,
+        {"action": "重新导入信号", "version_no": version.version_no, "count": count},
+    )
+    session.commit()
+    return ok(_ingest_state(session, record, version))
 
 
 # ── 版本 ─────────────────────────────────────────────────────────────
@@ -811,7 +912,8 @@ def list_versions(
         return err(40401, "焊缝不存在", status=404)
     forbid_unless_record_owned(session, current_user, record)
     versions = svc.list_versions(session, record.id)
-    return ok([svc.version_payload(v) for v in versions])
+    ingests = svc.ingest_status_for_versions(session, [v.id for v in versions])
+    return ok([svc.version_payload(v, ingests.get(v.id)) for v in versions])
 
 
 @router.get("/welds/{weld_id}/versions/{version_id}")
@@ -829,7 +931,11 @@ def get_version(
     version = svc.get_version(session, version_id)
     if version is None or version.record_id != record.id:
         return err(40402, "版本不存在", status=404)
-    return ok(svc.version_payload(version))
+    return ok(
+        svc.version_payload(
+            version, svc.ingest_status_for_versions(session, [version.id]).get(version.id)
+        )
+    )
 
 
 @router.post("/welds/{weld_id}/versions")
@@ -839,7 +945,7 @@ def create_version(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    """新建数据版本（去噪处理/人工修正），不覆盖旧版 + 更新 latest + 审计。"""
+    """新建数据版本（去噪处理/人工修正），不覆盖旧版 + 更新 latest + CSV 排队导入 + 审计。"""
     record = svc.get_record_by_weld_id(session, weld_id)
     if record is None:
         return err(40401, "焊缝不存在", status=404)
@@ -869,6 +975,10 @@ def create_version(
             record.weld_id,
             {"action": body.action, "version_no": version.version_no},
         )
+        # 这一版里的 CSV 才是它的信号来源：没有这一步，加工后的文件不会被解析，分析与分段会
+        # 静默回退到 v1.0 的信号（"页面标着 v1.1、数据是 v1.0"）。同事务排队，撞唯一约束回滚时
+        # 一并丢弃，不留孤儿 Job。
+        _queue_signal_ingests(session, version, _csv_keys_of(body.object_keys))
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -878,7 +988,11 @@ def create_version(
         if duplicate is not None:
             return err(40900, "重复版本请求：相同 action/note/object_keys 已存在", status=409)
         raise
-    return ok(svc.version_payload(version))
+    return ok(
+        svc.version_payload(
+            version, svc.ingest_status_for_versions(session, [version.id]).get(version.id)
+        )
+    )
 
 
 # ── 核验 ─────────────────────────────────────────────────────────────

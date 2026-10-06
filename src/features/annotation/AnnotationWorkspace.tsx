@@ -44,7 +44,7 @@ const activeLabels = (list: LabelCategory[]): LabelCategory[] => {
   return enabled.length ? enabled : list;
 };
 
-export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
+export function AnnotationWorkspace({ embedded = false, dataId, selectedVersionId = null }: { embedded?: boolean; dataId?: string; selectedVersionId?: number | null }) {
   const [mode, setMode] = useState<string>('image');
   const [saved, setSaved] = useState(false);
   const [selectedLabels, setSelectedLabels] = useState(['焊瘤', '气孔']);
@@ -164,7 +164,7 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
       </section>
     </div>;
   }
-  return <div className={embedded ? 'embedded-page' : 'page-wrap'}><PageIntro eyebrow="数据生产线" title="数据标注" description="为模型准备高质量训练样本，支持多模态协同标注。" action={<><button className="outline-button"><Upload size={16} />导入数据</button><button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button></>} /><div className="annotation-mode-bar"><button className={mode === 'signal' ? 'selected' : ''} onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button className={mode === 'video' ? 'selected' : ''} onClick={() => setMode('video')}><Play size={14} />视频标注</button><button className={mode === 'image' ? 'selected' : ''} onClick={() => setMode('image')}><ImageIcon size={14} />图像标注</button></div>{mode === 'signal' ? <AnnotationSignal dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : mode === 'video' ? <AnnotationVideo dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : <div className="annotation-layout"><section className="panel annotation-board"><div className="board-toolbar"><div><span className="file-badge"><Archive size={15} />{sample ? <>样本 {frameLabel} / {totalSamples.toLocaleString()}</> : '样本加载中…'}</span><h2>焊接件 · 视觉质检样本</h2></div><div className="toolbar-actions"><button className="icon-button" onClick={handleAiPretag} title="AI 预标注" disabled={!sample}><SlidersHorizontal size={17} /></button><button className="select-button">图像标注 <ChevronDown size={14} /></button></div></div><div className="image-stage">{sampleImg && !sampleImgError ? <img src={sampleImg} alt="真实待标注焊接样本" onError={() => setSampleImgError(true)} /> : <div className="selection-required"><ImageIcon size={23} /><h2>{sampleImgError ? '图片暂时无法预览' : '真实图片加载中'}</h2><p>{sampleImgError ? '请检查对象存储连接后重试。' : '当前版本没有可用的真实图片样本。'}</p></div>}{aiBoxes.length ? aiBoxes.map((a, i) => { const [bx, by, bw, bh] = a.box.length === 4 ? a.box : [128, 182, 186, 106]; return <div key={a.id ?? i} className="annotation-box" style={{ left: `${(bx / 640) * 100}%`, top: `${(by / 480) * 100}%`, width: `${(bw / 640) * 100}%`, height: `${(bh / 480) * 100}%` }}><span>{a.category} {a.confidence != null ? <b>{a.confidence.toFixed(2)}</b> : null}</span></div>; }) : null}<div className="stage-tip">{aiBoxes.length ? <><Sparkles size={14} />AI 已预标注 {aiBoxes.length} 个区域</> : '暂无标注数据'}</div></div><div className="board-footer"><div className="thumb-strip"><>{sampleImg && !sampleImgError && <img className="thumb-active" src={sampleImg} alt="当前样本缩略图" onError={() => setSampleImgError(true)} />}</></div><div className="pagination">{sample ? <span>当前样本</span> : null}</div></div></section><aside className="annotation-side"><section className="panel label-panel"><div className="panel-heading"><div><h2>标签类别</h2><p>选择需要应用的缺陷标签</p></div><button className="more-button"><MoreHorizontal size={18} /></button></div><div className="label-options">{labels.map((label, index) => <button className={`label-chip ${selectedLabels.includes(label.name) ? 'chosen' : ''}`} onClick={() => toggleLabel(label.name)} key={label.name}><i className={`chip-dot chip-${index % 5}`} />{label.name}<span>{selectedLabels.includes(label.name) ? <Check size={14} /> : '+'}</span></button>)}</div></section><section className="panel annotation-info"><div className="panel-heading"><div><h2>标注信息</h2><p>当前样本的详细信息</p></div></div><InfoRow label="数据来源" value={sample ? '真实对象存储图片' : '—'} /><InfoRow label="采集时间" value={sample ? '真实数据记录' : '—'} /><InfoRow label="标注人员" value={sample ? '当前用户' : '—'} /><InfoRow label="置信度" value={sample ? confidence : '—'} accent /></section><div className="ai-card"><div className="ai-card-icon"><Zap size={17} /></div><div><strong>智能标注建议</strong><p>{aiBoxes.length ? `已为你识别 ${aiBoxes.length} 个疑似缺陷区域，建议确认后提交。` : '暂无 AI 标注建议'}</p></div></div></aside></div>}</div>;
+  return <div className={embedded ? 'embedded-page' : 'page-wrap'}><PageIntro eyebrow="数据生产线" title="数据标注" description="为模型准备高质量训练样本，支持多模态协同标注。" action={<><button className="outline-button"><Upload size={16} />导入数据</button><button className="primary-button" onClick={handleSave}>{saved ? <Check size={16} /> : <Plus size={16} />}{saved ? '已保存' : '保存标注'}</button></>} /><div className="annotation-mode-bar"><button className={mode === 'signal' ? 'selected' : ''} onClick={() => setMode('signal')}><Waves size={14} />时序标注</button><button className={mode === 'video' ? 'selected' : ''} onClick={() => setMode('video')}><Play size={14} />视频标注</button><button className={mode === 'image' ? 'selected' : ''} onClick={() => setMode('image')}><ImageIcon size={14} />图像标注</button></div>{mode === 'signal' ? <AnnotationSignal dataId={dataId} selectedVersionId={selectedVersionId} embedded={embedded} onBack={() => setMode('image')} /> : mode === 'video' ? <AnnotationVideo dataId={dataId} embedded={embedded} onBack={() => setMode('image')} /> : <div className="annotation-layout"><section className="panel annotation-board"><div className="board-toolbar"><div><span className="file-badge"><Archive size={15} />{sample ? <>样本 {frameLabel} / {totalSamples.toLocaleString()}</> : '样本加载中…'}</span><h2>焊接件 · 视觉质检样本</h2></div><div className="toolbar-actions"><button className="icon-button" onClick={handleAiPretag} title="AI 预标注" disabled={!sample}><SlidersHorizontal size={17} /></button><button className="select-button">图像标注 <ChevronDown size={14} /></button></div></div><div className="image-stage">{sampleImg && !sampleImgError ? <img src={sampleImg} alt="真实待标注焊接样本" onError={() => setSampleImgError(true)} /> : <div className="selection-required"><ImageIcon size={23} /><h2>{sampleImgError ? '图片暂时无法预览' : '真实图片加载中'}</h2><p>{sampleImgError ? '请检查对象存储连接后重试。' : '当前版本没有可用的真实图片样本。'}</p></div>}{aiBoxes.length ? aiBoxes.map((a, i) => { const [bx, by, bw, bh] = a.box.length === 4 ? a.box : [128, 182, 186, 106]; return <div key={a.id ?? i} className="annotation-box" style={{ left: `${(bx / 640) * 100}%`, top: `${(by / 480) * 100}%`, width: `${(bw / 640) * 100}%`, height: `${(bh / 480) * 100}%` }}><span>{a.category} {a.confidence != null ? <b>{a.confidence.toFixed(2)}</b> : null}</span></div>; }) : null}<div className="stage-tip">{aiBoxes.length ? <><Sparkles size={14} />AI 已预标注 {aiBoxes.length} 个区域</> : '暂无标注数据'}</div></div><div className="board-footer"><div className="thumb-strip"><>{sampleImg && !sampleImgError && <img className="thumb-active" src={sampleImg} alt="当前样本缩略图" onError={() => setSampleImgError(true)} />}</></div><div className="pagination">{sample ? <span>当前样本</span> : null}</div></div></section><aside className="annotation-side"><section className="panel label-panel"><div className="panel-heading"><div><h2>标签类别</h2><p>选择需要应用的缺陷标签</p></div><button className="more-button"><MoreHorizontal size={18} /></button></div><div className="label-options">{labels.map((label, index) => <button className={`label-chip ${selectedLabels.includes(label.name) ? 'chosen' : ''}`} onClick={() => toggleLabel(label.name)} key={label.name}><i className={`chip-dot chip-${index % 5}`} />{label.name}<span>{selectedLabels.includes(label.name) ? <Check size={14} /> : '+'}</span></button>)}</div></section><section className="panel annotation-info"><div className="panel-heading"><div><h2>标注信息</h2><p>当前样本的详细信息</p></div></div><InfoRow label="数据来源" value={sample ? '真实对象存储图片' : '—'} /><InfoRow label="采集时间" value={sample ? '真实数据记录' : '—'} /><InfoRow label="标注人员" value={sample ? '当前用户' : '—'} /><InfoRow label="置信度" value={sample ? confidence : '—'} accent /></section><div className="ai-card"><div className="ai-card-icon"><Zap size={17} /></div><div><strong>智能标注建议</strong><p>{aiBoxes.length ? `已为你识别 ${aiBoxes.length} 个疑似缺陷区域，建议确认后提交。` : '暂无 AI 标注建议'}</p></div></div></aside></div>}</div>;
 }
 /** 时序标注模式：ECharts 波形 + 点击设起点/终点选缺陷区间（kind=segment）+ 区间列表 + 保存。
  *
@@ -172,12 +172,13 @@ export function AnnotationWorkspace({ embedded = false, dataId }: { embedded?: b
  * → useJob 轮询成功 → listAnnotationSamples 取信号锚点样本 → getSignals 拉四通道波形 →
  * 波形上点击设起点/终点 → 选缺陷类别生成区间 → saveAnnotation(kind='segment') 覆盖写保存。
  */
-function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: string; onBack: () => void }) {
+function AnnotationSignal({ dataId, selectedVersionId = null, onBack }: { embedded?: boolean; dataId?: string; selectedVersionId?: number | null; onBack: () => void }) {
   // 初始为空：mock 类别仅作失败兜底（见下方 catch），不闪现
   const [labels, setLabels] = useState<LabelCategory[]>([]);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [sample, setSample] = useState<Sample | null>(null);
-  const [versionId, setVersionId] = useState<number | null>(null);
+  //: 这条焊缝的**最新**版本；实际标注哪一版见下面的 `versionId`
+  const [weldVersionId, setWeldVersionId] = useState<number | null>(null);
   const [signal, setSignal] = useState<SignalData | null>(null);
   const [segments, setSegments] = useState<AnnotationLabel[]>([]);
   const [draft, setDraft] = useState<{ start: number | null; end: number | null }>({ start: null, end: null });
@@ -195,7 +196,9 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
     return () => { cancelled = true; };
   }, []);
 
-  // 解析选中焊缝最新版本并创建 signal 标注任务（best-effort）
+  // 上下文条选了版本就用它（`null` = 跟随最新）；信号窗口与参考图 effect 只依赖 `versionId`。
+  const versionId = selectedVersionId ?? weldVersionId;
+  // 解析选中焊缝版本并创建 signal 标注任务（best-effort）
   // StrictMode 开发模式会「挂载→cleanup→再挂载」跑两次 effect：一次性闸门必须放在异步
   // resolve 之后（而非同步开头），否则第 1 次置 true → 第 2 次提前 return → 任务永不创建。
   useEffect(() => {
@@ -203,15 +206,16 @@ function AnnotationSignal({ dataId, onBack }: { embedded?: boolean; dataId?: str
     let cancelled = false;
     getWeld(dataId).then((w) => {
       if (cancelled) return;
-      const vid = w.latest_version_id;
+      const vid = w.latest_version_id ?? w.latest_version?.id ?? null;
       if (vid == null) return;
-      setVersionId(vid);
+      setWeldVersionId(vid);
       if (taskCreatedRef.current) return;
       taskCreatedRef.current = true;
-      createAnnotationTask({ source: 'signal', version_id: vid, name: 'AN-时序' }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => console.warn('[annotation.signal] createAnnotationTask failed', err));
+      // 标注任务绑在**上下文选中的那一版**上（默认最新）：波形与标注区间必须来自同一版数据。
+      createAnnotationTask({ source: 'signal', version_id: selectedVersionId ?? vid, name: 'AN-时序' }).then((res) => { if (!cancelled) setTaskId(res.job_id); }).catch((err) => console.warn('[annotation.signal] createAnnotationTask failed', err));
     }).catch((err) => console.warn('[annotation.signal] getWeld failed', err));
     return () => { cancelled = true; };
-  }, [dataId]);
+  }, [dataId, selectedVersionId]);
 
   // 任务成功后加载信号锚点样本与既有区间标注
   useEffect(() => {

@@ -673,8 +673,31 @@ def bundle_from_parquet(data: bytes, ingest: SignalIngest, weld_id: str) -> Sign
 # ── loader（DSP/特征/报告统一入口） ───────────────────────────────────
 
 
-def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> SignalBundle:
-    """读取成功导入的真实信号；缺失或损坏时阻断业务，不生成替代信号。"""
+def _declared_source_reason(session: Session, version_id: int) -> str | None:
+    """该版本**自己声明了**信号来源、却还没有可用导入时的原因；从没声明过则返回 `None`。
+
+    "声明过" = 该版本存在任何 `signal_ingests` 行。判据这么定，是因为新版里上传的加工 CSV
+    一旦排队，它就是**这一版**的信号来源——再回退到别的版本，用户看到的"选中版本"与实际
+    读到的数据就对不上（这正是加工版文件被静默忽略、页面标着 v1.1 却显示 v1.0 波形的成因）。
+    返回 `None` 有两种含义：该版本有成功导入（调用方直接取用），或该版本一行都没有
+    （历史加工版 / 从未挂 CSV）——后者由调用方保留旧的"回退到同焊缝最近成功导入"行为。
+    """
+    statuses = session.exec(
+        select(SignalIngest.status).where(SignalIngest.version_id == version_id)
+    ).all()
+    if not statuses:
+        return None
+    if any(status == "succeeded" for status in statuses):
+        return None
+    if any(status in ("pending", "running") for status in statuses):
+        return "该版本的信号正在导入，请稍候再试"
+    if any(status == "failed" for status in statuses):
+        return "该版本的信号导入失败，请在数据版本页重新导入"
+    return "该版本的信号尚未就绪"
+
+
+def _latest_succeeded_ingest(session: Session, version_id: int) -> SignalIngest | None:
+    """该版本最近一次成功导入；该版本没有则回退到**同一条焊缝**最近一次成功导入。"""
     ingest = session.exec(
         select(SignalIngest)
         .where(
@@ -683,18 +706,33 @@ def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> Signa
         )
         .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
     ).first()
-    if ingest is None:
-        version = session.get(DataVersion, version_id)
-        if version is not None:
-            ingest = session.exec(
-                select(SignalIngest)
-                .join(DataVersion, DataVersion.id == SignalIngest.version_id)
-                .where(
-                    DataVersion.record_id == version.record_id,
-                    SignalIngest.status == "succeeded",
-                )
-                .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
-            ).first()
+    if ingest is not None:
+        return ingest
+    version = session.get(DataVersion, version_id)
+    if version is None:
+        return None
+    return session.exec(
+        select(SignalIngest)
+        .join(DataVersion, DataVersion.id == SignalIngest.version_id)
+        .where(
+            DataVersion.record_id == version.record_id,
+            SignalIngest.status == "succeeded",
+        )
+        .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
+    ).first()
+
+
+def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> SignalBundle:
+    """读取成功导入的真实信号；缺失或损坏时阻断业务，不生成替代信号。
+
+    **回退口径（2026-10）**：该版本有任何 `signal_ingests` 行时**不回退**，直接把
+    "正在导入 / 导入失败"作为原因抛出；只有该版本一行都没有时才回退到同一条焊缝最近一次
+    成功导入（历史加工版没有自己的导入行，不这样兼容会让它们全部读不到信号）。
+    """
+    reason = _declared_source_reason(session, version_id)
+    if reason is not None:
+        raise ValueError(reason)
+    ingest = _latest_succeeded_ingest(session, version_id)
     if ingest is None or not ingest.parquet_key:
         raise ValueError("当前版本没有成功导入的真实时序信号")
     parsed = _cached_parquet(ingest.parquet_key)
@@ -706,27 +744,15 @@ def load_signal_bundle(session: Session, weld_id: str, version_id: int) -> Signa
 def load_real_signal_bundle(
     session: Session, weld_id: str, version_id: int
 ) -> SignalBundle | None:
-    """只读取真实 Parquet；生产任务不得回退到合成信号。"""
-    ingest = session.exec(
-        select(SignalIngest)
-        .where(
-            SignalIngest.version_id == version_id,
-            SignalIngest.status == "succeeded",
-        )
-        .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
-    ).first()
-    if ingest is None:
-        version = session.get(DataVersion, version_id)
-        if version is not None:
-            ingest = session.exec(
-                select(SignalIngest)
-                .join(DataVersion, DataVersion.id == SignalIngest.version_id)
-                .where(
-                    DataVersion.record_id == version.record_id,
-                    SignalIngest.status == "succeeded",
-                )
-                .order_by(SignalIngest.created_at.desc(), SignalIngest.id.desc())
-            ).first()
+    """只读取真实 Parquet；生产任务不得回退到合成信号。
+
+    回退口径与 `load_signal_bundle` 一致：该版本声明过导入但尚不可用时 `raise`（原因由调用方
+    呈现给用户），只有"该版本一行都没有 + 整条焊缝也没有成功导入"才返回 `None`。
+    """
+    reason = _declared_source_reason(session, version_id)
+    if reason is not None:
+        raise ValueError(reason)
+    ingest = _latest_succeeded_ingest(session, version_id)
     if ingest is None or not ingest.parquet_key:
         return None
     parsed = _cached_parquet(ingest.parquet_key)
@@ -857,8 +883,11 @@ def run_ingest(session: Session, ingest: SignalIngest, job) -> None:
 
         # 校验通过（pass/warn）→ 启发式事件 + 写 Parquet
         events, anomalies = detect_events(df, result["column_map"], result["fs"])
-        # 导入成功后回填登记单值工艺列与字段概览（executor 事务统一提交）
-        if record is not None:
+        # 导入成功后回填登记单值工艺列与字段概览（executor 事务统一提交）。
+        # **只认 v1.0**：加工版（去噪/人工修正）导入的是同一条焊缝的加工后数据，它的稳态值不该
+        # 反过来改写登记台账——台账描述的是"登记时那份数据"，也免得"全部数据"列表与核验读到的
+        # 工艺参数被后来的加工版静默换掉。
+        if record is not None and version.version_no == "v1.0":
             record.data_fields = build_field_summary(
                 df, result["column_map"], events, result["fs"]
             )

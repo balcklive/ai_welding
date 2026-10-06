@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `FeatureExtractionPage.tsx`：`FeatureExtractionPage({dataId})`——「执行提取」工具栏按钮 → `extractFeatures`（归一化/格式读 UI 状态，L2 范数↔L2 映射）→ 三类特征表（时序 `TS_ROWS` / 视觉 `VISION_ROWS`+`VISION_DESC` / 音频 `AUDIO_ROWS`）+ 统一向量条由结果映射。`getWeld` 取上下文。
+- `FeatureExtractionPage.tsx`：`FeatureExtractionPage({dataId, selectedVersionId})`——「执行提取」工具栏按钮 → `extractFeatures`（归一化/格式读 UI 状态，L2 范数↔L2 映射）→ 三类特征表（时序 `TS_ROWS` / 视觉 `VISION_ROWS`+`VISION_DESC` / 音频 `AUDIO_ROWS`）+ 统一向量条由结果映射。`getWeld` 取上下文。**2026-10**：提取版本 = `selectedVersionId ?? 最新版`；`selectedVersionId` **必须列进 fetch effect 依赖**（该 effect 顺带拉「历史提取结果」，不列就会一直显示最新版那份）。
 
 ## 调用链
 

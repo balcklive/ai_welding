@@ -5,14 +5,17 @@
 ## 文件
 
 - `DataContext.tsx`：
-  - `SelectionSwitcher`：工作区顶部的数据集/焊缝切换器（读 `selectedDatasetId`/`selectedDataId`；`onChange` 在数据管理回到数据集列表）。
+  - `SelectionSwitcher`：工作区顶部的数据集/样本/数据版本三级切换器（读 `selectedDatasetId`/`selectedDataId`/`selectedVersionId`；`onChange` 在数据管理回到数据集列表）。**2026-10 新增第三级「数据版本」**：候选 `listVersions(selectedDataId)`（依赖 `[selectedDataId, versionsRefreshKey]`），`value = selectedVersionId ?? latestVersionId`（链尾 = 最新，与后端指针一致），只在版本数 >1 时渲染；拉取失败给条内提示并说明"已按最新版本计算"（不回退假候选）。它是**全站版本选择的单一来源**——分析链各页只读 `selectedVersionId`，所以「在起收弧识别选了 v1.0」到分段页仍是 v1.0。
   - `SelectionRequired({onBack, onSelectHere})`：未选数据时的引导占位。**T5/S3（2026-09-14）**：真正的选择器就在本页顶部，原来那个"前往选择数据"却跳到数据集列表——给了 `onSelectHere` 时改为渲染「在本页选择数据」（点击聚焦并高亮顶部选择器，见 App 的 `focusDataSwitcher`）+ 一个「去数据集列表」兜底出口；调用方不给 `onSelectHere` 时保持旧行为。
   - **T9 + R5（2026-09-14）**：两个选择器都改成**服务端搜索 + 分页追加**，共用 `hooks/usePagedWelds`——默认每页 20、页脚给「加载更多（已显示 N / 共 M）」。改造前两处写死 `page_size: 50` 且没有翻页入口，**第 51 条之后永远选不到**；现在失败还会清空旧候选并给错误态（不再只 `console.warn`）。数据集下拉一律走 `listDatasetOptions()`（`?options=1` 轻量全量，D19）。
   - `SelectionSwitcher` 新增 `emphasis`（T5）：本页需要数据上下文却没选时，容器加 `.needs-attention`（边框/底色强调）并把提示文案换成「本页需要数据上下文：请先选择数据集和一条样本」。容器固定 `id="data-context-switcher"`，供守卫按钮聚焦。
   - `SelectionSwitcher` 的数据集候选拉取失败（R8）：**清空旧候选** + 条内错误提示 + 重试（`datasetsReloadKey`）——原先只 `console.warn`，界面上与"确实没有数据集"无法区分。
   - `DatasetTestingContext`：数据集上下文条（测试用）。
   - `AnalysisSelect`：分析「选择数据」两级选择——第一级 `listDatasetOptions` 下拉，第二级样本卡片走 `usePagedWelds`（服务端搜索 + 分页追加）；**仅 `quality===异常` 的卡片 disabled 置灰**（待复核可进）。**T3.2：两级 mock 兜底已删除**，失败置 `datasetError` / `welds.error` → `ErrorState` + 重试。
-  - `VersionPanel`：只读版本链（`listVersions`）+ 新建数据版本（`createVersion`）+ 执行核验（`runValidation`）+ `VersionDetailDrawer`（mode="weld"）打开；`VersionCreateDialog` 内部组件。
+  - `VersionPanel`：只读版本链（`listVersions`）+ 新建数据版本（`createVersion`）+ 执行核验（`runValidation`）+ 每版**信号导入态与「重新导入」**（2026-10，读版本载荷的 `ingest`，调 `reimportVersionSignals`）+ `VersionDetailDrawer`（mode="weld"）打开；`VersionCreateDialog` 内部组件。
+    - 建版成功后调 `onVersionsChanged?.()`（AppShell 自增 `versionsRefreshKey`，否则顶部下拉在 15s GET 缓存期内选不到刚建的版本），并按 `created.ingest.status` 给不同提示（"CSV 正在导入" vs "请执行核验"）。
+    - 链上存在 `ingest.status === 'importing'` 的版本时按 5s 轮询版本链（导入完成/失败都要看得见），全部落定即停。
+    - **为什么必须有「重新导入」**：加工版的失败行锚在它自己的版本上，`/registrations/{id}/reimport` 只认 v1.0 够不到；而重复发建版请求会被判重挡成 409——没有这个入口，加工版一导入失败就既看不见也修不了。
   - `SelectionContext`：`getWeld` 拉当前选中焊缝详情（失败才回 mock 行）。
 
 ## 调用链

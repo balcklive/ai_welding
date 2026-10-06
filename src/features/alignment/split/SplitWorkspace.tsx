@@ -26,9 +26,10 @@ const VIDEO_EXTS = ['.mp4', '.avi', '.mkv', '.mov', '.webm'];
 /** §4.5：输入合法且停顿 300ms 后才请求预览，避免每敲一个字符打一次服务端。 */
 const DEBOUNCE_MS = 300;
 
-export function SplitWorkspace({ dataId }: { dataId?: string }) {
+export function SplitWorkspace({ dataId, selectedVersionId = null }: { dataId?: string; selectedVersionId?: number | null }) {
   const [record, setRecord] = useState<DataRecord | null>(null);
-  const [versionId, setVersionId] = useState<number | null>(null);
+  //: 版本链**链尾**（= 最新版，与后端 `latest_version_id` 指针一致）；实际分段哪一版见 `versionId`
+  const [latestVersionId, setLatestVersionId] = useState<number | null>(null);
   const [inputError, setInputError] = useState<string | null>(null);
   const [draft, setDraft] = useState<RulesDraft>(defaultDraft);
   /** 最后一次**成功**的预览 + 它的规则指纹（用于判定 stale）。 */
@@ -60,8 +61,11 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
     listVersions(dataId)
       .then((versions) => {
         if (cancelled || !versions.length) return;
-        const source = versions.find((v) => v.id === (record?.latest_version_id ?? null)) ?? versions[versions.length - 1];
-        setVersionId(source.id);
+        // 链尾即最新版（`list_versions` 按 created_at/id 升序返回）。此前这里读 `record.latest_version_id`，
+        // 但 `record` 由同一个 effect 里的 `getWeld` 异步填充、不在依赖里 —— 首跑必然为 null，
+        // 实际一直回落到链尾。直接取链尾，把这个时序坑消掉。
+        const source = versions[versions.length - 1];
+        setLatestVersionId(source.id);
         const keys = versions.flatMap((v) => v.object_keys ?? []);
         const videoKey = keys.find((k) => VIDEO_EXTS.some((e) => k.toLowerCase().endsWith(e)));
         if (videoKey) {
@@ -78,9 +82,9 @@ export function SplitWorkspace({ dataId }: { dataId?: string }) {
       })
       .catch((err) => { if (!cancelled) setInputError(err instanceof Error ? err.message : '数据版本读取失败'); });
     return () => { cancelled = true; };
-    // record 只用于挑默认版本；把它放进依赖会让本效果在 record 到达后重跑一遍，反而发两次请求
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataId]);
+  // 上下文条选了版本就用它（`null` = 跟随最新）；预览与创建任务都读 `versionId`。
+  const versionId = selectedVersionId ?? latestVersionId;
 
   // ── 预览：300ms 防抖 + 取消在途请求（§4.5） ────────────────────────
   useEffect(() => {

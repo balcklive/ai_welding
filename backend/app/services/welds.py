@@ -839,7 +839,41 @@ def records_payload(session: Session, records: list[DataRecord]) -> list[dict]:
     ]
 
 
-def version_payload(version: DataVersion | None) -> dict | None:
+def ingest_status_for_versions(session: Session, version_ids: list[int]) -> dict[int, dict]:
+    """各数据版本的**信号导入状态**（一次批量查询，避免版本链逐条 N+1）。
+
+    形状对齐 `datasets.build_status_for_versions`：没有该键 = 这一版没有 CSV 要导入
+    （从未挂过 CSV，或历史加工版）。一条版本可以挂多个 CSV，故汇总出 `total/failed/pending`，
+    `status` 取最坏的一档：有失败 → `failed`；否则有在跑 → `importing`；否则 `ready`。
+    """
+    if not version_ids:
+        return {}
+    rows = session.exec(
+        select(SignalIngest.version_id, SignalIngest.status).where(
+            SignalIngest.version_id.in_(version_ids)
+        )
+    ).all()
+    agg: dict[int, dict] = {}
+    for version_id, status in rows:
+        item = agg.setdefault(version_id, {"total": 0, "failed": 0, "pending": 0})
+        item["total"] += 1
+        if status == "failed":
+            item["failed"] += 1
+        elif status in ("pending", "running"):
+            item["pending"] += 1
+    for item in agg.values():
+        item["status"] = (
+            "failed"
+            if item["failed"]
+            else "importing"
+            if item["pending"]
+            else "ready"
+        )
+    return agg
+
+
+def version_payload(version: DataVersion | None, ingest: dict | None = None) -> dict | None:
+    """数据版本 → JSON；`ingest` 来自 `ingest_status_for_versions`（缺省 = 无导入信息）。"""
     if version is None:
         return None
     return {
@@ -851,6 +885,7 @@ def version_payload(version: DataVersion | None) -> dict | None:
         "note": version.note,
         "object_keys": version.object_keys or [],
         "created_at": _iso_utc(version.created_at),
+        "ingest": ingest,
     }
 
 

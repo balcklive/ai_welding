@@ -10,7 +10,7 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
 > `test_welds.py` / `test_models.py` / `test_datasets.py` / `test_split_annotation.py` / `test_alignment.py` /
 > `test_reports.py` / `test_dashboard.py` / `test_features.py` / `test_analysis.py` / `test_authz.py` /
 > `test_audit_routes.py` / `test_media_prep.py` / `test_signal_ingest.py` / `test_signals_downsample.py`。
-> 现盘上有 **23 个文件 / 224 用例**（`ls tests/test_*.py` 为准；2026-09-14 第二轮补齐后从 160 涨到 224），下面提到这些文件名的条目属**历史记录**。
+> 现盘上有 **33 个文件 / 412 用例**（2026-10 核对；以 `ls tests/test_*.py` 与 `uv run pytest` 输出为准），下面提到这些文件名的条目属**历史记录**。
 > 被删掉的恰是"Welds CRUD / 数据集构建 / 训练 / 切分标注 / 权鉴"等核心链路的离线回归——**改动这些链路时必须补测试**
 > （`test_dataset_members.py` 即为此补的）。恢复旧用例：`git checkout 9c68a83^ -- backend/tests/<file>`，
 > 但其中不少断言的是已被删除的演示/兜底行为，取回后要逐条核对。
@@ -35,7 +35,17 @@ pytest 测试。运行 `uv run pytest`（内存 SQLite / 假客户端，绝不�
   ⑬ `dataset.status` 取适配结论（未过检时是 `暂不可训练`）。
   **`_attach(..., verify=True)` 是默认行为**：挂载后立即跑一次核验（生产流程"登记 → 挂载 → 核验 →
   构建"；核验必须在挂载之后，登记那一刻 v1.0 还没有 object_keys）；复现"未核验"场景传
-  `verify=False`。训练类用例还要先 `_ingest_all` 跑完信号导入任务——适配检查的时序维度认
+  `verify=False`。
+  **2026-10 追加（加工版参与计算，4 条）**：⑭ **加工版 CSV 成为这一版的信号来源** ——
+  新建版本带 CSV → 立刻排队 `signal_ingest`（响应/版本列表的 `ingest.status == 'importing'`）→
+  `run_job` 成功后 `load_signal_bundle(该版本)` 读到的是**加工版**的信号（用 `_cur_peak` 按电流
+  峰值区分：合成信号里熄弧段占 40%，均值会撞车）、v1.0 仍读原始信号、`data_records.data_fields`
+  不被加工版改写；⑮ **导入失败不回退** —— 该版本有 failed 行时 `load_signal_bundle` raise
+  「导入失败」而不是静默给 v1.0 的波形；⑯ **按版本重排** —— 重复发建版请求被 409 挡掉、v1.0 的
+  reimport 返回 400（够不到），`…/versions/{vid}/reimport` 才能恢复；⑰ 版本级 `ingest-status` 只认
+  该版本的行、未知版本 40402。
+  **这 4 条验过会红**：注释掉 `create_version` 里的 `_queue_signal_ingests(...)` → ⑭⑯⑰ 全红；
+  把 `load_signal_bundle` 里 `_declared_source_reason` 的判据去掉（恢复无条件回退）→ ⑮ 红。训练类用例还要先 `_ingest_all` 跑完信号导入任务——适配检查的时序维度认
   `signal_ingests.column_map`，不跑导入会因"Current、Voltage、GasSpeed 均完整"被拒。
 - `test_dataset_members.py`（**T11 单元级，同批新增**）：直接测 `_samples_for_dataset_records` / `_compute_quality` / `_is_annotation_anchor` 的 5 条细粒度规则（含"无产物视为唯一"、同产物按 0.2 计重复等**在真实接口里难以构造**的判重边界）。**用户偏好：新覆盖优先写端到端**（见 `test_dataset_build_e2e.py`），本文件保留是因为它钉的判重边界在 E2E 里构造不出来。
 - `test_config.py`（Task 1）：`Settings` 默认值 / `mysql_url` 拼接（不读远程）。

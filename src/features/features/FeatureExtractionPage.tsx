@@ -69,10 +69,11 @@ function mapUnifiedGroups(uv: FeatureExtraction['unified_vector'] | null | undef
   return (uv?.groups ?? []).map((g, i) => ({ group: g.name, dims: g.dims, range: `[${g.range[0]}:${g.range[1]}]`, tone: unifiedPalette[i % unifiedPalette.length] }));
 }
 
-export function FeatureExtractionPage({ embedded = false, dataId }: { embedded?: boolean; dataId?: string }) {
+export function FeatureExtractionPage({ embedded = false, dataId, selectedVersionId = null }: { embedded?: boolean; dataId?: string; selectedVersionId?: number | null }) {
   const [normMethod, setNormMethod] = useState('Z-Score');
   const [exportFmt, setExportFmt] = useState('NPY');
-  const [versionId, setVersionId] = useState<number | null>(null);
+  //: 这条焊缝的**最新**版本；实际提取哪一版见下面的 `versionId`
+  const [weldVersionId, setWeldVersionId] = useState<number | null>(null);
   const [extractionId, setExtractionId] = useState<number | null>(null);
   const [tsRows, setTsRows] = useState<FeatureTableRow[]>([]);
   const [visionRows, setVisionRows] = useState<VisionFeatureRow[]>([]);
@@ -84,6 +85,9 @@ export function FeatureExtractionPage({ embedded = false, dataId }: { embedded?:
   const [extractError, setExtractError] = useState<string | null>(null);
   const [modalityStatus, setModalityStatus] = useState<FeatureExtraction['modality_status'] | null>(null);
   const { status: featureJobStatus, result: featureJobResult, error: featureJobError } = useJob<{ extraction_id: number; status: string }>(featureJobId);
+  // 上下文条选了版本就用它（`null` = 跟随最新）。依赖里必须带 `selectedVersionId`：
+  // 这个 effect 顺带拉「历史提取结果」，钉住版本后不重拉就会一直显示最新版那份结果。
+  const versionId = selectedVersionId ?? weldVersionId;
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
@@ -92,20 +96,21 @@ export function FeatureExtractionPage({ embedded = false, dataId }: { embedded?:
     setExtractionId(null); setModalityStatus(null); setTsRows([]); setVisionRows([]); setAudioRows([]); setUnified([]); setTotalDims(0);
     getWeld(dataId).then(async (r) => {
       if (cancelled) return;
-      const resolved = r.latest_version_id ?? r.latest_version?.id ?? null;
-      setVersionId(resolved);
+      const latest = r.latest_version_id ?? r.latest_version?.id ?? null;
+      setWeldVersionId(latest);
+      const resolved = selectedVersionId ?? latest;
       if (resolved == null) return;
-      const latest = await getLatestFeatureExtraction(resolved);
-      if (!cancelled && latest) {
-        setExtractionId(latest.id); setTsRows(mapTsRows(latest)); setVisionRows(mapVisionRows(latest)); setAudioRows(mapAudioRows(latest));
-        setModalityStatus(latest.modality_status ?? null);
-        const mapped = mapUnifiedGroups(latest.unified_vector);
-        setUnified(mapped); setTotalDims(latest.unified_vector?.total_dims ?? 0);
-        setNormMethod(latest.normalization === 'L2' ? 'L2 范数' : latest.normalization);
+      const found = await getLatestFeatureExtraction(resolved);
+      if (!cancelled && found) {
+        setExtractionId(found.id); setTsRows(mapTsRows(found)); setVisionRows(mapVisionRows(found)); setAudioRows(mapAudioRows(found));
+        setModalityStatus(found.modality_status ?? null);
+        const mapped = mapUnifiedGroups(found.unified_vector);
+        setUnified(mapped); setTotalDims(found.unified_vector?.total_dims ?? 0);
+        setNormMethod(found.normalization === 'L2' ? 'L2 范数' : found.normalization);
       }
     }).catch((err) => { if (!cancelled) { setExtractError('无法加载当前数据或历史提取结果'); console.warn('[features] load failed', err); } });
     return () => { cancelled = true; };
-  }, [dataId]);
+  }, [dataId, selectedVersionId]);
   useEffect(() => {
     if (featureJobStatus === 'failed') {
       setExtracting(false);

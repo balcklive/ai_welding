@@ -87,10 +87,17 @@ class FakeStorage:
         return None
 
 
-def synthetic_signal_csv(fs: int = FS, seconds: float = 1.0, with_time: bool = True) -> bytes:
+def synthetic_signal_csv(
+    fs: int = FS,
+    seconds: float = 1.0,
+    with_time: bool = True,
+    current: float = 180.0,
+) -> bytes:
     """起弧 0.2s / 收弧 0.8s 的方波焊接信号（实测可过 10 条导入校验与事件检测）。
 
     `with_time=False` 去掉时间列——此时导入必须靠登记的 `sample_rate` 兜底推采样率（`_parse_fs`）。
+    `current` 让调用方能造出**内容可区分**的两份信号（加工版参与计算的用例靠它断言读到的
+    到底是哪一份）。
     """
     rng = random.Random(7)
     out = io.StringIO(newline="")
@@ -100,7 +107,7 @@ def synthetic_signal_csv(fs: int = FS, seconds: float = 1.0, with_time: bool = T
         moment = index / fs
         welding = ARC <= moment <= TAIL
         row = (
-            (180 + rng.uniform(-5, 5), 22 + rng.uniform(-0.5, 0.5), 15, 8)
+            (current + rng.uniform(-5, 5), 22 + rng.uniform(-0.5, 0.5), 15, 8)
             if welding
             else (rng.uniform(0, 0.5), 0.0, 0.2, 0.0)
         )
@@ -1108,3 +1115,182 @@ def test_build_excludes_records_that_are_not_verified(api, db, storage, run_job)
     failed = _run(db, run_job, _build_job_uid(db, empty_version.id))
     assert failed.status == "failed"
     assert "尚未核验" in str(failed.error), failed.error
+
+
+# ── 加工版参与计算（2026-10）─────────────────────────────────────────
+
+
+def _create_processed_version(api, record, *, key: str, action: str = "去噪处理") -> dict:
+    """走真实接口新建一个带 CSV 的数据版本（加工版），返回版本载荷。"""
+    return _ok(
+        api.post(
+            f"{API}/welds/{record['weld_id']}/versions",
+            json={"action": action, "note": "去噪后", "object_keys": [key]},
+        )
+    )
+
+
+def _cur_peak(bundle) -> float:
+    """电流通道峰值——合成信号里稳态电流就是峰值，用它断言"读到的是哪一份信号"。
+
+    （不能用均值：一段信号里有 40% 是熄弧段 ~0.25A，300A 的信号均值约 180A，会与 180A 的
+    原始信号峰值撞在一起。）
+    """
+    return float(bundle.channel("cur").values.max())
+
+
+def _succeeded_ingest_version_ids(db) -> list[int]:
+    return [
+        row.version_id
+        for row in db.exec(
+            select(signal_ingest.SignalIngest).where(
+                signal_ingest.SignalIngest.status == "succeeded"
+            )
+        ).all()
+    ]
+
+
+def test_processed_version_csv_becomes_that_versions_signal(api, db, storage, run_job):
+    """新建版本里的 CSV 要成为**这一版**的信号来源（而不是被静默忽略、回退读 v1.0）。
+
+    回归的是线上现象：加工版建完，分析页 URL 上是 v1.1、波形却是 v1.0 的——因为新建版本
+    从不排队导入，而 loader 在"该版本没有成功导入"时静默回退到同一条焊缝的其他版本。
+    """
+    dataset_id = _create_dataset(api, "E2E 加工版", "时序分类")
+    record = _register(api, dataset_id, "E2E 加工版样本")
+    storage.put("raw/e2e-proc-raw.csv", synthetic_signal_csv(current=180))
+    _attach(api, record, ["raw/e2e-proc-raw.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+    v10 = _ok(api.get(f"{API}/welds/{record['weld_id']}"))["latest_version_id"]
+    assert 175 < _cur_peak(signal_ingest.load_signal_bundle(db, record["weld_id"], v10)) < 190, (
+        "v1.0 应当是原始信号"
+    )
+
+    # 加工版：内容可区分（电流 300 / 送丝 12），上传后**立刻排队导入**
+    storage.put("processed/e2e-proc-clean.csv", synthetic_signal_csv(current=300))
+    version = _create_processed_version(api, record, key="processed/e2e-proc-clean.csv")
+    assert version["ingest"]["status"] == "importing", version
+    assert version["ingest"]["total"] == 1, version
+
+    # 队列可见：版本列表里这一版是"导入中"
+    listed = {v["id"]: v for v in _ok(api.get(f"{API}/welds/{record['weld_id']}/versions"))}
+    assert listed[version["id"]]["ingest"]["status"] == "importing", listed[version["id"]]
+
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+    assert version["id"] in _succeeded_ingest_version_ids(db), "加工版必须有自己的成功导入行"
+
+    # 关键断言：读这一版拿到的是**加工版**的信号，不是 v1.0 的
+    assert 295 < _cur_peak(signal_ingest.load_signal_bundle(db, record["weld_id"], version["id"])) < 315, (
+        "读到的应当是加工版信号"
+    )
+    # 旧版本不受影响，仍然是原始信号
+    assert 175 < _cur_peak(signal_ingest.load_signal_bundle(db, record["weld_id"], v10)) < 190
+    # 台账不被加工版改写：字段概览仍是 v1.0 导入回填的那份（同一把尺子：稳态段电流中位数）
+    fields = {
+        item["id"]: item["value"]
+        for item in _ok(api.get(f"{API}/welds/{record['weld_id']}"))["data_fields"] or []
+    }
+    assert 175 < fields["cur"] < 190, fields
+
+
+def test_processed_version_import_failure_does_not_fall_back(api, db, storage, run_job):
+    """加工版导入失败时**明确报错**，不许静默回退去读 v1.0——否则用户以为自己用的是新数据。"""
+    dataset_id = _create_dataset(api, "E2E 加工版失败", "时序分类")
+    record = _register(api, dataset_id, "E2E 加工版失败样本")
+    storage.put("raw/e2e-fb-raw.csv", synthetic_signal_csv())
+    _attach(api, record, ["raw/e2e-fb-raw.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    # 加工版内容不是合法时序 → 导入必然失败
+    storage.put("processed/e2e-fb-bad.csv", b"not,a,signal\n\x00\x01\x02")
+    version = _create_processed_version(api, record, key="processed/e2e-fb-bad.csv")
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "failed"
+
+    listed = {v["id"]: v for v in _ok(api.get(f"{API}/welds/{record['weld_id']}/versions"))}
+    assert listed[version["id"]]["ingest"]["status"] == "failed", listed[version["id"]]
+
+    with pytest.raises(ValueError) as excinfo:
+        signal_ingest.load_signal_bundle(db, record["weld_id"], version["id"])
+    assert "导入失败" in str(excinfo.value), excinfo.value
+
+    # 历史兼容：**没有任何导入行**的加工版仍按旧口径回退读到 v1.0 的信号（不报错）
+    legacy = _ok(
+        api.post(
+            f"{API}/welds/{record['weld_id']}/versions",
+            json={"action": "人工修正", "note": "只留痕", "object_keys": []},
+        )
+    )
+    legacy_bundle = signal_ingest.load_signal_bundle(db, record["weld_id"], legacy["id"])
+    assert 175 < _cur_peak(legacy_bundle) < 190
+
+
+def test_version_scoped_reimport_recovers_processed_import(api, db, storage, run_job):
+    """按版本重排失败导入：v1.0 的 reimport 够不到加工版，而新建版本又被判重挡住（409）。"""
+    dataset_id = _create_dataset(api, "E2E 加工版重排", "时序分类")
+    record = _register(api, dataset_id, "E2E 加工版重排样本")
+    storage.put("raw/e2e-ri-raw.csv", synthetic_signal_csv())
+    _attach(api, record, ["raw/e2e-ri-raw.csv"])
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    key = "processed/e2e-ri-bad.csv"
+    storage.put(key, b"not,a,signal\n\x00\x01\x02")
+    version = _create_processed_version(api, record, key=key)
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "failed"
+
+    # 同一个请求再发一次会被判重挡掉（所以必须有按版本重排的入口）
+    again = api.post(
+        f"{API}/welds/{record['weld_id']}/versions",
+        json={"action": "去噪处理", "note": "去噪后", "object_keys": [key]},
+    )
+    assert again.status_code == 409, again.json()
+
+    # v1.0 的重新导入够不到这一版：它没有失败行
+    assert api.post(f"{API}/registrations/{record['id']}/reimport").status_code == 400
+
+    # 换成能被解析的内容后按版本重排
+    storage.put(key, synthetic_signal_csv(current=300))
+    state = _ok(
+        api.post(f"{API}/welds/{record['weld_id']}/versions/{version['id']}/reimport")
+    )
+    assert state["status"] == "importing", state
+    assert state["csv_failed"] == [], state
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+
+    state = _ok(
+        api.get(f"{API}/welds/{record['weld_id']}/versions/{version['id']}/ingest-status")
+    )
+    assert state["status"] == "ready", state
+    assert 295 < _cur_peak(signal_ingest.load_signal_bundle(db, record["weld_id"], version["id"])) < 315
+
+
+def test_version_ingest_status_is_scoped_to_the_version(api, db, storage, run_job):
+    """版本级导入状态只认该版本的行；未知/跨焊缝版本 40402。"""
+    dataset_id = _create_dataset(api, "E2E 版本状态", "时序分类")
+    record = _register(api, dataset_id, "E2E 版本状态样本")
+    storage.put("raw/e2e-scope-raw.csv", synthetic_signal_csv())
+    attached = _attach(api, record, ["raw/e2e-scope-raw.csv"])
+
+    # v1.0：有导入行（此处已成功）
+    assert _run(db, run_job, _latest_job_uid(db, "signal_ingest")).status == "succeeded"
+    state = _ok(
+        api.get(f"{API}/welds/{record['weld_id']}/versions/{attached['id']}/ingest-status")
+    )
+    assert state["status"] == "ready", state
+    assert state["csv_total"] == 1
+
+    # 无 CSV 的加工版：没有导入行 → ready 但 csv_total 0
+    plain = _ok(
+        api.post(
+            f"{API}/welds/{record['weld_id']}/versions",
+            json={"action": "人工修正", "note": "无文件", "object_keys": []},
+        )
+    )
+    state = _ok(
+        api.get(f"{API}/welds/{record['weld_id']}/versions/{plain['id']}/ingest-status")
+    )
+    assert state["csv_total"] == 0, state
+
+    assert (
+        api.get(f"{API}/welds/{record['weld_id']}/versions/99999/ingest-status").status_code
+        == 404
+    )

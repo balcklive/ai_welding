@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `ValidationPage.tsx`：`ValidationPage({dataId})`——挂载时 `getWeld` 取 `latest_version_id` → `getValidation` 拉核验报告；「执行核验」→ `runValidation`（同步，返回评分 + 规则结果）。
+- `ValidationPage.tsx`：`ValidationPage({dataId, selectedVersionId})`——挂载时 `getWeld` 取最新版本，核验的是 `selectedVersionId ?? 最新版本` → `getValidation` 拉该版报告；「执行核验」→ `runValidation`（同步，返回评分 + 规则结果）。**2026-10**：上下文条选定版本后核验跟随所选版本；`selectedVersionId` **必须列进 fetch effect 依赖**（该 effect 原先只依赖 `[dataId, reloadKey]`，不列会出现"选了版本没反应"）。
 
 ## 调用链
 

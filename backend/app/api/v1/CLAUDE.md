@@ -25,7 +25,18 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     挂 v1.0 + 累加容量 + 推导 modalities；**Task 4 修复**：只对新 key 计容量，先校验 object_key 安全性与 `stat_object()>0`，未上传/不可访问对象直接 400；重复 key 幂等不重复累计；CSV 自动导入按**本次请求中的 CSV key** 去重建 `signal_ingest`，即便该 CSV 已在版本 object_keys 中，只要尚无 ingest 记录也会补建任务。**Task 5 P2 修复**：若请求中的任一 CSV 已有 `signal_ingests` 行，则整个挂载直接 `40900`，并保持容量不重复累计。**视频预处理**：本次挂载含**新**视频扩展名 key 时为每个建 `media_prep` Job（同事务，探测编码→非浏览器友好转 H.264+faststart 预览版；同 key 已有 pending/running/succeeded job 不重复建））；**2026-10 音频收口**：请求里任一 key 以 `_AUDIO_EXTS`（wav/mp3/flac/m4a）结尾一律 `40000` 拒收——三类数据集的必需维度里都没有 `Sound_feature`，且上传的 wav 不参与任何计算（`features.generate_audio` 按焊缝 ID 确定性合成），前端登记页也已撤掉音频上传区，这里挡的是绕过 UI 的直传）；
   - `GET/POST /welds/{weld_id}/versions(/{version_id})`（新建动作白名单
     `去噪处理|人工修正`，事务内 bump latest_version_id；**相同 action+note+object_keys
-    的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）；
+    的重复版本请求返回 40900**，并以 `data_versions.request_key` + 唯一约束兜底并发重复请求）。
+    **2026-10 加工版参与计算**：新建版本时本次 `object_keys` 里的 `.csv` 会**同事务排队
+    `signal_ingest`**（`_queue_signal_ingests`，与 raw-files 共用），使这一版成为它自己的信号
+    来源——此前加工后的文件根本没人读，分析会静默回退到 v1.0 的信号（"页面标着 v1.1、波形是
+    v1.0"）。`version_payload` 新增 `ingest` 字段（`ingest_status_for_versions` 批量汇总该版本
+    自己的导入行，挂在版本列表/详情上）；CSV 的 `.csv` 筛选与排队都走 `_csv_keys_of` /
+    `_queue_signal_ingests`，raw-files 的 payload 锁与 40901 预检保持在原处。
+  - `GET/POST /welds/{weld_id}/versions/{version_id}/ingest-status` 与 `.../reimport`（**2026-10**）：
+    **按版本**看/重排导入。`_ingest_state` 加可选 `version` 参数（缺省仍是 v1.0，登记链路口径不变）。
+    **为什么必须按版本**：加工版的失败行锚在它自己的版本上，`/registrations/{id}/reimport` 只认
+    v1.0 够不到；而重复发 `POST …/versions` 会被 `find_duplicate_version` 判重挡成 409——
+    没有这个入口，加工版一导入失败就**既看不见也修不了**。两者都复用 `_requeue_failed_ingests`。
   - `POST/GET /welds/{weld_id}/versions/{version_id}/validation`（同步 15 项规则核验，
     回写 `data_records.quality`，审计 validate）。
   - `GET /welds/{weld_id}/delete-impact`（**T7 新增**）：同上的样本版（共用 `collect_record_references`）。

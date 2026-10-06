@@ -172,8 +172,10 @@
     是错的；infrared 桶现在只剩 `.seq/.raw` 与文件名含 infrared 的键。
     **坑**：跳过 `/align/` 前缀键——上次对齐产物（`processed/{weld_id}/align/...`）不是原始
     模态源，否则重复对齐会把 keyframes/*.jpg 误归图像桶、align CSV 误归时序桶。
-  - 信号/事件：`_signal_version_id` **版本回退解析**（task.version_id 有 succeeded
-    SignalIngest 用之，否则回退 v1.0——SignalIngest 挂 v1.0 而对齐常在 latest 发起）→
+  - 信号/事件：`_signal_version_id` **版本回退解析**（task.version_id **有任何
+    `signal_ingests` 行**就用它——2026-10 起不再要求 succeeded，好让 loader 对"正在导入/导入失败"
+    明确报错而不是被这里静默换成 v1.0；该版本一行都没有时才回退 v1.0/链上最近成功导入，兼容
+    "SignalIngest 挂 v1.0 而对齐常在 latest 发起"的历史数据）→
     `signal_ingest.load_signal_bundle`（real/generated 如实标注 `event_source`）。
   - 视频：`media_probe.analyze_video`（ffmpeg 探测元数据 + 按事件时刻抽关键帧 JPG）；
     **部分成功语义**——视频不可读/超 200MB/探测失败/未上传 → 该轨道 `unavailable` + reason，
@@ -443,12 +445,23 @@
     来源，缓存后往返毫秒级。`load_signal_bundle` → `_bundle_from_parsed`（channels 取 master 的
     **copy()**，隔离 DSP 侧误改，29MB memcpy ~10ms 可忽略）。
   - `load_signal_bundle(session, weld_id, version_id) -> SignalBundle`：**DSP/特征/报告统一入口**——
-    命中 succeeded Parquet → 读回还原（source="real"）；无/读失败 → 回退 `signals.generate_signals`
-    （source="generated"）。analysis.py 四处（signals/result/mode/features）+ reports.py `_build_analysis`
-    均改经它，返回形状不变 → 前端零改动（仅新增 `source` 字段）。
+    命中 succeeded Parquet → 读回还原（source="real"）；**都没有则 `raise ValueError`，不生成替代
+    信号**（本文档 2026-09 前写的"回退 `signals.generate_signals`"已作废，见 `test_calibration_api.py`
+    的注释）。analysis.py 四处（signals/result/mode/features）+ reports.py `_build_analysis` 均经它。
+    **不回退口径（2026-10）**：该版本**有任何 `signal_ingests` 行**时不再回退到同一条焊缝的其他版本
+    —— 按 pending/failed 给出「正在导入 / 导入失败，请在数据版本页重新导入」并 raise；只有该版本
+    **一行都没有**（历史加工版 / 从未挂 CSV）才回退。判据由 `_declared_source_reason` 统一给出，
+    `load_real_signal_bundle`（唯一消费方 `splitting.load_input`）与 `alignment._signal_version_id`
+    **共用同一条规则**：后者从"只认 succeeded"改为"有任何行就返回该版本"，否则对齐会绕过回退判据、
+    静默用 v1.0 的信号。
+    **坑**：改这里必须同时看 `load_real_signal_bundle` 与 `alignment._signal_version_id`，
+    漏掉任一处 = 某条链路仍静默换版本（分析页 400、分段页却用 v1.0）。
   - `run_ingest(session, ingest, job)`：handler 领域逻辑——大文件预检（>200MB 拒）→ 下载 CSV →
     校验 → pass/warn 才启发式 + 写 Parquet + 回填行；fail/异常 → 行 failed。**自捕获异常**（先
     `session.rollback()` 再重取 ingest/job 写 failed，勿重抛，见 jobs/CLAUDE.md）。
+    **台账回填只认 v1.0（2026-10）**：`data_fields`/`wire_feed_speed`/`welding_speed` 只在
+    `version.version_no == "v1.0"` 时写——加工版（去噪/人工修正）导入的是同一条焊缝的加工后数据，
+    不该反过来改写登记台账（否则"全部数据"列表与核验读到的工艺参数会被静默换掉）。
   - **坑**：pandas ≥3.0 已移除 `fillna(method="ffill")`，须用 `.ffill()`；存储延迟导入
     （`from app.storage import get_storage`），测试 monkeypatch。
   - **坑（幂等失败不重跑，2026-08-29 线上排查）**：`signal_ingests` 对
@@ -465,7 +478,12 @@
     变动态（`schema_version="2"`：恒写 `t,cur,vol,gas,wir` + 本次出现的额外列），`_parse_parquet`/
     `_bundle_from_parsed` 读全列，核心 4 恒在、扩展/自动通道量程按 `_data_range` 实际 min/max。
     导入成功回填 `DataRecord.wire_feed_speed/welding_speed`（稳态中位数）与 `data_fields`
-    （`build_field_summary`/`fill_record_params`）。测试：`tests/test_signal_ingest_extra_columns.py`。
+    （`build_field_summary`/`fill_record_params`）——**仅 v1.0**，见上面 `run_ingest` 的台账口径。
+    测试：`tests/test_signal_ingest_extra_columns.py`。
+  - `ingest_status_for_versions(session, version_ids) -> {version_id: {status,total,failed,pending}}`：
+    （2026-10）版本级导入摘要，**形状对齐 `datasets.build_status_for_versions`**（一次 group_by，
+    避免版本链 N+1）；无该键 = 这一版没有 CSV 要导入。由 `welds.version_payload(v, ingest)` 挂成
+    版本载荷的 `ingest` 字段（所有调用方缺省 None）。
 
 - `annotation_ls.py`：**LS 标注集成服务层（2026-09-05，best-effort，已对真实 LS + 真实库走通 e2e）**。
   `task_to_waiting`/`mark_synced`（等待态联动：`annotation_tasks.ls_status`）、

@@ -479,7 +479,7 @@ function WaveletDecomp({ values, color, bands }: { values: number[]; color: stri
 
 
 
-export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: string }) {
+export function AdvancedWeldAnalysis({ dataId, selectedVersionId = null }: { embedded?: boolean; dataId?: string; selectedVersionId?: number | null }) {
   const [mode, setMode] = useState('时域');
   const [active, setActive] = useState<Set<string>>(new Set(['cur', 'vol', 'gas']));
   const [cursor, setCursor] = useState(2.1);
@@ -504,7 +504,8 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
   const [weldDuration, setWeldDuration] = useState<number | null>(null);
   const [signalDuration, setSignalDuration] = useState<number | null>(null);
   const [signalEvents, setSignalEvents] = useState<SignalData['events'] | null>(null);
-  const [versionId, setVersionId] = useState<number | null>(null);
+  //: 这条焊缝的**最新**版本；实际算哪一版见下面的 `versionId`（上下文条选了就用选的那版）
+  const [weldVersionId, setWeldVersionId] = useState<number | null>(null);
   const [psdData, setPsdData] = useState<PsdData | null>(null);
   const [stftData, setStftData] = useState<StftData | null>(null);
   const [dwtData, setDwtData] = useState<DwtData | null>(null);
@@ -517,10 +518,13 @@ export function AdvancedWeldAnalysis({ dataId }: { embedded?: boolean; dataId?: 
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [resultError, setResultError] = useState<string | null>(null);
   const toggle = (id: string) => setActive((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  // 上下文条选了版本就用它（`null` = 跟随最新）；下游 effect 只依赖 `versionId`，
+  // 所以换版本会连同波形/六种分析图一起重拉。
+  const versionId = selectedVersionId ?? weldVersionId;
   useEffect(() => {
     if (!dataId) return;
     let cancelled = false;
-    getWeld(dataId).then((r) => { if (!cancelled) { setRecord(r); setVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); } }).catch((err) => { if (!cancelled) console.warn('[analysis] getWeld failed', err); });
+    getWeld(dataId).then((r) => { if (!cancelled) { setRecord(r); setWeldVersionId(r.latest_version_id ?? r.latest_version?.id ?? null); } }).catch((err) => { if (!cancelled) console.warn('[analysis] getWeld failed', err); });
     return () => { cancelled = true; };
   }, [dataId]);
   // 时域波形：挂载 → 拉取「原始」全通道波形（滤波不改主波形，见下方滤波后目标通道）

@@ -12,16 +12,20 @@ import { toUserMessage } from '../../shared/lib/errors';
 /** 404 = 该版本尚未核验，属**空态**（给引导），不是错误态（给原因）。 */
 const isNotFound = (err: unknown) => typeof err === 'object' && err !== null && (err as { status?: number }).status === 404;
 
-export function ValidationPage({ dataId }: { embedded?: boolean; dataId?: string }) {
+export function ValidationPage({ dataId, selectedVersionId = null }: { embedded?: boolean; dataId?: string; selectedVersionId?: number | null }) {
   // T3.2：演示报告已删除。三种情况分开处理——无版本/未核验走空态引导，接口失败走错误态。
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
-  const [versionId, setVersionId] = useState<number | null>(null);
+  //: 这条焊缝的**最新**版本；实际核验哪一版见下面的 `versionId`
+  const [weldVersionId, setWeldVersionId] = useState<number | null>(null);
   const [running, setRunning] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | 'passed' | 'warning' | 'failed'>('all');
   const [reloadKey, setReloadKey] = useState(0);
+  // 上下文条选了版本就核验那一版（`null` = 跟随最新）；依赖里必须带 `selectedVersionId`，
+  // 否则这个 effect 只看 [dataId, reloadKey]，钉住版本后页面不会重拉。
+  const versionId = selectedVersionId ?? weldVersionId;
   useEffect(() => {
     if (!dataId) {
       setLoading(false);
@@ -34,15 +38,15 @@ export function ValidationPage({ dataId }: { embedded?: boolean; dataId?: string
     setError(null);
     getWeld(dataId).then((r) => {
       if (cancelled) return;
-      const vid = r.latest_version_id ?? r.latest_version?.id ?? null;
+      const latest = r.latest_version_id ?? r.latest_version?.id ?? null;
+      setWeldVersionId(latest);
+      const vid = selectedVersionId ?? latest;
       if (vid == null) {
-        setVersionId(null);
         setReport(null);
         setLoading(false);
         setNotice('该样本还没有数据版本，请先在数据登记中挂载文件。');
         return;
       }
-      setVersionId(vid);
       getValidation(dataId, String(vid))
         .then((rep) => { if (!cancelled) { setReport(rep); setLoading(false); } })
         .catch((err) => {
@@ -59,7 +63,7 @@ export function ValidationPage({ dataId }: { embedded?: boolean; dataId?: string
       console.warn('[validation] getWeld failed', err);
     });
     return () => { cancelled = true; };
-  }, [dataId, reloadKey]);
+  }, [dataId, reloadKey, selectedVersionId]);
   const loadReport = () => {
     if (!dataId || versionId == null) { setReloadKey((n) => n + 1); return; }
     setLoading(true);
