@@ -645,3 +645,30 @@
 回归：`tests/test_dataset_members.py`（纯规则：2 条焊缝给 val、连续块不许打散、1 个样本的边界）
 + `tests/test_sample_features_e2e.py`（E2E：单焊缝版本现在能通过训练准入，
 以及"只有 1 个样本仍被拒"的边界）。
+
+## 训练前的逐维标准化（2026-10，`torch_training`）
+
+`run()` 在张量化之前用 `_fit_standardizer` **只在 train 划分上**拟合逐维 mean/std，
+再用同一组统计量**变换** train/val/test。两条不可退让的性质：
+
+1. **只在 train 上拟合** —— 用全量（含 val/test）拟合等于把验证集分布漏进训练；
+2. **跨样本拟合，不是对单个向量做** —— 后者是 `features._normalize` 那种口径，
+   切片级刻意不用的（它会抹掉区分切片的那批量）。两者别混。
+
+**为什么必须做**：特征是**原始值**（`sample_features.normalization` 恒为 `无`），
+"电流均值"那维实测是 **256 量级**，直接进 `Linear` 首轮 logits 爆掉，线上实测
+**val loss 起始 1.06e12**。同一条焊缝、同一版本、50 轮实测对比：
+
+| | train loss 首 → 末 | val loss 首 → 末 |
+|---|---|---|
+| 标准化前 | 2327.67 → 0.60 | 1.06e12 → 1.11 |
+| 标准化后 | 0.75 → 0.06 | **0.79** → 0.42 |
+
+**拟合出的 `feature_mean`/`feature_std` + `feature_scaling="train_split_zscore"` 写进权重
+文件** —— 将来做推理必须用**同一组**统计量预处理输入，否则分布对不上（现在 inference
+是确定性 boxes、不读特征，所以还没消费它）。退化维度（train 上方差 ≈ 0）std 取 1、
+只做中心化，绝不除零。
+
+**它不改善"样本太少"**：2 个验证样本上的 metrics 仍无意义。回归
+`tests/test_torch_training.py`（拟合只用 train、退化维兜底、首轮 loss 正常量级、
+统计量落进权重文件）。

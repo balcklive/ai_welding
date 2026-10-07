@@ -246,6 +246,35 @@ def _summary_features(values: list[float]) -> tuple[float, ...]:
     return tuple(float(value) for value in (mean, stdev, ordered[0], percentile(.25), percentile(.5), percentile(.75), ordered[-1], sum(value != mean for value in values) / len(values)))
 
 
+def _fit_standardizer(train_features: list[tuple[float, ...]]) -> tuple[list[float], list[float]]:
+    """按 **train 划分**拟合逐维 mean/std。
+
+    两条不可退让的性质：
+
+    1. **只在 train 上拟合**。用全量（含 val/test）拟合会把验证集的分布信息漏进训练——
+       数据泄漏的一种，指标会虚高。val/test 一律用 train 的统计量**变换**，不参与拟合。
+    2. **跨样本拟合，而不是对单个向量做**。`features._normalize` 那种"对单个向量"的
+       Z-Score 正是切片级刻意不做的（会把每片各自减均值、抹掉区分切片的那批量）——
+       两者不是一回事，别混。
+
+    退化维度（train 上方差 ≈ 0）标准差取 1、只做中心化，避免除以 0。
+    """
+    count = len(train_features)
+    dim = len(train_features[0])
+    means = [sum(row[i] for row in train_features) / count for i in range(dim)]
+    stds: list[float] = []
+    for i in range(dim):
+        variance = sum((row[i] - means[i]) ** 2 for row in train_features) / count
+        stds.append(math.sqrt(variance) if variance > 1e-12 else 1.0)
+    return means, stds
+
+
+def _apply_standardizer(
+    features: tuple[float, ...], means: list[float], stds: list[float]
+) -> tuple[float, ...]:
+    return tuple((value - mean) / std for value, mean, std in zip(features, means, stds))
+
+
 def run(
     task_id: int,
     epochs: int,
@@ -257,7 +286,13 @@ def run(
     """Train a small multi-class classifier on real CPU-loaded examples.
 
     **输入维度从数据来**（不再是写死的 8）：切片级特征 36 维、存量版本的旧口径 8 维，
-    同一份代码都要能跑。维度不一致直接报错——那说明同一批里混了两种特征口径。
+    同一份代码都要能跑。维度不一致直接报错——那说明同一批里混用了两种特征口径。
+
+    **训练前按 train 划分做逐维标准化**：特征向量存的是**原始值**
+    （`sample_features.normalization` 恒为 `无`，见 §6），"电流均值"这类维度是 200 量级，
+    直接进 `Linear` 会让首轮 logits 爆掉、交叉熵上到 1e12 量级（线上实测：val loss
+    起始 1.06e12）。拟合出的 mean/std 存进权重文件，将来做推理必须用**同一组**统计量
+    预处理，否则输入分布对不上。
     """
     import torch
     from torch import nn
@@ -273,9 +308,16 @@ def run(
     val = [e for e in examples if e.split in {"val", "test"}]
     if not train or not val:
         raise ValueError("真实数据必须同时包含 train 和 val/test split")
-    train_x = torch.tensor([e.features for e in train], dtype=torch.float32, device=device)
+    feature_means, feature_stds = _fit_standardizer([e.features for e in train])
+    train_x = torch.tensor(
+        [_apply_standardizer(e.features, feature_means, feature_stds) for e in train],
+        dtype=torch.float32, device=device,
+    )
     train_y = torch.tensor([e.label for e in train], dtype=torch.long, device=device)
-    val_x = torch.tensor([e.features for e in val], dtype=torch.float32, device=device)
+    val_x = torch.tensor(
+        [_apply_standardizer(e.features, feature_means, feature_stds) for e in val],
+        dtype=torch.float32, device=device,
+    )
     val_y = torch.tensor([e.label for e in val], dtype=torch.long, device=device)
     model = nn.Sequential(nn.Linear(input_dim, 16), nn.ReLU(), nn.Linear(16, len(classes))).to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.08)
@@ -293,7 +335,7 @@ def run(
     accuracy = correct / max(1, len(val_y))
     precision, recall, f1 = _macro_metrics(predictions, val_y, len(classes))
     buffer = io.BytesIO()
-    torch.save({"task_id": task_id, "framework": "torch", "device": "cpu", "model_state_dict": model.state_dict(), "input_dim": input_dim, "feature_kind": feature_kind, "classes": classes, "source": "dataset_items/samples/annotations"}, buffer)
+    torch.save({"task_id": task_id, "framework": "torch", "device": "cpu", "model_state_dict": model.state_dict(), "input_dim": input_dim, "feature_kind": feature_kind, "feature_scaling": "train_split_zscore", "feature_mean": feature_means, "feature_std": feature_stds, "classes": classes, "source": "dataset_items/samples/annotations"}, buffer)
     metrics = {"mAP50": round(accuracy, 4), "accuracy": round(accuracy, 4), "precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4)}
     return CpuTrainingResult(metrics, {"train": train_curve, "val": val_curve}, buffer.getvalue(), classes, len(examples))
 
