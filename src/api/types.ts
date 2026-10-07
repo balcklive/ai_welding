@@ -388,6 +388,12 @@ export interface DatasetSplit {
   train: number;
   val: number;
   test: number;
+  /** 划分方式（2026-10 起由构建写入）：
+   *  - `by_weld`：跨焊缝划分（≥2 条焊缝）——指标可信；
+   *  - `within_weld`：候选只来自**一条**焊缝，在焊缝内部按时间连续块切——`val` 非空（能训），
+   *    但**验证/测试指标只代表焊缝内泛化，不能当跨焊缝性能汇报**。
+   *  历史版本无该字段（视为 `by_weld`）。 */
+  strategy?: 'by_weld' | 'within_weld';
 }
 
 /**

@@ -622,3 +622,26 @@
   曾经写死 `nn.Linear(8, …)`），并把 `input_dim` + `feature_kind` 存进权重文件。
 - **`welds.py`**：`delete_record` 的版本作用域产物清单加了 `SampleFeature`（与
   AlignmentTask/FeatureExtraction/SignalIngest 同批按 `version_id` 清）。
+
+## 训练划分策略（2026-10，`datasets`）
+
+**按焊缝分组划分**，`_assign_splits(group_keys)`（跨焊缝）与 `_assign_within_weld(samples)`
+（焊缝内）两个入口，由 `run_build` 择一：
+
+- **≥2 条焊缝** → `_assign_splits`：seed=42 打乱**组序**后 8:1:1，同焊缝整体进一个分片。
+  `n == 2` 时给 train/**val**——**原先给的是 `test`，而训练准入查的是 `split["val"]`，
+  于是那种版本其实训不了**（两个焊缝足以做跨焊缝验证，给 val 才有意义）。
+- **只有 1 条焊缝** → `_assign_within_weld`：按 `start_time` 排序后切前/中/后三段
+  （train / val / test）。**不许 shuffle**——同一条焊缝的相邻窗口高度相关（同一段连续信号、
+  同一台机器、同一次作业），打散等于把验证窗口的邻居放进训练集。
+  原实现在这种情况下把整条焊缝丢进 train、`val = 0` → 准入必然拒，**退化分支实际是死胡同**；
+  现在单焊缝数据至少能走通训练链路。
+  样本过少时优先保 train 与 val 各一个（丢 test）；只有 1 个样本时只能给 train，
+  如实让准入拒绝（不硬凑）。
+- **代价必须可见**：焊缝内划分的指标只代表**焊缝内泛化**，故 `split_counts["strategy"]`
+  落库（`by_weld` / `within_weld`），前端「训练数据准备」用 `WithinWeldWarning` 显式提示。
+  **`strategy` 是这条护栏的唯一出口**——去掉它，用户就会拿焊缝内指标当跨焊缝性能。
+
+回归：`tests/test_dataset_members.py`（纯规则：2 条焊缝给 val、连续块不许打散、1 个样本的边界）
++ `tests/test_sample_features_e2e.py`（E2E：单焊缝版本现在能通过训练准入，
+以及"只有 1 个样本仍被拒"的边界）。

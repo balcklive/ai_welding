@@ -20,6 +20,8 @@ from app.models.analysis import Annotation, AnnotationTask, Sample, SplitTask
 from app.models.data import DataRecord, DataVersion
 from app.models.jobs import Job
 from app.services.datasets import (
+    _assign_splits,
+    _assign_within_weld,
     _compute_quality,
     _is_annotation_anchor,
     _sample_record_id,
@@ -307,3 +309,76 @@ def test_time_series_dimensions_survive_analysis_versions(engine):
 
         dims = _dimension_availability_from_samples(session, [sample])
         assert dims["Current"] and dims["Voltage"]
+
+
+# ── 划分规则（2026-10：单焊缝按时间连续块） ──────────────────────────
+#
+# 这两条规则在真实构建里靠 E2E 覆盖（见 `test_sample_features_e2e.py`），但边界
+# （1 个样本 / 2 条焊缝 / "连续块不许打散"）在端到端里构造代价高，故在这里直接钉住。
+
+
+def _fake_samples(count: int) -> list[Sample]:
+    """`start_time` 递增的假切片（顺序即时间顺序，用来断言"连续块"）。
+
+    **显式给 id**：`_assign_within_weld` 用 `sample.id` 作字典键，未落库的 Sample
+    其 `id` 是 None，全都会塌成同一个键。
+    """
+    return [
+        Sample(id=index + 1, split_task_id=1, frame_no=index + 1, start_time=index * 2.0,
+               end_time=index * 2.0 + 2.0, object_keys=[])
+        for index in range(count)
+    ]
+
+
+def test_assign_splits_two_welds_gives_a_validation_split():
+    """2 条焊缝：train / **val**（原先给的是 `test`，而训练准入查的是 `val`——
+    那种版本其实训不了；两个焊缝足以做跨焊缝验证，给 val 才有意义）。
+
+    组序经 seed=42 打乱，故只断言两个分片的**取值集合**。
+    """
+    assignments = _assign_splits(["w1", "w2"])
+    assert set(assignments.values()) == {"train", "val"}, assignments
+    assert len(assignments) == 2
+
+
+def test_assign_splits_single_weld_defers_to_within_weld():
+    """1 条焊缝：**返回空**，由调用方走 `_assign_within_weld`（不再"整条丢 train"）。"""
+    assert _assign_splits(["w1"]) == {}
+
+
+def test_assign_splits_three_or_more_has_both_val_and_test():
+    for count in (3, 5, 40):
+        assignments = _assign_splits([f"w{i}" for i in range(count)])
+        splits = set(assignments.values())
+        assert "train" in splits and "val" in splits and "test" in splits, (count, assignments)
+        # 同一个焊缝绝不跨分片
+        assert len(assignments) == count
+    # 确定性可复现
+    assert _assign_splits([f"w{i}" for i in range(10)]) == _assign_splits([f"w{i}" for i in range(10)])
+
+
+def test_within_weld_split_is_contiguous_in_time_and_keeps_val_non_empty():
+    """单焊缝内划分：训练准入要 val 非空，所以样本够时必须切出 val（和 test）。"""
+    samples = _fake_samples(9)
+    assignment = _assign_within_weld(samples)
+    counts = {name: list(assignment.values()).count(name) for name in ("train", "val", "test")}
+    assert counts == {"train": 7, "val": 1, "test": 1}, counts
+    assert all(sample.id in assignment for sample in samples), "每个样本都要有归属"
+
+    # **连续块**：按时间排序后每个分片的下标是连续区间（不许打散——相邻窗口高度相关，
+    # 打散等于把验证窗口的邻居放进训练集）
+    ordered = sorted(samples, key=lambda s: s.start_time)
+    labels = [assignment[s.id] for s in ordered]
+    assert labels == sorted(labels, key=lambda name: {"train": 0, "val": 1, "test": 2}[name]), labels
+
+
+def test_within_weld_split_edge_cases():
+    """样本过少时优先保 train 与 val 各一个（丢掉 test）——否则准入必然拒。"""
+    assert {list(_assign_within_weld(_fake_samples(2)).values()).count(name) for name in ("train", "val")} == {1}
+    assert set(_assign_within_weld(_fake_samples(2)).values()) == {"train", "val"}
+    # 只有 1 个样本：只能给 train，val=0 → 如实让准入拒绝（不是这里硬凑）
+    only = _fake_samples(1)
+    assert _assign_within_weld(only) == {only[0].id: "train"}
+    assert _assign_within_weld([]) == {}
+    # 3 个样本也必须有 val
+    assert "val" in set(_assign_within_weld(_fake_samples(3)).values())

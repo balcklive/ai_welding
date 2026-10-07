@@ -23,3 +23,11 @@
 - 训练任务由后端真实 Torch CPU 训练驱动（`app/services/torch_training.py` + MLflow 记录，见 `backend/app/services/CLAUDE.md` 与 `backend/app/integrations/CLAUDE.md`）；前端 `lossToPath` 数据驱动画损失曲线，`Training` 的 `listDatasets()[0]` 是 best-effort 默认。
 - PUT 后先查 `res.ok`，失败抛错丢弃 object_key（同 Registration 约定）。
 - `modelMetricText` 处理 `metric` dict；`Training`/`ModelTestLive`/`InferencePanel` 的成功态均以 Job 轮询为准，错误显示 `job.error.message`。
+
+- **单焊缝划分的显式提示（2026-10）**：`TrainingDataPreparation` 新增 `WithinWeldWarning`——
+  `split.strategy === 'within_weld'` 时在结果面板上方给 `build-blocked` 警告
+  「本版本按「焊缝内」划分，指标不代表跨焊缝泛化」。只有一条焊缝时后端改为在焊缝内部按时间
+  切分（否则 `val=0` 根本训不了），代价就是这个指标口径；**这条提示是护栏的唯一出口，
+  别删**。同时把「自动划分规则」的文案从"按**样本**分组"改成"按**焊缝**分组"（原文写错了，
+  实际一直是按焊缝分组的），并补一句单焊缝时会退化为焊缝内切分。
+  `DatasetSplit` 类型新增可选 `strategy?: 'by_weld' | 'within_weld'`（见 `api/types.ts`）。

@@ -120,3 +120,40 @@ test('api 模块与工作台对齐后端契约（task_id 用 job_uid、导出走
   // 不要沿用版本级那条按 extraction_id 读 feature_extractions 的导出
   assert.doesNotMatch(workspace, /downloadFeatureExtraction|getLatestFeatureExtraction/);
 });
+
+test('单焊缝划分：焊缝内按时间切 + 落 strategy + 前端显式提示', () => {
+  // 后端：只有一条焊缝时不再"整条丢 train、val=0"（那等于训不了），改为焊缝内按时间连续块切。
+  assert.match(datasetsPy, /def _assign_within_weld\(/);
+  assert.match(datasetsPy, /strategy/);
+  assert.match(datasetsPy, /split_counts\["strategy"\] = split_strategy/);
+  assert.match(datasetsPy, /split_strategy = "within_weld"/);
+  assert.match(datasetsPy, /split_strategy = "by_weld"/);
+  // **连续块**：按 start_time 排序后切，绝不能随机打散（相邻窗口高度相关，
+  // 打散等于把验证窗口的邻居放进训练集）
+  const within = datasetsPy.slice(
+    datasetsPy.indexOf('def _assign_within_weld('),
+    datasetsPy.indexOf('def _assign_within_weld(') + 2600,
+  );
+  assert.match(within, /sorted\(/);
+  assert.match(within, /start_time/);
+  assert.doesNotMatch(within, /shuffle|random\./, '焊缝内划分不许打散');
+  // 2 条焊缝给 val（原先给 test，而准入查的是 val → 那种版本训不了）
+  const assign = datasetsPy.slice(
+    datasetsPy.indexOf('def _assign_splits('),
+    datasetsPy.indexOf('def _assign_within_weld('),
+  );
+  assert.match(assign, /assignments\[keys\[1\]\] = "val"/);
+  // n<=1 交给调用方走焊缝内划分（不再返回整条 train）
+  assert.match(assign, /if n <= 1:\s*\n\s*return assignments/);
+
+  // 前端：把该事实显示出来，否则护栏等于不存在
+  const modelCenter = read('features/models/ModelCenter.tsx');
+  assert.match(modelCenter, /function WithinWeldWarning\(/);
+  assert.match(modelCenter, /split\?\.strategy !== 'within_weld'/);
+  assert.match(modelCenter, /<WithinWeldWarning split=\{split\} \/>/);
+  assert.match(modelCenter, /不代表跨焊缝泛化/);
+  // 划分说明的文案原先写成"按样本分组"（其实是按焊缝），别改回去
+  assert.match(modelCenter, /按<b>焊缝<\/b>分组/);
+  // 类型契约
+  assert.match(read('api/types.ts'), /strategy\?: 'by_weld' \| 'within_weld'/);
+});

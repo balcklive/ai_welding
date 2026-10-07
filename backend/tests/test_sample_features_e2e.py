@@ -738,3 +738,126 @@ def test_legacy_version_falls_back_and_mixed_is_refused(
     assert datasets_svc.feature_coverage(db_session, ds_version) == (2, 3)
     with pytest.raises(ValueError, match=r"1/3 个成员缺少切片特征"):
         torch_training.load_real_examples(db_session, ds_version.id, storage)
+
+
+# ── 8. 单焊缝划分（2026-10 C 项）：从"训不了"到"能训，但指标有限定" ──
+
+
+def test_single_weld_version_is_trainable_via_within_weld_split(
+    api, ready, storage, db_session, run_job, mp4_bytes
+):
+    """**单焊缝现在能训练了** —— 这是本轮 C 项改动的核心价值，也是它唯一的验收标准。
+
+    改动前：候选只来自 1 条焊缝 → 整条丢进 train、`val = 0` → 训练准入必然
+    `40000「没有验证集样本」`。结果是"特征全提完了也训不了"，退化分支实际是死胡同。
+
+    改动后：按**时间连续块**在焊缝内切（前段 train / 中段 val / 后段 test，**不 shuffle**，
+    免得把验证窗口的邻居放进训练集），`val` 非空 → 准入放行。
+    代价写进 `split.strategy == "within_weld"`，前端/报告据此提示"指标只代表焊缝内泛化"。
+    """
+    _record, version_id = ready
+    storage.put(VIDEO_KEY, mp4_bytes)
+    # 1s 窗口 → [1,7] 上切 6 段，这样 train 段里能同时有正常与缺陷（不是单类）
+    task = _make_split_task(api, db_session, run_job, version_id, window=1.0)
+    _run_sample_features(db_session, run_job, api, task)
+
+    samples = list(db_session.exec(
+        select(Sample).where(Sample.split_task_id == task.id).order_by(Sample.start_time, Sample.id)
+    ).all())
+    assert len(samples) == 6, [s.frame_no for s in samples]
+
+    # 标注：前 3 段正常、后 3 段缺陷——按时间切分后 train 段两类都有
+    from app.models.analysis import SampleAnnotation
+
+    for index, sample in enumerate(samples):
+        db_session.add(SampleAnnotation(
+            sample_id=sample.id,
+            label="normal" if index < 3 else "defect",
+            defect_category_name=None if index < 3 else "气孔",
+            schema_version=1,
+            review_status="approved",
+        ))
+    db_session.commit()
+
+    dataset_id, ds_version_id = _build_dataset_from_split(
+        api, db_session, run_job, task, name="单焊缝划分"
+    )
+
+    version = db_session.get(DatasetVersion, ds_version_id)
+    split = version.split or {}
+    assert split.get("strategy") == "within_weld", split
+    assert split.get("val", 0) >= 1, split          # 改动前这里是 0
+    assert split.get("train", 0) >= 1, split
+    assert split.get("train", 0) + split.get("val", 0) + split.get("test", 0) == 6, split
+
+    # 连续块：train 段就是时间上最靠前的那几段（不许打散）
+    ordered = list(db_session.exec(
+        select(DatasetItem.split, Sample.start_time)
+        .join(Sample, Sample.id == DatasetItem.sample_id)
+        .where(DatasetItem.dataset_version_id == ds_version_id)
+        .order_by(Sample.start_time)
+    ).all())
+    labels = [row[0] for row in ordered]
+    assert labels == ["train"] * split["train"] + ["val"] * split["val"] + ["test"] * split["test"], labels
+
+    # 特征照旧冻住（36 维）
+    items = db_session.exec(
+        select(DatasetItem).where(DatasetItem.dataset_version_id == ds_version_id)
+    ).all()
+    assert all(item.features and len(item.features["values"]) == 36 for item in items)
+
+    # 训练准入放行——**这条断言就是 C 项的验收标准**（改动前必得 40000「没有验证集样本」）
+    created = _ok(api.post(f"{API}/training-tasks", json={
+        "dataset_version_id": ds_version_id, "epochs": 2,
+    }))
+    assert created["job_id"], created
+    db_session.expire_all()
+    job = db_session.exec(select(Job).where(Job.job_uid == created["job_id"])).one()
+    assert job.status in {"pending", "running"}, job.status
+
+
+def test_single_sample_dataset_is_still_refused(api, ready, storage, db_session, run_job):
+    """**只有 1 个样本时仍然拒**：焊缝内划分也做不出 val，如实拒绝而不是硬凑一个。
+
+    这条钉住"放宽"的边界——C 项放宽的是"**单焊缝多切片**"，不是"任意少量样本都能训"。
+    """
+    _record, version_id = ready
+    # 6s 窗口在 [1,7] 上只能切出 1 段
+    preview = _ok(api.post(
+        _split_url(version_id, "split-preview"),
+        json={"window_seconds": 6.0, "stride_seconds": 6.0},
+    ))
+    assert preview["sample_count"] == 1, preview["sample_count"]
+
+    # 造一个"1 条焊缝 + 1 个样本"的分段任务（本轮只关心划分与准入，不必跑完整抽帧链路）
+    from app.services.jobs import mark_succeeded
+
+    job = create_job(db_session, type="split")
+    lone_task = SplitTask(job_id=job.id, version_id=version_id, rules={"rules_version": 3}, sample_count=1)
+    db_session.add(lone_task)
+    db_session.commit()
+    db_session.refresh(lone_task)
+    mark_succeeded(db_session, job, {})
+    db_session.commit()
+    only_sample = Sample(
+        split_task_id=lone_task.id, frame_no=1, start_time=1.0, end_time=7.0,
+        object_keys=[], meta={"signal": {"start_index": 100, "end_index": 700, "sample_rate": 100}},
+    )
+    db_session.add(only_sample)
+    db_session.commit()
+
+    # 纯规则层：1 个样本只能给 train，val 恒空（不在这里硬凑）
+    assert datasets_svc._assign_splits(["only-weld"]) == {}
+    assert set(datasets_svc._assign_within_weld([only_sample]).values()) == {"train"}
+
+    _dataset_id, ds_version_id = _build_dataset_from_split(
+        api, db_session, run_job, lone_task, name="单个样本"
+    )
+    version = db_session.get(DatasetVersion, ds_version_id)
+    assert (version.split or {}).get("val", 0) == 0, version.split
+    # 准入在建 job 前就拒（val 检查在 readiness 之前），原因直指验证集
+    refusal = api.post(f"{API}/training-tasks", json={
+        "dataset_version_id": ds_version_id, "epochs": 2,
+    }).json()
+    assert refusal["code"] == 40000, refusal
+    assert "没有验证集样本" in refusal["message"], refusal["message"]

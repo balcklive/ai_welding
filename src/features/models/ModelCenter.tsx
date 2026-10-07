@@ -176,6 +176,24 @@ export function DatasetBuild() {
 // 保留旧名称以兼容外部链接；当前路由使用 TrainingDataPreparation。
 void DatasetBuild;
 
+/** 单焊缝划分的**显式提示**（2026-10）。
+ *
+ *  只有一条焊缝时，划分是在焊缝内部按时间切的（否则 `val=0` 根本训不了）。
+ *  这样得到的指标量的是"焊缝内泛化"，**必须写在脸上**——否则半年后会有人拿这个
+ *  验证准确率去汇报跨焊缝性能。后端把该事实落成 `split.strategy`，这里如实展示。 */
+function WithinWeldWarning({ split }: { split: Partial<DatasetSplit> | null | undefined }) {
+  if (split?.strategy !== 'within_weld') return null;
+  return (
+    <div className="build-blocked" role="status">
+      <AlertTriangle size={18} />
+      <div>
+        <strong>本版本按「焊缝内」划分，指标不代表跨焊缝泛化</strong>
+        <p>候选样本只来自一条焊缝，因此训练/验证/测试是在焊缝内部按时间连续块切出来的。这里的验证/测试指标只说明「同一条焊缝内」的表现，不能当作换一条焊缝后的性能。要让指标可信，请纳入多条焊缝的数据后重建版本。</p>
+      </div>
+    </div>
+  );
+}
+
 export function TrainingDataPreparation() {
   type BuildResult = {
     item_count: number;
@@ -276,12 +294,12 @@ export function TrainingDataPreparation() {
           <div className="form-block"><label className="form-label">1. 输入数据集</label><p className="form-help build-form-intro">来源于数据管理，不会修改原始数据。</p><select className="native-select" value={datasetId ?? ''} onChange={(e) => { setDatasetId(e.target.value ? Number(e.target.value) : null); setCompletedBuildResult(null); setBuildError(null); }}><option value="">请选择输入数据集</option>{datasets.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.version ?? '未生成版本'}</option>)}</select>{dataset && <div className="selected-dataset-card"><div className="selected-dataset-head"><span className="dataset-row-icon"><Box size={16} /></span><div><strong>{dataset.name}</strong><small>{dataset.dataset_no} · 当前版本 {dataset.version ?? '未生成'}</small></div><StatusPill tone={dataset.current_version_id != null ? 'green' : 'orange'}>{dataset.current_version_id != null ? '已生成版本' : '未生成版本'}</StatusPill></div><div className="selected-dataset-meta"><span>切片数 <b>{dataset.sample_count.toLocaleString()}</b></span><span>标注完成度 <b>{dataset.progress != null ? `${dataset.progress}%` : '—'}</b></span></div></div>}</div>
           {canBuild && <div className="form-block"><label className="form-label">2. 切片纳入范围</label><div className="build-source">{(['manual', 'split_task', 'annotation_task'] as const).map((key) => <label className={source === key ? 'chosen' : ''} key={key}><input type="radio" name="training-source" checked={source === key} onChange={() => setSource(key)} /><span><strong>{sourceMeta[key].label}</strong><small>{sourceMeta[key].desc}</small></span>{source === key && <Check size={15} />}</label>)}</div></div>}
         </>}
-        {canBuild && <div className="split-ratio-note"><div className="rule-title"><GitBranch size={15} />3. 训练数据划分</div><b>训练 80% <em>/</em> 验证 10% <em>/</em> 测试 10%</b><small>按样本分组，同一个样本的切片不会同时进入训练集和测试集，避免数据泄漏。</small></div>}
+        {canBuild && <div className="split-ratio-note"><div className="rule-title"><GitBranch size={15} />3. 训练数据划分</div><b>训练 80% <em>/</em> 验证 10% <em>/</em> 测试 10%</b><small>按<b>焊缝</b>分组，同一条焊缝的切片不会同时进入训练集和测试集，避免数据泄漏。若候选只来自一条焊缝，则改为在焊缝内部按时间切分——此时指标只代表焊缝内泛化，生成后会明确标出。</small></div>}
         {dataset && readiness && readiness !== '可训练' && <div className="build-blocked" role="status"><AlertTriangle size={18} /><div><strong>当前版本{READY_TEXT.failed}</strong><p>仍可生成新版本；新版本要能用于训练，需通过训练准入检查（数据已核验、标注已冻结、含验证集）。</p></div></div>}
         <button className="full-button" onClick={handleBuild} disabled={datasetId == null || buildJobId != null}>{buildJobId != null ? <><Activity size={16} />正在生成 · {progress}%</> : <><GitBranch size={16} />生成训练数据版本</>}</button>{buildError && <p className="dataset-empty-state" role="alert">生成失败：{buildError}</p>}
       </section>
       <section className="panel build-result"><div className="panel-heading"><div><h2>训练版本预览</h2><p>{buildJobId != null ? '正在生成训练数据版本…' : previewResult ? '最近一次生成结果' : dataset ? '根据当前配置预览生成结果' : '选择输入数据集后开始预览'}</p></div><StatusPill tone={buildStatus === 'failed' ? 'red' : buildStatus === 'running' ? 'orange' : previewResult ? 'green' : 'muted'}>{buildStatus === 'succeeded' || previewResult ? '已生成' : buildStatus === 'failed' ? '生成失败' : buildStatus === 'running' ? '生成中' : '未开始'}</StatusPill></div>
-        {previewResult && split ? <><div className="result-context"><CheckCircle2 size={16} /><span>训练数据版本已生成，可在“新建训练”中使用</span></div><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>切片总数</span><strong>{previewResult.item_count.toLocaleString()}</strong></div><div><span>有效切片占比</span><strong>{qualityPct ?? '—'}</strong></div><div><span>快照文件</span><strong>{previewResult.snapshot_id ? previewResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><div className="empty-steps"><span><Database size={17} />输入数据集</span><span><SlidersHorizontal size={17} />切片范围</span><span><GitBranch size={17} />训练版本</span></div><strong>{buildJobId != null ? '正在生成训练数据版本' : '还没有训练数据版本'}</strong><p>{buildJobId != null ? `系统正在按样本分组生成，当前进度 ${progress}%` : dataset ? `预计纳入 ${dataset.sample_count.toLocaleString()} 个切片，生成后将显示实际划分结果。` : '配置左侧条件后，点击“生成训练数据版本”即可开始。'}</p></div>}
+        {previewResult && split ? <><div className="result-context"><CheckCircle2 size={16} /><span>训练数据版本已生成，可在“新建训练”中使用</span></div><WithinWeldWarning split={split} /><div className="build-splitbar"><i className="train" style={{ width: slicePct(split.train) }} /><i className="val" style={{ width: slicePct(split.val) }} /><i className="test" style={{ width: slicePct(split.test) }} /></div><div className="build-split-legend"><span><i className="train" />训练集 <b>{split.train ?? 0}</b></span><span><i className="val" />验证集 <b>{split.val ?? 0}</b></span><span><i className="test" />测试集 <b>{split.test ?? 0}</b></span></div><div className="build-stat-row"><div><span>切片总数</span><strong>{previewResult.item_count.toLocaleString()}</strong></div><div><span>有效切片占比</span><strong>{qualityPct ?? '—'}</strong></div><div><span>快照文件</span><strong>{previewResult.snapshot_id ? previewResult.snapshot_id.slice(0, 8) : '—'}</strong></div></div></> : <div className="build-state"><div className="empty-steps"><span><Database size={17} />输入数据集</span><span><SlidersHorizontal size={17} />切片范围</span><span><GitBranch size={17} />训练版本</span></div><strong>{buildJobId != null ? '正在生成训练数据版本' : '还没有训练数据版本'}</strong><p>{buildJobId != null ? `系统正在按样本分组生成，当前进度 ${progress}%` : dataset ? `预计纳入 ${dataset.sample_count.toLocaleString()} 个切片，生成后将显示实际划分结果。` : '配置左侧条件后，点击“生成训练数据版本”即可开始。'}</p></div>}
       </section>
     </div>
   </div>;

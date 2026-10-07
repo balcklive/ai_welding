@@ -38,6 +38,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import String, and_, cast, func, literal, or_
@@ -1396,7 +1397,19 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     groups: dict[object, list[Sample]] = defaultdict(list)
     for s in samples:
         groups[record_ids.get(s.id) if record_ids.get(s.id) is not None else ("orphan", s.id)].append(s)
+    # 划分：焊缝组 ≥2 → **跨焊缝** 8:1:1；只有 1 条焊缝 → **焊缝内**按时间连续块。
+    # 后者是 2026-10 的改动（原先单焊缝直接丢进 train、val=0 → 训练准入必然拒，
+    # 退化分支成了死胡同）。它的代价（指标只代表焊缝内泛化）靠 `strategy` 写进
+    # `split` 让前端显式提示，见 `_assign_within_weld` 的 docstring。
     assignments = _assign_splits(list(groups.keys()))
+    if assignments:
+        split_strategy = "by_weld"
+        split_of_sample: dict[int, str] = {
+            s.id: assignments[key] for key, members in groups.items() for s in members
+        }
+    else:
+        split_strategy = "within_weld"
+        split_of_sample = _assign_within_weld(next(iter(groups.values()), []))
 
     # 清掉该版本旧清单（防重复构建）后落新清单。
     for old in session.exec(
@@ -1420,14 +1433,14 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
             version.id, dataset.id, len(samples) - len(features_by_sample), len(samples),
         )
     item_rows: list[DatasetItem] = []
-    for key in groups:
-        split = assignments[key]
-        for s in groups[key]:
+    for members in groups.values():
+        for s in members:
             item_rows.append(
                 DatasetItem(
                     dataset_version_id=version.id,
                     sample_id=s.id,
-                    split=split,
+                    # 直接索引：划分漏了样本要当场炸，而不是静默落到某个分片
+                    split=split_of_sample[s.id],
                     annotations=annotations_by_sample.get(s.id, []),
                     features=features_by_sample.get(s.id),
                 )
@@ -1439,6 +1452,9 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     split_counts = {"train": 0, "val": 0, "test": 0}
     for row in item_rows:
         split_counts[row.split] += 1
+    # 划分方式随计数一起落库：`by_weld` = 跨焊缝（指标可信）；`within_weld` = 单焊缝内
+    # 按时间切（**指标只代表焊缝内泛化，不能当跨焊缝性能汇报**）。前端据此提示。
+    split_counts["strategy"] = split_strategy
 
     quality = _compute_quality(session, dataset, samples, record_ids)
     split_of_sample = {row.sample_id: row.split for row in item_rows}
@@ -1817,30 +1833,80 @@ def _record_matches(record: DataRecord, filters: dict) -> bool:
 
 
 def _assign_splits(group_keys: list) -> dict[object, str]:
-    """按焊缝分组稳定划分 8:1:1。组数 <3 时退化为 train / train+test（不泄漏）。
+    """**按焊缝分组**稳定划分 8:1:1（跨焊缝划分）。seed=42 → 确定性可复现。
 
-    seed=42 → 确定性可复现。同焊缝（一个组）整体进一个分片，绝不拆开。
+    同焊缝（一个组）整体进一个分片，绝不拆开——同一条焊缝的切片来自同一段连续信号、
+    同一台机器与同一次作业，拆开会让验证窗口的邻居落进训练集，指标虚高。
+
+    - `n == 2`：train / **val**（原先给的是 `test`，而训练准入查的是 `val` → 那种版本
+      其实**训不了**；两个焊缝足以做跨焊缝验证，给 val 才有意义）。
+    - `n >= 3`：test / val 各 `max(1, 10%)`，其余 train。
+    - `n <= 1`：只有一个组 → **返回空**，由调用方走 `_assign_within_weld`（见 `run_build`）。
     """
     keys = list(group_keys)
     random.Random(42).shuffle(keys)
     n = len(keys)
     assignments: dict[object, str] = {}
-    if n == 1:
+    if n <= 1:
+        return assignments
+    if n == 2:
         assignments[keys[0]] = "train"
-    elif n == 2:
-        assignments[keys[0]] = "train"
-        assignments[keys[1]] = "test"
-    else:
-        test_count = max(1, round(n * 0.1))
-        val_count = max(1, round(n * 0.1))
-        for i, key in enumerate(keys):
-            if i >= n - test_count:
-                assignments[key] = "test"
-            elif i >= n - test_count - val_count:
-                assignments[key] = "val"
-            else:
-                assignments[key] = "train"
+        assignments[keys[1]] = "val"
+        return assignments
+    test_count = max(1, round(n * 0.1))
+    val_count = max(1, round(n * 0.1))
+    for i, key in enumerate(keys):
+        if i >= n - test_count:
+            assignments[key] = "test"
+        elif i >= n - test_count - val_count:
+            assignments[key] = "val"
+        else:
+            assignments[key] = "train"
     return assignments
+
+
+def _assign_within_weld(samples: list[Sample]) -> dict[int, str]:
+    """**单条焊缝**内部按**时间连续块**划分 8:1:1（`split.strategy = "within_weld"`）。
+
+    什么时候用：候选样本只来自**一条**焊缝（组数 == 1）。原实现在这种情况下把整条焊缝
+    丢进 train、`val = 0`，于是训练准入必然拒绝——"既没泄漏，也训不了"，退化分支实际是
+    死胡同。这里改成**在焊缝内部切**，让单焊缝数据至少能走通训练链路。
+
+    **为什么必须按时间连续块、不能随机打散**：同一条焊缝的相邻窗口高度相关（同一段连续
+    信号、同一台机器、同一次作业）。按样本随机切等于把验证窗口的相邻窗口放进训练集，
+    指标会虚高。按 `start_time` 排序后切前/中/后三段，至少让边界两侧尽量远离。
+
+    **代价（必须让用户看见）**：这样得到的指标量的是**焊缝内泛化**，**不能**当跨焊缝
+    泛化性能汇报。故返回的划分由 `run_build` 标记 `strategy="within_weld"`，前端/报告
+    据此显式提示。
+
+    样本过少时的兜底：优先保证 train 与 val **各至少 1**（丢掉 test），因为训练准入与
+    训练内核都要求 val 非空；只有 1 个样本时只能给 train（此时本就是不可训练，如实返回
+    让准入拒绝）。
+    """
+    ordered = sorted(
+        samples,
+        key=lambda s: (s.start_time if s.start_time is not None else -1.0, s.id or 0),
+    )
+    n = len(ordered)
+    if n == 0:
+        return {}
+    if n == 1:
+        return {ordered[0].id: "train"}
+    test_count = max(1, round(n * 0.1))
+    val_count = max(1, round(n * 0.1))
+    if n - test_count - val_count < 1:
+        test_count, val_count = 0, 1
+    train_count = n - test_count - val_count
+    out: dict[int, str] = {}
+    for index, sample in enumerate(ordered):
+        if index < train_count:
+            out[sample.id] = "train"
+        elif index < train_count + val_count:
+            out[sample.id] = "val"
+        else:
+            out[sample.id] = "test"
+    return out
 
 
 def _annotation_snapshots(
@@ -1970,7 +2036,7 @@ def _build_snapshot(
     version: DatasetVersion,
     samples: list[Sample],
     record_ids: dict[int, int | None],
-    split_counts: dict[str, int],
+    split_counts: dict[str, Any],  # {"train"/"val"/"test": int, "strategy": str}
     quality: dict,
     split_of_sample: dict[int, str],
     features_by_sample: dict[int, dict],
