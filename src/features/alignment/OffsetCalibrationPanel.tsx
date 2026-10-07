@@ -63,6 +63,16 @@ const RESIDUAL_TOLERANCE = 0.5;
 const round2 = (v: number) => Math.round(v * 100) / 100;
 /** 带符号的秒（偏移量正负都有意义，不能省符号）。 */
 const signed = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)} s`;
+/**
+ * 时间码 `mm:ss.xx`。**负值必须自己带符号**——`fmt()` 是按"非负时间轴"写的：
+ * `fmt(-5)` 会算成 `Math.floor(-5/60) === -1`、余数 `55`，渲染出 `-1:55.00` 这种鬼东西。
+ * 换算是 `t_signal = t_video + offset`，offset 为负或超过视频位置时它**本来就会是负数**
+ * （例如视频只拍到信号 5s 处、offset=-5 时，视频首帧对应的信号时刻就是 -5s），所以不能直接用 `fmt`。
+ */
+const timecode = (v: number) => {
+  const n = round2(v);          // 先按显示精度取整：`-0.001` → `-0`，而 `-0 < 0` 为假，不会印出负号
+  return `${n < 0 ? '-' : ''}${fmt(Math.abs(n))}`;
+};
 
 export function OffsetCalibrationPanel({
   calibrated, draft, effectiveOffset, onDraft, onReverse, onSave, onClear,
@@ -151,9 +161,9 @@ export function OffsetCalibrationPanel({
       </div>
 
       <div className="seam-roi-meta">
-        <span>信号时长：{signalDuration > 0 ? fmt(signalDuration) : '读取中…'}</span>
-        <span>视频时长：{videoDuration != null ? fmt(videoDuration) : '未就绪'}</span>
-        <span>视频当前帧 {fmt(videoTime)} ↔ 信号 {fmt(derivedSignalTime)}</span>
+        <span>信号时长：{signalDuration > 0 ? timecode(signalDuration) : '读取中…'}</span>
+        <span>视频时长：{videoDuration != null ? timecode(videoDuration) : '未就绪'}</span>
+        <span>视频当前帧 {timecode(videoTime)} ↔ 信号 {timecode(derivedSignalTime)}</span>
         <span>当前偏移：{signed(effectiveOffset)}</span>
         <span>按当前帧对齐起弧 ⇒ {reverseValue != null ? signed(reverseValue) : '—'}</span>
         {dirty && <span className="warning-text">有未保存的改动</span>}

@@ -135,6 +135,14 @@ test('时间戳对照读数与未标定语义：读数来自 <video> 元素，�
   assert.match(alignmentSource, /onDurationChange=\{\(e\) => setVideoDuration/);
   assert.match(offsetPanelSource, /视频当前帧/);
   assert.match(offsetPanelSource, /覆盖残差|按当前帧对齐起弧/);
+  // 换算后的信号时刻**本来就可能为负**（t_signal = t_video + offset），不能喂给按非负轴写的 fmt()：
+  // 实机验出 fmt(-5) 会渲染成 `-1:55.00`（Math.floor(-5/60) === -1、余数 55）。必须走带符号的 timecode()。
+  const derived = offsetPanelSource.match(/视频当前帧 \{timecode\(videoTime\)\} ↔ 信号 \{([^}]+)\}/);
+  assert.ok(derived, '读数行必须渲染「视频当前帧 ↔ 信号」');
+  assert.match(derived[1], /timecode\(/);
+  assert.doesNotMatch(derived[1], /\bfmt\(/);
+  assert.match(offsetPanelSource, /const timecode = /);
+  assert.match(offsetPanelSource, /n < 0 \? '-' : ''/);
   // 两态分得开，且说清「保存 0 也算已标定」——否则用户会以为没标定
   assert.match(offsetPanelSource, /'已标定' : '未标定（按 0 计算）'/);
   assert.match(offsetPanelSource, /保存后（哪怕保存的是 0）即记为已标定/);
