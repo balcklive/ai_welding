@@ -200,11 +200,16 @@ def run_training(session: Session, task: TrainingTask, job: Job) -> dict:
     hyperparams = task.hyperparams or {}
     epochs = max(1, int(hyperparams.get("epochs") or 50))
     # REAL-DATA-TRAINING: load DatasetVersion samples and annotations from MinIO.
-    examples, classes = torch_training.load_real_examples(
+    # `feature_kind` 区分"构建时冻结的切片级 36 维"（`slice_v1`）与存量版本的旧 8 维现算口径
+    # （`legacy_summary`）——两者维度不同，权重文件里要留住是哪一种。
+    examples, classes, feature_kind = torch_training.load_real_examples(
         session, task.dataset_version_id, storage.get_storage()
     )
     # TORCH-CPU: the actual optimizer loop is CPU-only; no CUDA dependency.
-    torch_result = torch_training.run(task.id, epochs, seed=task.id, examples=examples, classes=classes)
+    torch_result = torch_training.run(
+        task.id, epochs, seed=task.id, examples=examples, classes=classes,
+        feature_kind=feature_kind,
+    )
     metrics = torch_result.metrics
     loss_curve = torch_result.loss_curve
 

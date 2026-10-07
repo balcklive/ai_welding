@@ -382,6 +382,37 @@
 
 ---
 
+### 3.10 🧬 切片级特征提取（2026-10）
+
+把「特征提取」从**焊缝数据版本级**扩成**切片级**：一个 v3 `Sample`（时间窗）= 一份
+**36 维**向量（时序 28 = cur 8 / vol 8 / gas 6 / wir 6，视觉 8 = 几何 4 / 纹理 4；
+**无声音组**——切片 manifest 自己就写着 `audio.available = False`）。落 `sample_features`（§3.28），
+构建数据集时冻进 `dataset_items.features` 供训练读。
+
+| 方法 | 路径 | 请求 | 响应 | 说明 |
+|---|---|---|---|---|
+| GET | `/welds/{weld_id}/sample-feature-tasks` | — | `{items:[{task_id, split_task_id, version_id, version_no, sample_count, window_seconds, stride_seconds, effective_range, finished_at, progress:{total,extracted,pending,progress}}]}` | 工作台入口：该焊缝**已完成 + v3** 的分段任务。与 §3.9 的入口列表是**同一份查询**（`splitting.list_completed_segment_tasks`），只是进度口径不同 |
+| POST | `/split-tasks/{task_id}/sample-feature-extractions` | `{normalization?}`（缺省 `无`，白名单 `Z-Score\|Min-Max\|L2\|无`） | `{job_id}`（Job type = `sample_feature_extraction`） | 异步提取。**幂等**：`sha256(split_task_id+normalization)` 相同的 pending/running/succeeded 任务复用同一 Job。**`normalization` 只影响导出文件**——落库权威向量恒为原始值 |
+| GET | `/split-tasks/{task_id}/sample-features?page=&page_size=&filter=all\|unextracted` | — | `Page<{sample_id,index,start_time,end_time,extracted,normalization,total_dims,modality_status,warnings,frame_key,frame_reason}> & {progress}` | 分页 + 进度。**行不含 36 个数值**（几百片会撑爆）；未提取是 `extracted:false`，**不是 404**。`filter=unextracted` 走 SQL 侧过滤 |
+| GET | `/split-tasks/{task_id}/sample-features/export?format=JSON\|CSV` | — | `{format, object_key, url}` | n×36 矩阵导出，行序 = 时间窗升序（与工作台一致）。写 `processed/{weld}/features/slice-features/exports/{task_id}.{json\|csv}` + 预签名 URL。**具体路径先于 `{sample_id}` 注册** |
+| GET | `/split-tasks/{task_id}/sample-features/{sample_id}` | — | `{sample_id, feature:{unified_vector, ts_features, vision_features, modality_status, channel_mapping, warnings, normalization, pipeline_version, …} \| null}` | 单切片完整向量。未提取时 `feature=null`（「还没跑」是正常状态） |
+
+> **Job 结果**：`{split_task_id, sample_count, extracted, missing_vision, heuristic_vision, status, normalization, total_dims, pipeline_version, signal_version_id, artifact_key}`。
+> `status` **只在有切片缺代表帧**时为 `partial`——`heuristic`（真帧 + 自家分割算法）**不算** partial，
+> 否则没配正式视觉服务时每一批都是 partial，那是噪音不是信号。
+> 任务级产物 `processed/{weld}/features/slice-features/{task_id}-{params_tag}.json`
+> （`params_tag = sha1(normalization)[:8]`，换参数重跑不覆盖上一次）。**不建数据版本**。
+>
+> **鉴权**：router 级登录；归属沿用**分段域**口径（`forbid_unless_record_owned`）。
+> `{task_id}` 兼容 job_uid 与 `split_tasks` DB id（前端一律传 job_uid）。
+> **错误码**：`40401` = 焊缝/分段任务/样本不存在（或样本不属于该任务）；`40300` = 无权；
+> `40000` = 参数或前置条件不满足（非 v3 / 任务未成功 / 无已提取特征时导出 / 非法 format）；
+> `40900` = 并发建任务。
+>
+> **设计/实施说明**：见 `docs/切片级特征提取设计与实施说明.md`。
+
+---
+
 ## 4. 前端接口层
 
 ### 4.1 目录结构（新建，不触碰现有 `App.tsx`）

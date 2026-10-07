@@ -41,3 +41,10 @@ Alembic 迁移脚本目录（逐版本推进，全部由 `alembic revision` 生�
 - 迁移文件含 UTF-8 中文 docstring；Python 源码按 UTF-8 解码，与服务器 locale 无关。
 - 生产 readiness 会比对 `alembic_version.version_num` 与镜像内 alembic head：迁移未执行到 head 时 `/health/ready` 返回 503（部署候选容器预检由此保证迁移先于切流量）。
 - **每次容器启动都跑 `alembic upgrade head`**（幂等），DB 不可达时容器退出，由部署回退机制处理。
+- `0021_sample_features.py`：**切片级特征提取（2026-10）**——新建 `sample_features`（§3.28，
+  `sample_id` **UK**（一个样本一行，PUT 即 upsert）、冗余的 `split_task_id`/`version_id` + 各索引、
+  `unified_vector`/`ts_features`/`vision_features`/`source_by_modality`/`channel_mapping`/`warnings`、
+  `normalization`、`pipeline_version`、`job_id`/`created_by` 五条外键），并给 `dataset_items` 加
+  `features` JSON（**构建时冻结的同一份向量**，训练读快照而不现查）。**纯 expand**：老代码不读新表/新列，
+  新代码对 NULL 兜底（`features` 为 NULL ⇒ 训练回退旧的 8 维现算口径），**不回填**——
+  存量分段任务没有切片特征，需要时重跑即可。**`downgrade` 先删可空列再逆序拆新表**。

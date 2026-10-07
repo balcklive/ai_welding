@@ -805,6 +805,32 @@ def annotations_frozen(session: Session, version: DatasetVersion) -> bool | None
     return all(row is not None for row in rows)
 
 
+def feature_coverage(session: Session, version: DatasetVersion) -> tuple[int, int]:
+    """该版本的切片特征覆盖：`(有向量的成员数, 成员总数)`。
+
+    **训练准入必须能区分「全无」与「混用」**，而 `features_frozen` 对这两者都是 `False`：
+    全无 = 存量版本（构建于本特性之前）→ 走旧的 8 维现算口径，照常可训；
+    混用 = 一半有 36 维一半没有 → **拒**（两种口径的样本混在一起，输入维度都不一致）。
+    """
+    rows = session.exec(
+        select(DatasetItem.features).where(DatasetItem.dataset_version_id == version.id)
+    ).all()
+    return sum(1 for row in rows if row is not None), len(rows)
+
+
+def features_frozen(session: Session, version: DatasetVersion) -> bool | None:
+    """该版本的**切片特征**是否已冻结（§3.28）——与 `annotations_frozen` 同一三态约定。
+
+    - `True`：每个成员行都有向量 → 训练输入不随以后重跑特征提取而变；
+    - `False`：全无（存量版本）或部分有（混用）→ 跨时间不可复现。如实返回，不静默当成已冻结；
+    - `None`：空版本（没有成员行）。
+    """
+    have, total = feature_coverage(session, version)
+    if total == 0:
+        return None
+    return have == total
+
+
 def version_build_state(session: Session, version: DatasetVersion) -> str | None:
     """该版本**最新一次**构建任务的状态（无任务 → `None` = 未构建）。"""
     row = session.exec(
@@ -1379,6 +1405,20 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
         session.delete(old)
     # T16.1：构建时把标注**快照**冻进成员行（训练读它，不再现查 annotations 表）
     annotations_by_sample = _annotation_snapshots(session, [s.id for s in samples])
+    # 切片级特征（§3.28）同样冻结：训练读快照里的向量，**不**现查 `sample_features`——
+    # 否则重跑一次特征提取就会把已建版本的训练输入悄悄换掉。缺特征不阻断构建
+    # （同"未标注成员允许入库"），但**不静默**：下面的告警 + `features_frozen` 三态是出口。
+    from app.services import sample_features as sample_feature_svc  # 延迟导入，避免环
+
+    features_by_sample = sample_feature_svc.features_for_samples(
+        session, [s.id for s in samples]
+    )
+    if len(features_by_sample) < len(samples):
+        logger.warning(
+            "Dataset version {} (dataset {}): {}/{} members have no slice features; "
+            "training on this version will refuse mixed inputs",
+            version.id, dataset.id, len(samples) - len(features_by_sample), len(samples),
+        )
     item_rows: list[DatasetItem] = []
     for key in groups:
         split = assignments[key]
@@ -1389,6 +1429,7 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
                     sample_id=s.id,
                     split=split,
                     annotations=annotations_by_sample.get(s.id, []),
+                    features=features_by_sample.get(s.id),
                 )
             )
     for row in item_rows:
@@ -1402,7 +1443,8 @@ def run_build(session: Session, build_task: DatasetBuildTask, job: Job) -> dict:
     quality = _compute_quality(session, dataset, samples, record_ids)
     split_of_sample = {row.sample_id: row.split for row in item_rows}
     snapshot_id, snapshot = _build_snapshot(
-        session, dataset, version, samples, record_ids, split_counts, quality, split_of_sample
+        session, dataset, version, samples, record_ids, split_counts, quality,
+        split_of_sample, features_by_sample,
     )
 
     version.split = split_counts
@@ -1931,8 +1973,12 @@ def _build_snapshot(
     split_counts: dict[str, int],
     quality: dict,
     split_of_sample: dict[int, str],
+    features_by_sample: dict[int, dict],
 ) -> tuple[str, dict]:
     """快照 JSON 写 MinIO `datasets/{version.id}/snapshot.json`，返回 (snapshot_id, snapshot)。
+
+    **带上切片特征向量**：快照要自描述、要能在本地库丢了之后复现这一版训练输入——
+    与当初把 `annotations` 放进来是同一个理由。体积 36 float × 成员数，一次写、best-effort。
 
     写 MinIO **尽力而为**：失败仅告警（本地 DB 为权威），不使构建失败。
     """
@@ -1944,6 +1990,7 @@ def _build_snapshot(
             "record_id": record_ids.get(s.id),
             "split": split_of_sample.get(s.id),
             "object_keys": s.object_keys or [],
+            "features": features_by_sample.get(s.id),
         }
         for s in samples
     ]

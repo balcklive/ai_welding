@@ -22,7 +22,8 @@ const RegistrationPage = lazy(() => import('./features/registration/Registration
 const AnnotationWorkspace = lazy(() => import('./features/annotation/AnnotationWorkspace').then((module) => ({ default: module.AnnotationWorkspace })));
 const AdvancedWeldAnalysis = lazy(() => import('./features/analysis/AnalysisWorkspace').then((module) => ({ default: module.AdvancedWeldAnalysis })));
 const ValidationPage = lazy(() => import('./features/validation/ValidationPage').then((module) => ({ default: module.ValidationPage })));
-const FeatureExtractionPage = lazy(() => import('./features/features/FeatureExtractionPage').then((module) => ({ default: module.FeatureExtractionPage })));
+// 切片级特征提取（2026-10）：单位是分段任务 + 一个切片，不再是"焊缝的一个版本"
+const SampleFeatureWorkspace = lazy(() => import('./features/features/SampleFeatureWorkspace').then((module) => ({ default: module.SampleFeatureWorkspace })));
 const AlignmentWorkspace = lazy(() => import('./features/alignment/AlignmentWorkspace').then((module) => ({ default: module.AlignmentWorkspace })));
 // v3 起分段页是独立工作台（设计 §7.1）：秒级窗口 + 服务端预览驱动，不再是 AlignmentWorkspace 的 splitOnly 形态
 const SplitWorkspace = lazy(() => import('./features/alignment/split/SplitWorkspace').then((module) => ({ default: module.SplitWorkspace })));
@@ -201,10 +202,11 @@ function WorkspaceFrame({ route, selectedDatasetId, setSelectedDatasetId, select
   else if (route === 'analysis/select') content = <AnalysisSelect selectedDatasetId={selectedDatasetId} setSelectedDatasetId={setSelectedDatasetId} onContinue={(id: string) => { setSelectedDataId(id); navigate('analysis/alignment'); }} />;
   else if (route === 'analysis/alignment') content = selectedDatasetId != null && selectedDataId ? <AlignmentWorkspace embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} setSelectedVersionId={setSelectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/analysis') content = selectedDatasetId != null && selectedDataId ? <AdvancedWeldAnalysis embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <SplitWorkspace dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  else if (route === 'analysis/split') content = selectedDatasetId != null && selectedDataId ? <SplitWorkspace dataId={selectedDataId} selectedVersionId={selectedVersionId} navigate={navigate} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/sample-annotation') content = selectedDatasetId != null && selectedDataId ? <SampleAnnotationWorkspace dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'analysis/annotation') content = selectedDatasetId != null && selectedDataId ? <AnnotationWorkspace embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
-  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <FeatureExtractionPage embedded dataId={selectedDataId} selectedVersionId={selectedVersionId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
+  // 切片级特征提取：单位是**分段任务**而不是焊缝版本，故不传 `selectedVersionId`
+  else if (route === 'analysis/features') content = selectedDatasetId != null && selectedDataId ? <SampleFeatureWorkspace embedded dataId={selectedDataId} /> : <SelectionRequired onBack={() => navigate('analysis/select')} onSelectHere={focusDataSwitcher} />;
   else if (route === 'model-center/dataset-build') content = <TrainingDataPreparation />;
   else if (route === 'model-center/repository') content = <ModelRepository refreshKey={repoRefresh} navigate={navigate} />;
   else if (route === 'model-center/training') content = <Training />;

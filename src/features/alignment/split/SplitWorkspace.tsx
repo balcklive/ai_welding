@@ -13,6 +13,7 @@ import { createSplitTask, getCalibration, previewSplitTask } from '../../../api/
 import { getFileUrl } from '../../../api/files';
 import { getWeld, listVersions } from '../../../api/welds';
 import type { DataRecord, SplitPreview, SplitResult } from '../../../api/types';
+import type { Route } from '../../../app/navigation';
 import { useJob } from '../../../hooks/useJob';
 import { PageIntro } from '../../../shared/components/PageIntro';
 import { StatusPill } from '../../../shared/components/StatusPill';
@@ -26,7 +27,7 @@ const VIDEO_EXTS = ['.mp4', '.avi', '.mkv', '.mov', '.webm'];
 /** §4.5：输入合法且停顿 300ms 后才请求预览，避免每敲一个字符打一次服务端。 */
 const DEBOUNCE_MS = 300;
 
-export function SplitWorkspace({ dataId, selectedVersionId = null }: { dataId?: string; selectedVersionId?: number | null }) {
+export function SplitWorkspace({ dataId, selectedVersionId = null, navigate }: { dataId?: string; selectedVersionId?: number | null; navigate: (route: Route) => void }) {
   const [record, setRecord] = useState<DataRecord | null>(null);
   //: 版本链**链尾**（= 最新版，与后端 `latest_version_id` 指针一致）；实际分段哪一版见 `versionId`
   const [latestVersionId, setLatestVersionId] = useState<number | null>(null);
@@ -142,9 +143,11 @@ export function SplitWorkspace({ dataId, selectedVersionId = null }: { dataId?: 
       .catch((err) => setCreateError(err instanceof Error ? err.message : '任务创建失败'));
   };
 
-  const goToAlignment = () => { window.location.hash = '#/analysis/alignment'; };
+  const goToAlignment = () => navigate('analysis/alignment');
   // 分段成功后进入**段级标注**工作台：那边按同一个分段任务列样本、逐段给结论。
-  const goToAnnotation = () => { window.location.hash = '#/analysis/sample-annotation'; };
+  const goToAnnotation = () => navigate('analysis/sample-annotation');
+  // 以及**切片级特征提取**工作台：同一个分段任务逐片算 36 维，训练读的就是那一份。
+  const goToFeatures = () => navigate('analysis/features');
   const done = jobStatus === 'succeeded';
   const tone = inputError || createError || previewError || jobStatus === 'failed'
     ? 'red' : jobStatus === 'running' || jobStatus === 'pending' ? 'orange' : done ? 'green' : 'muted';
@@ -216,6 +219,7 @@ export function SplitWorkspace({ dataId, selectedVersionId = null }: { dataId?: 
           onCreate={handleCreate}
           onGoToAlignment={goToAlignment}
           onGoToAnnotation={done ? goToAnnotation : undefined}
+          onGoToFeatures={done ? goToFeatures : undefined}
         />
       </div>
 

@@ -213,6 +213,54 @@ class FeatureExtraction(SQLModel, table=True):
     created_by: int | None = Field(default=None, foreign_key="users.id", index=True)
 
 
+class SampleFeature(SQLModel, table=True):
+    """§3.28 sample_features **切片级**特征向量（迁移 `0021`）
+
+    与 §3.13 `feature_extractions` 的分工：那张是**焊缝数据版本级**的 42 维统一向量
+    （整条信号 + 整张焊缝照片 + 声音），本表是**切片级**的 36 维——一个 v3 `Sample`
+    （一个时间窗）一行，`sample_id` 唯一，PUT 即 upsert。
+
+    **为什么不给 `feature_extractions` 加 `sample_id`**：那张表的版本级端点
+    （`GET /features/latest/{version_id}`、`/history/{version_id}`）按 `version_id`
+    取最新一行，切片行也带 `version_id` 就会被当成焊缝级向量返回；分表让两边口径各自封闭。
+
+    **存原始值**（`normalization="无"`）：`_normalize` 作用在**单个向量**上，逐切片
+    Z-Score 会把每片各自减均值、抹掉区分切片的那批量（电流均值/RMS/气体水平），
+    Min-Max 同理。标准化属于训练侧、应按 train 划分拟合；此列只记录导出时用了什么。
+
+    维度：时序 28（cur 8 / vol 8 / gas 6 / wir 6）+ 视觉 8（几何 4 / 纹理 4），
+    **无声音组**——切片 manifest 自己就写着 `audio.available = False`。
+    """
+
+    __tablename__ = "sample_features"
+
+    id: int | None = Field(default=None, primary_key=True)
+    sample_id: int = Field(foreign_key="samples.id", unique=True)
+    #: 冗余的分段任务 / 信号版本：主读是"按任务列特征"、主写也是按任务写，
+    #: 冗余后 count/list/progress 是一次带索引查询，不必穿 samples join。
+    split_task_id: int = Field(foreign_key="split_tasks.id", index=True)
+    #: ts 维度取自哪一版信号（= manifest 的 `source.version_id`），让每行自描述。
+    version_id: int = Field(foreign_key="data_versions.id", index=True)
+    unified_vector: dict = Field(sa_column=Column(JSON))
+    ts_features: dict = Field(sa_column=Column(JSON))
+    vision_features: dict = Field(sa_column=Column(JSON))
+    source_by_modality: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    channel_mapping: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    warnings: list = Field(default_factory=list, sa_column=Column(JSON))
+    normalization: str = Field(max_length=16)
+    #: 特征流水线版本（`services.sample_features.PIPELINE_VERSION`）——消费方认它
+    #: 才知道这 36 个数是哪套算法产出的。
+    pipeline_version: str = Field(default="sample-features-v1", max_length=64)
+    job_id: int | None = Field(default=None, foreign_key="jobs.id", index=True)
+    created_by: int | None = Field(default=None, foreign_key="users.id", index=True)
+    created_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    finished_at: datetime | None = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+
+
 class AnnotationLsSync(SQLModel, table=True):
     """§3.25 annotation_ls_sync 标注任务样本 ↔ LS task 映射/同步状态（LS 集成）
 

@@ -19,12 +19,15 @@ const source = read('App.tsx');
 const dataContextSource = read('features/data-context/DataContext.tsx');
 const weldsApiSource = read('api/welds.ts');
 
-/** 读它算哪一版：分析链各页都是 `const versionId = selectedVersionId ?? <自己那条焊缝的最新版>`。 */
+/** 读它算哪一版：分析链各页都是 `const versionId = selectedVersionId ?? <自己那条焊缝的最新版>`。
+ *
+ *  **2026-10 移出**：`features/features/FeatureExtractionPage.tsx` 已被切片级工作台
+ *  （`SampleFeatureWorkspace.tsx`）取代——它的单位是**分段任务**而不是焊缝版本，没有
+ *  `selectedVersionId` 这个概念，故不属于本清单。 */
 const VERSION_SOURCES = [
   'features/analysis/AnalysisWorkspace.tsx',
   'features/alignment/AlignmentWorkspace.tsx',
   'features/alignment/split/SplitWorkspace.tsx',
-  'features/features/FeatureExtractionPage.tsx',
   'features/annotation/AnnotationWorkspace.tsx',
   'features/validation/ValidationPage.tsx',
 ];
@@ -37,7 +40,7 @@ test('AppShell 持有版本上下文，换样本时回到「跟随最新」', ()
   assert.match(source, /const \[versionsRefreshKey, setVersionsRefreshKey\] = useState\(0\)/);
 });
 
-test('六个页面都从 selectedVersionId 派生，而不是各自写死最新版本', () => {
+test('五个页面都从 selectedVersionId 派生，而不是各自写死最新版本', () => {
   for (const relative of VERSION_SOURCES) {
     assert.match(
       read(relative),
@@ -48,10 +51,9 @@ test('六个页面都从 selectedVersionId 派生，而不是各自写死最新�
   }
 });
 
-test('版本变了要能重拉：两处 fetch effect 必须把 selectedVersionId 列进依赖', () => {
-  // 这两页的 fetch effect 原先只依赖 [dataId]（或 [dataId, reloadKey]），单改 versionId 不会重拉
+test('版本变了要能重拉：fetch effect 必须把 selectedVersionId 列进依赖', () => {
+  // 这页的 fetch effect 原先只依赖 [dataId]（或 [dataId, reloadKey]），单改 versionId 不会重拉
   assert.match(read('features/validation/ValidationPage.tsx'), /\}, \[dataId, reloadKey, selectedVersionId\]\);/);
-  assert.match(read('features/features/FeatureExtractionPage.tsx'), /\}, \[dataId, selectedVersionId\]\);/);
 });
 
 test('上下文条第三级「数据版本」下拉：候选来自 listVersions，默认链尾（= 最新）', () => {

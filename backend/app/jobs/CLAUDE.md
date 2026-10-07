@@ -3,7 +3,8 @@
 Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep**）。导入本包即完成 handler 注册
 （`__init__.py` 拉入 `app/jobs/alignment.py` / `app/jobs/split.py` / `app/jobs/annotation.py` /
 `app/jobs/dataset_build.py` / `app/jobs/training.py` / `app/jobs/testing.py` /
-`app/jobs/inference.py` / `app/jobs/signal_ingest.py` / `app/jobs/media_prep.py`，各模块级 `@register_handler(...)`
+`app/jobs/inference.py` / `app/jobs/signal_ingest.py` / `app/jobs/media_prep.py` /
+`app/jobs/sample_features.py`，各模块级 `@register_handler(...)`
 填充 `executor.HANDLERS`）。
 新增域任务（split/annotation/dataset_build/training/signal_ingest/media_prep...）在本包加一个 `xxx.py`
 注册即可，executor 无需改动。
@@ -134,3 +135,13 @@ Job 执行器与各域 handler（Task 13 ~ Task 16 + **Task 18** + **media_prep*
   全程，轮询线程对每个已领 job 各自开一个 session（前一个已 close）。
 - **别在 `HANDLERS` 里硬编码调度逻辑**：新增域任务（split/annotation/training...）在本包加
   一个 `xxx.py`，`@register_handler("type")` 注册即可，executor 无需改动。
+
+- `sample_features.py`：**切片级特征提取（2026-10）**。`@register_handler("sample_feature_extraction")`，
+  已在 `jobs/__init__.py` 导入注册。读 `job.result.request = {split_task_id, normalization}`（DB id，
+  不是 job_uid——由路由先解析）→ 调 `services.sample_features.extract_task_features`
+  逐片 upsert `sample_features`（进度每 20 片提交一次）→ 写**任务级产物**
+  `processed/{weld_id}/features/slice-features/{split_task_id}-{params_tag}.json`
+  （`params_tag=sha1(normalization)[:8]`，同 `jobs/features.py` 的理由：换参数重跑不能覆盖上一次；
+  写失败**只告警**，不让成功的提取变失败）→ `write_audit("extract", "sample_features")` →
+  `mark_succeeded`。**不建数据版本**（自然锚点是分段任务，硬造版本只会让"这版到底是哪个特征提取"变歧义）。
+  视觉缺失是**逐片降级**（该片 `missing` + 该行 warnings），Job 仍 succeeded、`result.status="partial"`。

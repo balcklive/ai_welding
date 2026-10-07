@@ -99,6 +99,15 @@ GROUP_NAMES = [
 ]
 TOTAL_DIMS = sum(GROUP_DIMS)
 
+#: **切片级**（36 维）分组：与上面同一份定义去掉末尾的声音组。
+#: 为什么切片级没有声音：切片 manifest 自己就写着 `audio.available = False`
+#: （`splitting.map_window_to_modalities`），且音频上传已在 2026-10 收口拒收——
+#: 没有真实音频源就不占 6 个维度，而不是拿合成音频凑数。
+#: 定义仍从 GROUP_DIMS/GROUP_NAMES 派生（**只有一处定义**，勿另写一份字面量）。
+SAMPLE_GROUP_DIMS = GROUP_DIMS[:-1]
+SAMPLE_GROUP_NAMES = GROUP_NAMES[:-1]
+SAMPLE_TOTAL_DIMS = sum(SAMPLE_GROUP_DIMS)  # 36
+
 
 def ts_features(x, fs: int = DEFAULT_SAMPLE_RATE) -> dict:
     """单通道时序特征（8 维）：均值/方差/峰值/偏度/峰度/RMS/FFT 主频/小波能量。
@@ -187,16 +196,23 @@ def vision_features(size: int = 128) -> dict:
     }
 
 
-def vision_features_from_image(data: bytes) -> dict:
+def vision_features_from_image(data: bytes, *, max_size: int | None = None) -> dict:
     """从真实图片计算视觉特征。
 
     这是特征工程层的保底分割：使用灰度 Otsu 阈值和最大连通区域。
     生产环境应将这里替换为已审核的熔池分割模型，但不会再用固定合成图像冒充真实输入。
+
+    `max_size`：长边上限（像素），给了就**等比缩小**后再算。切片级要对每段代表帧
+    各跑一次 GLCM（`levels=256`），在原始分辨率下这是主要成本；默认 `None` ⇒
+    版本级调用逐字不变。
     """
     from PIL import Image
 
     with Image.open(BytesIO(data)) as image:
-        gray = np.asarray(image.convert("L"), dtype=float)
+        gray_image = image.convert("L")
+        if max_size is not None:
+            gray_image.thumbnail((max_size, max_size))
+        gray = np.asarray(gray_image, dtype=float)
     if gray.size == 0:
         raise ValueError("视觉输入为空")
     threshold = float(filters.threshold_otsu(gray)) if np.ptp(gray) > 1e-12 else float(gray.mean())
@@ -336,35 +352,48 @@ def audio_features_from_wav(data: bytes) -> dict:
 def unify(
     ts: dict,
     vis: dict,
-    audio: dict,
+    audio: dict | None = None,
     normalization: str = "无",
     format: str = "JSON",
+    *,
+    include_audio: bool = True,
 ) -> dict:
-    """拼接 42 维统一向量并归一化，返回 `{total_dims, groups, normalization, format, values}`。
+    """拼接统一向量并归一化，返回 `{total_dims, groups, normalization, format, values}`。
 
     `ts` 为 `{通道id: {特征key: 值}}`（由 ts_features 逐通道产出）；
     `vis`/`audio` 为 vision_features/audio_features 产出。分组顺序固定：
     电流 8 → 电压 8 → 气体 6 → 送丝 6 → 几何 4 → 纹理 4 → 声音 6。
+
+    `include_audio=False` 产出**切片级 36 维**（去掉声音组，见 `SAMPLE_GROUP_DIMS`）——
+    同一份分组定义按需裁剪，不是第二份实现。
+
+    **归一化作用在单个向量上**：逐切片调用时 Z-Score 会把每片各自减均值，
+    抹掉区分切片的那批量（电流均值/RMS/气体水平）。切片级请传 `"无"` 存原始值，
+    标准化留给训练侧按 train 划分拟合。
+
     `normalization` ∈ Z-Score | Min-Max | L2 | 无；`format` 透传（NPY/CSV/JSON/PT，
     当前仅存 JSON 元数据，导出由 reports 另行实现）。未知归一化抛 ValueError。
     """
     if normalization not in _NORMALIZATIONS:
         raise ValueError(f"Unknown normalization method: {normalization}")
-    raw = _concat_vector(ts, vis, audio)
-    if len(raw) != TOTAL_DIMS:
+    names = GROUP_NAMES if include_audio else SAMPLE_GROUP_NAMES
+    dims = GROUP_DIMS if include_audio else SAMPLE_GROUP_DIMS
+    total = sum(dims)
+    raw = _concat_vector(ts, vis, audio, include_audio=include_audio)
+    if len(raw) != total:
         raise ValueError(
-            f"拼接维度 {len(raw)} != 期望 {TOTAL_DIMS}，分组定义与特征键不一致"
+            f"拼接维度 {len(raw)} != 期望 {total}，分组定义与特征键不一致"
         )
     values = _normalize(raw, normalization)
 
     start = 0
     groups = []
-    for name, dims in zip(GROUP_NAMES, GROUP_DIMS):
-        groups.append({"name": name, "dims": dims, "range": [start, start + dims]})
-        start += dims
+    for name, dim in zip(names, dims):
+        groups.append({"name": name, "dims": dim, "range": [start, start + dim]})
+        start += dim
 
     return {
-        "total_dims": TOTAL_DIMS,
+        "total_dims": total,
         "groups": groups,
         "normalization": normalization,
         "format": format,
@@ -375,7 +404,9 @@ def unify(
 # ── 内部实现 ──────────────────────────────────────────────────────────
 
 
-_NORMALIZATIONS = {"Z-Score", "Min-Max", "L2", "无"}
+#: 归一化白名单。公开给路由/服务做入参校验（`unify` 内部也用同一份，勿分叉）。
+NORMALIZATIONS = frozenset({"Z-Score", "Min-Max", "L2", "无"})
+_NORMALIZATIONS = NORMALIZATIONS
 
 
 def _fft_dominant_freq(x: np.ndarray, fs: int) -> float:
@@ -414,8 +445,11 @@ def _librosa_feature(name: str, **kwargs) -> np.ndarray:
     return getattr(librosa.feature, name)(**kwargs)
 
 
-def _concat_vector(ts: dict, vis: dict, audio: dict) -> list[float]:
-    """按固定分组顺序拼 42 维原始向量。缺失键按 0 补齐（容忍通道缺席）。"""
+def _concat_vector(
+    ts: dict, vis: dict, audio: dict | None, *, include_audio: bool = True
+) -> list[float]:
+    """按固定分组顺序拼原始向量（42 维；`include_audio=False` 时 36 维）。
+    缺失键按 0 补齐（容忍通道缺席）。"""
     vec: list[float] = []
     cur = ts.get("cur", {})
     vol = ts.get("vol", {})
@@ -433,8 +467,10 @@ def _concat_vector(ts: dict, vis: dict, audio: dict) -> list[float]:
         vec.append(vis.get(key, 0.0))
     for key in VISION_TEXTURE_KEYS:
         vec.append(vis.get(key, 0.0))
-    for key in AUDIO_FEATURE_KEYS:
-        vec.append(audio.get(key, 0.0))
+    if include_audio:
+        audio = audio or {}
+        for key in AUDIO_FEATURE_KEYS:
+            vec.append(audio.get(key, 0.0))
     return vec
 
 

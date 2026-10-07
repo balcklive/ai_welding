@@ -12,7 +12,7 @@
 - `core/db.py`：MySQL `engine` + `SessionLocal` + `get_session()` 依赖（Task 2，详见 `core/CLAUDE.md`）。
 - `core/audit.py`：`write_audit(...)` 向 `audit_logs` 写审计（Task 3，详见 `core/CLAUDE.md`）。
 - `core/security.py`：密码哈希 + JWT 签发/解析（Task 5，详见 `core/CLAUDE.md`）。
-- `models/`：全部 27 张 SQLModel 表类（Task 2 + 各期新增，详见 `models/CLAUDE.md`）。
+- `models/`：全部 **28** 张 SQLModel 表类（Task 2 + 各期新增，详见 `models/CLAUDE.md`；2026-10 新增 `SampleFeature` §3.28）。
 - `schemas/`：统一响应信封 `ok/err` + 分页 `paginate`（Task 3，详见 `schemas/CLAUDE.md`）。
 - `services/`：跨域复用业务服务。`jobs.py` = 通用 Job 生命周期
   （create_job/mark_* /to_job_payload，状态机 pending→running→succeeded/failed，**不 commit** 由调用方落库），

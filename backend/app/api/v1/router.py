@@ -17,6 +17,7 @@ from app.api.v1 import (
     models,
     reports,
     sample_annotations,
+    sample_features,
     settings,
     welds,
 )
@@ -34,3 +35,4 @@ api_router.include_router(reports.router)
 api_router.include_router(labelstudio.router)
 api_router.include_router(settings.router)
 api_router.include_router(sample_annotations.router)
+api_router.include_router(sample_features.router)

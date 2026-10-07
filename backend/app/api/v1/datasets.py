@@ -262,6 +262,8 @@ def get_dataset_version(
     # R4：历史版本（T16 之前构建）的 `dataset_items.annotations` 是 NULL，训练时只能现查当下标注
     # ——不能宣称它已冻结。这里如实标出来，前端据此提示"该版本未冻结标注"。
     payload["annotations_frozen"] = svc.annotations_frozen(session, version)
+    # 切片级特征（§3.28）同理：`False` = 全无（存量版本，训练走旧 8 维口径）或混用（训练会拒）。
+    payload["features_frozen"] = svc.features_frozen(session, version)
     return ok(payload)
 
 

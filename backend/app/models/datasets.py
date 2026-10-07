@@ -78,6 +78,11 @@ class DatasetItem(SQLModel, table=True):
     #: 训练读它而不是现查 `annotations` 表——否则版本构建后改标注就会让"同一个版本"训出不同结果。
     #: NULL = 该版本建于 T16 之前（训练侧回退现查，保持旧行为）。
     annotations: list | None = Field(default=None, sa_column=Column(JSON))
+    #: 切片级特征向量的**冻结副本**（§3.28 `SampleFeature.unified_vector` 的当时值，
+    #: 36 维）。训练读它而不是现查 `sample_features`——否则重跑特征提取就会让
+    #: "同一个版本"训出不同结果。NULL = 构建时该样本没做过切片特征提取
+    #: （存量版本全为 NULL ⇒ 训练回退旧的 8 维现算口径）。
+    features: dict | None = Field(default=None, sa_column=Column(JSON))
 
 
 class DatasetBuildTask(SQLModel, table=True):

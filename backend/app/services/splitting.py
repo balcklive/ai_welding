@@ -31,7 +31,9 @@ from loguru import logger
 from sqlmodel import Session, select
 
 from app.core.config import settings
+from app.models.analysis import SplitTask
 from app.models.data import DataRecord, DataVersion
+from app.models.jobs import Job
 from app.services import signal_ingest, signals
 
 #: 切分规则版本（设计 §3.4）。1 = 旧口径「帧 = 采样点」；2 = 秒为唯一基准（帧仅作界面单位）；
@@ -860,7 +862,7 @@ def delete_split_task(session: Session, task) -> dict:
     这里做**：先删对象再提交，事务一旦回滚就留下一堆指向不存在对象的样本行。调用方必须
     **先 commit 再删对象**——存储是不可回滚的，它只能排在最后。
     """
-    from app.models.analysis import Sample, SampleAnnotation
+    from app.models.analysis import Sample, SampleAnnotation, SampleFeature
     from app.models.datasets import DatasetItem
     from app.models.jobs import Job
 
@@ -899,6 +901,14 @@ def delete_split_task(session: Session, task) -> dict:
     for row in annotations:
         session.delete(row)
     session.flush()
+    # 切片级特征（§3.28）与 `Sample` 之间同样是**裸外键列、没有 `relationship()`**，
+    # 必须与标注同批先删、并显式 flush —— 少这一段的后果与上面那条注释一模一样。
+    features = session.exec(
+        select(SampleFeature).where(SampleFeature.sample_id.in_(sample_ids or [0]))
+    ).all()
+    for row in features:
+        session.delete(row)
+    session.flush()
     for row in samples:
         session.delete(row)
     session.flush()
@@ -912,6 +922,7 @@ def delete_split_task(session: Session, task) -> dict:
     return {
         "deleted_samples": len(samples),
         "deleted_annotations": len(annotations),
+        "deleted_sample_features": len(features),
         "artifact_keys": keys,
     }
 
@@ -936,6 +947,53 @@ def purge_split_artifacts(storage, keys: list[str]) -> int:
             len(failed), len(keys), failed[:5],
         )
     return len(keys) - len(failed)
+
+
+# ── 任务级辅助：下游工作台共用的入口判定 ─────────────────────────────
+#
+# v3 分段任务是若干下游工作台（段级标注、切片级特征提取）的**共同前置**。判定与
+# 入口查询必须只有一处——两边各写一遍的话，口径一分叉就会出现"标注页能进的
+# 任务，特征提取页说不能进"这种最难查的不一致。
+
+
+def is_segment_task(task: SplitTask) -> bool:
+    """是否 v3 分段任务（`rules_version >= 3`）。"""
+    return int((task.rules or {}).get("rules_version") or 1) >= RULES_VERSION
+
+
+def segment_task_block_code(session: Session, task: SplitTask) -> str | None:
+    """任务不可进入下游的**原因码**；可用返回 `None`。
+
+    `"not_segment"` = 非 v3（历史口径的切片没有统一时间窗，段级结论/切片特征对它不成立）；
+    `"not_succeeded"` = Job 不存在或没跑完。
+
+    调用方各自把这个码映射成自己的**措辞**（`sample_annotation.task_block_reason` 说"标注"，
+    `sample_features` 说"提取特征"），判定本身在这里。
+    """
+    if not is_segment_task(task):
+        return "not_segment"
+    job = session.get(Job, task.job_id)
+    if job is None or job.status != "succeeded":
+        return "not_succeeded"
+    return None
+
+
+def list_completed_segment_tasks(
+    session: Session, weld_id: str
+) -> list[tuple[SplitTask, Job, DataVersion]]:
+    """该焊缝**已完成且为 v3** 的分段任务（`SplitTask.id` 倒序 = 最新在前）。
+
+    标注工作台与切片特征提取工作台共用的入口查询——"能看到哪些任务"必须一致。
+    """
+    rows = session.exec(
+        select(SplitTask, Job, DataVersion)
+        .join(Job, Job.id == SplitTask.job_id)
+        .join(DataVersion, DataVersion.id == SplitTask.version_id)
+        .join(DataRecord, DataRecord.id == DataVersion.record_id)
+        .where(DataRecord.weld_id == weld_id, Job.status == "succeeded")
+        .order_by(SplitTask.id.desc())
+    ).all()
+    return [(task, job, version) for task, job, version in rows if is_segment_task(task)]
 
 
 def _valid_event_bounds(value) -> bool:

@@ -582,3 +582,43 @@
 - 状态机仅 `pending → running → succeeded | failed`（§6.1），服务层不做状态校验（幂等粗粒度），
   跨状态调用（如未 running 直接 succeeded）由调用方约定。
 - 新增跨域服务（如任务执行器、特征提取）放本目录，避免各域路由重复造轮子。
+
+## 切片级特征提取（2026-10，跨文件改动集中在这里）
+
+把特征提取从"焊缝数据版本级 42 维"扩成"**切片级 36 维**、落库、可复现"，训练改读冻结值。
+涉及本目录的改动：
+
+- **`sample_features.py`（新增）**：切片级特征领域逻辑，**不 commit**（handler/路由提交）。
+  `_slice_bounds` **优先读 manifest** 的 `meta.signal.start_index/end_index`（`splitting._window`
+  已按 `ceil(秒×fs)` 写好，是"切了什么"的权威记录），缺键才按 `start_time/end_time` 现算，
+  一律 clamp；`compute_slice_features` 按 bounds 切父版本信号逐通道 `ts_features` + 传入的视觉
+  → `unify(..., include_audio=False)`；`extract_task_features` 逐片 upsert（`sample_id` 唯一）、
+  每 20 片提交进度、异常时**只删本次写入的行**（重提取失败不毁上一次成功的结果）；
+  `list_features`（未提取筛选下推 SQL）、`features_for_samples`（构建冻结用）、
+  `task_progress`、`list_extractable_tasks`、`ordered_rows`（任务级产物与手动导出共用，防行序分叉）。
+  **视觉缺失按片降级**：该片记 `missing` + 把服务端原因写进该行 `warnings`，**绝不抛**——
+  45 段里丢 1 帧不能废掉一整批（视频是全站声明的增强模态）。Job 一律 succeeded，
+  `status="partial"` 只在**有片缺帧**时给；`heuristic`（真帧 + 自家分割）**不算** partial，
+  否则本部署没配正式视觉服务时每一批都是 partial，那是噪音。
+- **`features.py`**：`SAMPLE_GROUP_DIMS/NAMES/TOTAL_DIMS`（36）从 `GROUP_DIMS/NAMES` **派生**
+  （只有一处定义）；`unify`/`_concat_vector` 加 `include_audio=True` 关键字参数（**参数化而非 fork**，
+  42 维调用方行为逐字不变）；`NORMALIZATIONS` 改为公开常量（原 `_NORMALIZATIONS` 保留为别名）
+  供路由校验；`vision_features_from_image(data, *, max_size=None)` 加可选降采样（切片级每段各跑一次
+  `graycomatrix(levels=256)`，原分辨率是主要成本；默认 `None` ⇒ 版本级数值不变）。
+  **声音组不删**（版本级路径还在用）。
+- **`splitting.py`**：抽出**唯一的**下游入口判定与查询——`is_segment_task` /
+  `segment_task_block_code`（返回 `None|"not_segment"|"not_succeeded"`）/ `list_completed_segment_tasks`。
+  `sample_annotation.py` 的同名函数**改为委托**（措辞各自映射，判定不分叉）。`delete_split_task`
+  的级联**加了 `SampleFeature`**，与 `SampleAnnotation` 同批先删 + **显式 `session.flush()`**
+  （裸外键列、无 `relationship()`，SQLAlchemy 推不出先后 → MySQL 1451）。
+- **`datasets.py`**：`run_build` 在造 `DatasetItem` 处挂 `features=features_by_sample.get(s.id)`
+  （与 `annotations` 快照并排），**缺特征不阻断构建**但要 `logger.warning` 出 N/M；
+  `_build_snapshot` 的 items 带 `features`；新增 `feature_coverage()` 与 `features_frozen()`
+  （后者与 `annotations_frozen` 同一三态约定）。**训练准入要区分"全无"与"混用"**，
+  而 `features_frozen` 对两者都是 `False` —— 所以准入用 `feature_coverage` 判。
+- **`torch_training.py`**：`load_real_examples` 返回三元组 `(examples, label_names, feature_kind)`；
+  口径**全有 → `slice_v1`（读快照）/ 全无 → `legacy_summary`（回落旧的 8 维现算，存量数据集零改动可训）
+  / 混用 → 抛**并点名缺哪些。`run()` 的输入维度**从数据来**（`len(examples[0].features)`，
+  曾经写死 `nn.Linear(8, …)`），并把 `input_dim` + `feature_kind` 存进权重文件。
+- **`welds.py`**：`delete_record` 的版本作用域产物清单加了 `SampleFeature`（与
+  AlignmentTask/FeatureExtraction/SignalIngest 同批按 `version_id` 清）。

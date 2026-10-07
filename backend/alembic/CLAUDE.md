@@ -37,6 +37,10 @@ Alembic 迁移。当前进度：Task 2（初始迁移 `0001_initial`，23 张表
 
 ## 迁移清单（近期）
 
+- `0021_sample_features`（**切片级特征提取，2026-10**）：新建 `sample_features`（§3.28，`sample_id` UK +
+  冗余 `split_task_id`/`version_id` + 36 维向量与逐片 `source_by_modality`/`warnings`）+ 给 `dataset_items`
+  加 `features` JSON（构建时冻结的同一份向量）。**纯 expand、不回填**——存量分段任务没有切片特征，
+  需要时重跑；`features` 为 NULL ⇒ 训练回退旧的 8 维现算口径（存量数据集零改动可训）。
 - `0020_sample_annotations`（**分段样本段级标注，2026-09-22**）：新建 `sample_annotations`（§3.27）
   + 幂等插入 `option_items` 的 `defect_category` 出厂 7 项。纯 expand；`downgrade` **先删表再删词表项**
   （按 id 引用的外键会拦下先删项的写法）。

@@ -5,7 +5,7 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 ## 脚本
 
 - `__init__.py`：空包。
-- `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 12 个域 router（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports/labelstudio/settings/sample_annotations）。新增域时在此追加 import + include_router。
+- `router.py`：`api_router = APIRouter()`，`include_router` 聚合全部 **13** 个域 router（auth/dashboard/welds/analysis/datasets/models/files/jobs/reports/labelstudio/settings/sample_annotations/**sample_features**）。新增域时在此追加 import + include_router。
 - `auth.py`：**Task 5 已实现**。router `prefix="/auth"`（完整路径 `/api/v1/auth/login`、`/api/v1/auth/me`）。`POST /login` body `{username,password}` → 查 `users` 表校验 → `ok({access_token, token_type:"bearer", user:{id,username,display_name,role,avatar}})`；用户名/密码错 → `err(40100, "用户名或密码错误", status=401)`。**防时序用户枚举（Task 5 修复）**：用户不存在时仍对模块级 `_DUMMY_HASH`（argon2，导入时算一次）跑一次 `verify_password`，使未知/已知用户名两条路径耗时相当；返回体一致。**Task 4 修复**：按用户名做失败登录限速（60s 窗口内失败 ≥5 次进入 300s cooldown，返回 `42900`），成功登录会清空失败桶/冷却状态。`GET /me`（依赖 `api.deps.get_current_user`）→ `ok(user)`。`user_payload(user)` 暴露对外字段。
 - `dashboard.py`：**Task 8 已实现**。router `prefix="/dashboard"`（完整路径 `/api/v1/dashboard/*`），
   **router 级 `dependencies=[Depends(get_current_user)]` 统一要求登录**。三个端点
@@ -320,3 +320,21 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
 - 返回统一走 `app.schemas.common` 的 `ok(data)` / `err(code, message, detail=..., status=...)` 信封；列表分页载荷用 `paginate(items, total, page, page_size)`。
 - 业务错误显式 `return err(...)`，不要裸抛 `HTTPException`（全局处理器虽兜底映射，但显式错误码更可读）；错误码约定见 `docs/API接口清单.md`。
 - 后续任务填充占位模块时，把 `# filled in Task N` 注释替换为真实实现即可，`router.py` 无需改动（除非新增域）。
+
+- `sample_features.py`：**切片级特征提取（2026-10）**。router 无前缀、`dependencies=[Depends(get_current_user)]`，
+  归属沿用**分段域**口径（`forbid_unless_record_owned`），`{task_id}` 双解析 `job_uid`/DB id。端点：
+  `GET /welds/{weld_id}/sample-feature-tasks`（入口列表，与段级标注工作台**同一份查询**）、
+  `POST /split-tasks/{task_id}/sample-feature-extractions`（body `{normalization}`，白名单
+  `features.NORMALIZATIONS`；先过 `splitting.segment_task_block_code` 再建 Job；`sha256(split_task_id+normalization)`
+  幂等复用 pending/running/succeeded 的 Job，撞唯一约束回 40900）、
+  `GET /split-tasks/{task_id}/sample-features`（分页 + `progress`；`filter=unextracted` 走 SQL 侧过滤；
+  行**不含 36 个数值**）、`GET …/sample-features/export?format=JSON|CSV`（**具体路径必须注册在
+  `{sample_id}` 之前**，否则 export 会被当成样本 id）、`GET …/sample-features/{sample_id}`
+  （未提取时 `feature=null`，**不是 404**）。错误码 40401/40300/40000/40900。
+  **没有同步提取端点**——页面只读落库行 + 轮询 Job。**不建数据版本**：这些特征的自然锚点是分段任务，
+  写任务级产物 `processed/{weld}/features/slice-features/{task_id}-{params_tag}.json` 即可。
+- `datasets.py`（补充 2026-10）：`GET /datasets/{id}/versions/{vid}` 新增 `features_frozen`
+  （`true`=全部成员有切片向量 / `false`=全无【存量，训练走旧口径】或混用 / `null`=无成员），
+  与既有 `annotations_frozen` 同一三态约定。
+- `models.py`（补充 2026-10）：`create_training_task` 的准入闸门加一条**切片特征完整性**检查
+  （用 `datasets.feature_coverage`：全无放行、混用 40000 + 点名）——用户在**建 job 之前**拿到原因。

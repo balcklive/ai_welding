@@ -73,21 +73,23 @@ class TaskNotAnnotatable(SampleAnnotationError):
 # ── 前置条件与词表 ────────────────────────────────────────────────────
 
 
+#: 原因码 → 面向用户的措辞。判定本身在 `splitting.segment_task_block_code`
+#: （切片特征提取用的是同一份判定、另一套措辞——两处措辞分叉没关系，判定不能分叉）。
+_TASK_BLOCK_MESSAGES = {
+    "not_segment": "仅支持对 v3 分段任务（时间统一的多模态样本）做段级标注",
+    "not_succeeded": "分段任务尚未成功完成，暂不能标注",
+}
+
+
 def is_segment_task(task: SplitTask) -> bool:
     """是否 v3 分段任务（`rules_version >= 3`）——段级标注**只**面向它。"""
-    return int((task.rules or {}).get("rules_version") or 1) >= splitting.RULES_VERSION
+    return splitting.is_segment_task(task)
 
 
 def task_block_reason(session: Session, task: SplitTask) -> str | None:
     """返回不可标注的原因；可标注返回 None。"""
-    if not is_segment_task(task):
-        return "仅支持对 v3 分段任务（时间统一的多模态样本）做段级标注"
-    from app.models.jobs import Job  # 局部导入：仅本函数用
-
-    job = session.get(Job, task.job_id)
-    if job is None or job.status != "succeeded":
-        return "分段任务尚未成功完成，暂不能标注"
-    return None
+    code = splitting.segment_task_block_code(session, task)
+    return _TASK_BLOCK_MESSAGES.get(code) if code else None
 
 
 def list_categories(session: Session, *, active_only: bool = False) -> list[dict]:
@@ -230,17 +232,7 @@ def list_annotatable_tasks(session: Session, weld_id: str) -> list[dict]:
     """
     from sqlalchemy import func as sa_func
 
-    from app.models.jobs import Job
-
-    rows = session.exec(
-        select(SplitTask, Job, DataVersion)
-        .join(Job, Job.id == SplitTask.job_id)
-        .join(DataVersion, DataVersion.id == SplitTask.version_id)
-        .join(DataRecord, DataRecord.id == DataVersion.record_id)
-        .where(DataRecord.weld_id == weld_id, Job.status == "succeeded")
-        .order_by(SplitTask.id.desc())
-    ).all()
-    candidates = [(task, job, version) for task, job, version in rows if is_segment_task(task)]
+    candidates = splitting.list_completed_segment_tasks(session, weld_id)
     task_ids = [task.id for task, _, _ in candidates]
     totals = {int(tid): int(count) for tid, count in session.exec(
         select(Sample.split_task_id, sa_func.count(Sample.id))

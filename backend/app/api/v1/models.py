@@ -245,6 +245,16 @@ def create_training_task(
                 "请重新构建数据集版本",
                 status=400,
             )
+        # 切片特征：**全无是允许的**（存量版本走旧的 8 维现算口径，照常可训），
+        # 但"一半有一半没有"必须拒——两种口径的向量长度不同，混进同一批张量化就炸。
+        have_features, total_members = dataset_svc.feature_coverage(session, version)
+        if have_features not in (0, total_members):
+            return err(
+                40000,
+                f"数据集版本 {version.id} 的切片特征不完整（{have_features}/{total_members} 个成员有），"
+                "特征口径不一致无法训练；请对分段任务执行切片特征提取后重建该版本",
+                status=400,
+            )
         readiness = dataset_svc.readiness_for_version(session, version_dataset, version)
         if readiness["readiness"] != "可训练":
             missing = "、".join(c["name"] for c in readiness["checks"] if not c["passed"])

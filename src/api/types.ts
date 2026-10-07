@@ -279,6 +279,72 @@ export interface FeatureExtractionHistoryItem {
   finished_at: string | null;
 }
 
+/** 切片级特征提取进度（每任务的提取覆盖情况）。 */
+export interface SampleFeatureProgress {
+  total: number;
+  extracted: number;
+  pending: number;
+  /** 0–100，一位小数。 */
+  progress: number;
+}
+
+/** 可提取切片特征的分段任务（工作台入口卡片）。
+ *
+ *  与 `SegmentAnnotatableTask` 来自**同一份查询**（后端 `splitting.list_completed_segment_tasks`），
+ *  只是进度口径不同——两个工作台"能看到哪些任务"必须一致。 */
+export interface SampleFeatureTask {
+  /** 创建分段任务时拿到的 job_id（= job_uid）；后端也兼容 DB id。 */
+  task_id: string;
+  split_task_id: number;
+  version_id: number;
+  version_no: string;
+  sample_count: number | null;
+  window_seconds: number | null;
+  stride_seconds: number | null;
+  effective_range: [number, number] | null;
+  finished_at: string | null;
+  progress: SampleFeatureProgress;
+}
+
+/** 切片列表行：**只有导航与进度字段，不含 36 个数值**（几百片时列表会失控）。 */
+export interface SampleFeatureRow {
+  sample_id: number;
+  index: number | null;
+  start_time: number | null;
+  end_time: number | null;
+  extracted: boolean;
+  normalization: string | null;
+  total_dims: number | null;
+  modality_status: Record<string, string> | null;
+  warnings: string[];
+  /** 该段代表帧的对象键（前端按需换预签名 URL，不给全部 200 段各签一次）。 */
+  frame_key: string | null;
+  /** 没有帧时的服务端原因（不自己编）。 */
+  frame_reason: string | null;
+}
+
+export type SampleFeaturePage = Page<SampleFeatureRow> & { progress: SampleFeatureProgress };
+
+/** 单个切片的完整 36 维特征（时序 28 + 视觉 8，**无声音组**）。 */
+export interface SampleFeatureDetail {
+  sample_id: number;
+  split_task_id: number;
+  version_id: number;
+  index: number | null;
+  start_time: number | null;
+  end_time: number | null;
+  unified_vector: UnifiedVector;
+  ts_features: Record<string, Record<string, number>>;
+  vision_features: Record<string, number>;
+  modality_status: Record<string, string>;
+  channel_mapping: Record<string, unknown>;
+  warnings: string[];
+  normalization: string;
+  pipeline_version: string;
+  created_at: string | null;
+  finished_at: string | null;
+}
+
 /** 扣分原因明细（T2.3）：`rate` 与 `affected` 都按**去重并集**算，各原因允许重叠。 */
 export interface QualityDeduction {
   /** 界面标签，由后端给（前端不拼文案）。 */

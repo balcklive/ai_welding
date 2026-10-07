@@ -1,6 +1,15 @@
 # CLAUDE.md — backend/app/models/
 
-SQLModel 表类（全部 27 张，`table=True`）。当前进度：Task 2（全部模型 + `__init__.py` 导出）+ **Task 18（新增 `SignalIngest`，§3.24）** + **2026-09 系统设置（新增 `OptionItem`，§3.26）** + **2026-09-22 分段样本标注（新增 `SampleAnnotation`，§3.27）**。
+SQLModel 表类（全部 **28** 张，`table=True`）。当前进度：Task 2（全部模型 + `__init__.py` 导出）+ **Task 18（新增 `SignalIngest`，§3.24）** + **2026-09 系统设置（新增 `OptionItem`，§3.26）** + **2026-09-22 分段样本标注（新增 `SampleAnnotation`，§3.27）** + **2026-10 切片级特征提取（新增 `SampleFeature`，§3.28；`dataset_items` 加 `features`，迁移 `0021`）**。
+
+- `analysis.py`（续）：`SampleFeature`(§3.28，**2026-10 切片级特征**——一个 v3 `Sample` 一行，
+  `sample_id` **UK**（PUT 即 upsert）、冗余的 `split_task_id`/`version_id`（主读是"按任务列特征"，
+  冗余后 count/list/progress 不必穿 `samples` join）、`unified_vector`（**36 维** = 时序 28 + 视觉 8，
+  **无声音组**）/`ts_features`/`vision_features`/`source_by_modality`/`channel_mapping`/`warnings`、
+  `normalization`（**恒为"无"**：权威向量存原始值）、`pipeline_version`、`job_id`/`created_by`)
+  + `DatasetItem.features`(§3.16，**构建时冻结的同一份向量**：训练读快照而不现查 `sample_features`)。
+  **不给 `feature_extractions` 加 `sample_id`**——那张表的版本级端点按 `version_id` 取最新一行，
+  切片行也带 `version_id` 就会被当成焊缝级向量返回；分表让两边口径各自封闭。
 
 ## 文件与内容
 

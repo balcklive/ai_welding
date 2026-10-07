@@ -32,7 +32,13 @@ from threading import Lock
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, or_, select
 
-from app.models.analysis import AlignmentTask, FeatureExtraction, SignalIngest, SplitTask
+from app.models.analysis import (
+    AlignmentTask,
+    FeatureExtraction,
+    SampleFeature,
+    SignalIngest,
+    SplitTask,
+)
 from app.models.data import (
     DataRecord,
     DataVersion,
@@ -767,7 +773,10 @@ def delete_record(session: Session, record: DataRecord) -> dict[str, int]:
                 )).all():
                     session.delete(rule)
                 session.delete(report)
-            for model in (AlignmentTask, FeatureExtraction, SignalIngest):
+            # 版本作用域的处理产物一起清。`SampleFeature` 也按 `version_id`（信号版本）
+            # 挂在这里，与其余三张同批——虽然样本本身会被 `collect_record_references`
+            # 挡住、正常情况下不会有行，但少一个会让"版本作用域产物"这条清单悄悄不完整。
+            for model in (AlignmentTask, FeatureExtraction, SampleFeature, SignalIngest):
                 for item in session.exec(select(model).where(model.version_id == version_id)).all():
                     session.delete(item)
         record.latest_version_id = None

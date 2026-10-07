@@ -48,8 +48,19 @@ class CpuTrainingResult:
     sample_count: int
 
 
-def load_real_examples(session: Session, dataset_version_id: int, storage) -> tuple[list[TrainingExample], list[str]]:
-    """Load the fixed dataset snapshot as two classes: normal/defect."""
+def load_real_examples(
+    session: Session, dataset_version_id: int, storage
+) -> tuple[list[TrainingExample], list[str], str]:
+    """Load the fixed dataset snapshot as two classes: normal/defect.
+
+    返回 `(examples, label_names, feature_kind)`；`feature_kind` ∈ `slice_v1` | `legacy_summary`。
+
+    **特征口径按成员全有/全无二选一，绝不混用**（混用会让同一批样本维度都不一致）：
+    - 全有 `dataset_items.features`（构建时冻结的切片级 36 维）→ `slice_v1`，训练读快照；
+    - 全无（本特性之前建的存量版本）→ `legacy_summary`，走旧的"按一个文件现算 8 维"口径，
+      **存量数据集因此零改动继续可训**；
+    - 部分有 → **拒绝**，并点名缺哪些（构建时没做切片特征提取）。
+    """
     rows = session.exec(
         select(DatasetItem, Sample)
         .join(Sample, Sample.id == DatasetItem.sample_id)
@@ -61,6 +72,26 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
     ).all()
     if not rows:
         raise ValueError("数据集版本没有真实样本，无法开始训练")
+    # 特征口径：全有 / 全无 / 混用（见 docstring）。**不静默混用**——两种口径的向量长度
+    # 都不一样，混进同一批只会在 torch 张量化时报一个看不懂的形状错误。
+    frozen_count = sum(1 for item, _ in rows if item.features is not None)
+    if frozen_count == len(rows):
+        feature_kind = "slice_v1"
+    elif frozen_count == 0:
+        feature_kind = "legacy_summary"
+        logger.warning(
+            "Dataset version {} has no frozen slice features (built before §3.28); "
+            "falling back to the legacy per-sample 8-dim summary — the training input "
+            "is NOT the slice-level feature vector for this version.",
+            dataset_version_id,
+        )
+    else:
+        missing = [item.sample_id for item, _ in rows if item.features is None][:5]
+        raise ValueError(
+            f"该数据集版本有 {len(rows) - frozen_count}/{len(rows)} 个成员缺少切片特征"
+            f"（构建时未提取，如样本 {missing}），无法用统一输入训练；"
+            "请对分段任务执行切片特征提取后重建该版本"
+        )
     # T16.1：**优先读构建时冻结的标注快照**（`dataset_items.annotations`）——版本构建之后
     # 继续改标注不该改变同一版本的训练输入。只在快照缺失（T16 之前建的版本）时才现查
     # `annotations` 表，保持旧行为。
@@ -100,10 +131,16 @@ def load_real_examples(session: Session, dataset_version_id: int, storage) -> tu
         # 段级标注（v3）在快照里直接带结论 `label`，**优先认它**；旧标注按类别白名单折叠
         # （只认白名单内的类别为缺陷，熔池/正常等非缺陷剔除——决策 6）。
         label_name = "缺陷" if any(_is_defect_entry(e) for e in entries) else "正常"
-        examples.append(TrainingExample(sample.id, item.split, _features_from_sample(storage, sample, session, feature_cache), label_ids[label_name], label_name))
+        # 冻结的切片向量优先（构建时写死的那份）；存量版本才回落"按一个文件现算 8 维"。
+        features = (
+            tuple(float(value) for value in (item.features.get("values") or []))
+            if feature_kind == "slice_v1"
+            else _features_from_sample(storage, sample, session, feature_cache)
+        )
+        examples.append(TrainingExample(sample.id, item.split, features, label_ids[label_name], label_name))
     if not examples:
         raise ValueError("数据集版本没有可训练的真实样本")
-    return examples, label_names
+    return examples, label_names, feature_kind
 
 
 def _is_defect_entry(entry: dict) -> bool:
@@ -209,8 +246,19 @@ def _summary_features(values: list[float]) -> tuple[float, ...]:
     return tuple(float(value) for value in (mean, stdev, ordered[0], percentile(.25), percentile(.5), percentile(.75), ordered[-1], sum(value != mean for value in values) / len(values)))
 
 
-def run(task_id: int, epochs: int, seed: int, examples: list[TrainingExample], classes: list[str]) -> CpuTrainingResult:
-    """Train a small multi-class classifier on real CPU-loaded examples."""
+def run(
+    task_id: int,
+    epochs: int,
+    seed: int,
+    examples: list[TrainingExample],
+    classes: list[str],
+    feature_kind: str = "legacy_summary",
+) -> CpuTrainingResult:
+    """Train a small multi-class classifier on real CPU-loaded examples.
+
+    **输入维度从数据来**（不再是写死的 8）：切片级特征 36 维、存量版本的旧口径 8 维，
+    同一份代码都要能跑。维度不一致直接报错——那说明同一批里混了两种特征口径。
+    """
     import torch
     from torch import nn
     if len(classes) < 2 or not examples:
@@ -218,6 +266,9 @@ def run(task_id: int, epochs: int, seed: int, examples: list[TrainingExample], c
     torch.set_num_threads(max(1, settings.torch_cpu_threads))
     torch.manual_seed(seed)
     device = torch.device("cpu")
+    input_dim = len(examples[0].features)
+    if any(len(example.features) != input_dim for example in examples):
+        raise ValueError("训练样本特征维度不一致（同一数据集版本里混用了不同特征口径）")
     train = [e for e in examples if e.split == "train"]
     val = [e for e in examples if e.split in {"val", "test"}]
     if not train or not val:
@@ -226,7 +277,7 @@ def run(task_id: int, epochs: int, seed: int, examples: list[TrainingExample], c
     train_y = torch.tensor([e.label for e in train], dtype=torch.long, device=device)
     val_x = torch.tensor([e.features for e in val], dtype=torch.float32, device=device)
     val_y = torch.tensor([e.label for e in val], dtype=torch.long, device=device)
-    model = nn.Sequential(nn.Linear(8, 16), nn.ReLU(), nn.Linear(16, len(classes))).to(device)
+    model = nn.Sequential(nn.Linear(input_dim, 16), nn.ReLU(), nn.Linear(16, len(classes))).to(device)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.08)
     criterion = nn.CrossEntropyLoss()
     train_curve: list[float] = []
@@ -242,7 +293,7 @@ def run(task_id: int, epochs: int, seed: int, examples: list[TrainingExample], c
     accuracy = correct / max(1, len(val_y))
     precision, recall, f1 = _macro_metrics(predictions, val_y, len(classes))
     buffer = io.BytesIO()
-    torch.save({"task_id": task_id, "framework": "torch", "device": "cpu", "model_state_dict": model.state_dict(), "input_dim": 8, "classes": classes, "source": "dataset_items/samples/annotations"}, buffer)
+    torch.save({"task_id": task_id, "framework": "torch", "device": "cpu", "model_state_dict": model.state_dict(), "input_dim": input_dim, "feature_kind": feature_kind, "classes": classes, "source": "dataset_items/samples/annotations"}, buffer)
     metrics = {"mAP50": round(accuracy, 4), "accuracy": round(accuracy, 4), "precision": round(precision, 4), "recall": round(recall, 4), "f1": round(f1, 4)}
     return CpuTrainingResult(metrics, {"train": train_curve, "val": val_curve}, buffer.getvalue(), classes, len(examples))
 

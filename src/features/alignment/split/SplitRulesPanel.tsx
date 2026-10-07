@@ -22,11 +22,13 @@ interface Props {
   onGoToAlignment: () => void;
   /** 样本已生成时给出「去标注」入口（段级标注工作台）；未生成时不传。 */
   onGoToAnnotation?: () => void;
+  /** 样本已生成时给出「去提取切片特征」入口（切片级特征提取工作台）；未生成时不传。 */
+  onGoToFeatures?: () => void;
 }
 
 export function SplitRulesPanel({
   draft, fieldError, preview, previewError, previewing, stale, creating,
-  onDraft, onCreate, onGoToAlignment, onGoToAnnotation,
+  onDraft, onCreate, onGoToAlignment, onGoToAnnotation, onGoToFeatures,
 }: Props) {
   const video = preview?.modalities.video;
   const seam = preview?.modalities.seam_image;
@@ -166,6 +168,13 @@ export function SplitRulesPanel({
         <div className="split-action-row">
           <button type="button" className="full-button studio-reset" onClick={onGoToAnnotation}>
             去标注这批样本（分段样本标注）
+          </button>
+        </div>
+      )}
+      {onGoToFeatures && (
+        <div className="split-action-row">
+          <button type="button" className="full-button studio-reset" onClick={onGoToFeatures}>
+            去提取切片特征（每个切片一份 36 维向量）
           </button>
         </div>
       )}

@@ -30,3 +30,4 @@
 - **两条轨的横轴不同**：视频/时序轨是**时间**，焊缝图片轨是**沿焊缝的长度**，只在匀速假设（`speed_source=none/scalar`）下才重合。焊缝图片轨的横轴不能改回按时间百分比——那正是"ROI 框了看不出效果、边界落在照片上错误位置"的成因。
 - **代表帧的"没有"必须逐段说清**：视频不可用 / 该段落在视频覆盖范围外 / 该段中点在覆盖外 / 抽帧失败——四种原因都由服务端给，前端只展示、不自己编，也**不拿别的段或全局首帧顶替**。
 - 视频/图片是**增强模态**：缺失只标记不阻断；`warnings[]` 会把未标定、无焊接速度、重叠、尾片等如实列出来。
+- **分段成功后的两个下游入口都走 `navigate` 助手**（2026-10）：「去标注这批样本」与「去提取切片特征」——`SplitWorkspace` 新增 `navigate: (route: Route) => void` 必填 prop（由 `App.tsx` 传入），**不要再写 `window.location.hash = '#/…'`**：那样绕开 `history.pushState` 的同路由 `replaceState` 语义（`app/route-url.ts` 明确要求），同一个目标被两个入口分别入栈。`onGoToFeatures` 与 `onGoToAnnotation` 一样只在任务成功后才传（`done ? … : undefined`）。
