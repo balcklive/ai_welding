@@ -794,6 +794,12 @@ button { border: 0; cursor: pointer; }
 .video-film-strip > .film-cell:hover { filter:none; }
 /* 条在轴外/贴边时给一句提示（服务端给不出位置，只有前端知道条被裁了多少） */
 .film-strip-note { margin-left:auto; color:#c88a42; font:12px 'DM Mono',monospace; }
+/* 看得见的抓手（挂在条左端、不吃指针）：条只靠 cursor:grab 太隐蔽，实测用户不知道该拖它 */
+.film-strip-grip { position:absolute; left:0; top:0; bottom:0; display:flex; align-items:center; padding:0 6px; color:#eafcf7; background:linear-gradient(90deg,rgba(13,34,38,.78),rgba(13,34,38,0)); pointer-events:none; z-index:1; }
+/* `.lane` 是两列 grid（label + track），说明行要跨满整行——不写这条它会挤进 132px 的
+   标签列里换行（`VideoTimelineLane` / `SeamImageLane` 的 <small className="lane-note"> 一直如此）。 */
+.lane-note { grid-column:1 / -1; margin:6px 0 0; color:#5f7275; font-size:12px; }
+.lane-note b { color:#315f66; }
 /* 焊缝图片轨：只显示 ROI 那一块——照片按 roi 反算放大倍率与偏移，定位/尺寸都由行内样式给，
    这里只兜住 Tailwind preflight 的 `img{max-width:100%;height:auto}`（否则 ROI 裁切算不出来）。 */
 .seam-lane-photo { position:absolute; max-width:none; max-height:none; }

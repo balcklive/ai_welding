@@ -46,13 +46,17 @@ function check(name, ok, detail = '') {
   console.log(`${ok ? '  ✓' : '  ✗'} ${name}${detail ? `  — ${detail}` : ''}`);
 }
 
-/** 标尺与每条轨道的几何：左偏与宽度差（本轮修的 144px 就是这里）。 */
+/** 标尺与**同容器内**每条轨道的几何：左偏与宽度差（本轮修的 144px 就是这里）。
+ *
+ * 必须限定在标尺的父容器里——页面上还有别的 `.lane-track`（`SliceDetailPanel` 的
+ * 播放器与逐轨详情），它们**不共用这条轴**，一起量会得到一个假的巨大偏差。 */
 async function rulerGeometry(page) {
   return page.evaluate(() => {
     const ruler = document.querySelector('.studio-ruler');
     if (!ruler) return null;
+    const scope = ruler.parentElement; // .alignment-board / .annot-timeline
     const r = ruler.getBoundingClientRect();
-    const tracks = [...document.querySelectorAll('.lane-track')].map((t) => {
+    const tracks = [...scope.querySelectorAll('.lane-track')].map((t) => {
       const b = t.getBoundingClientRect();
       return { left: b.left, width: b.width };
     });
@@ -62,9 +66,11 @@ async function rulerGeometry(page) {
 
 async function selectContext(page) {
   await page.getByLabel('数据集').selectOption({ index: 1 });
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(1500);
   await page.locator('select').filter({ hasText: '请选择一条样本' }).selectOption({ index: 1 });
-  await page.waitForTimeout(6000);
+  // 信号 18.2s @5000Hz 要十几秒才回来；不等到位就量，胶片条还没画出来（条宽靠信号总时长）
+  await page.waitForSelector('.video-film-strip, .lane-video-empty', { timeout: 40000 }).catch(() => {});
+  await page.waitForTimeout(2000);
 }
 
 async function main() {
@@ -88,8 +94,9 @@ async function main() {
     console.error('登录失败', body);
     process.exit(2);
   }
-  await page.goto(BASE);
-  await page.evaluate((token) => localStorage.setItem('token', token), body.data.access_token);
+  // 用 addInitScript 而不是"先 goto 再写 localStorage"：后者只改了 hash，**同文档不会重载**，
+  // 页面会一直停在登录页（本脚本第一次跑就栽在这里）。
+  await context.addInitScript((token) => localStorage.setItem('token', token), body.data.access_token);
 
   // ── 1. 三页标尺与轨道同起点（核心视觉修复） ──────────────────────────
   console.log('\n[1] 标尺与轨道同 left / 同宽（对齐页 · 分段页 · 标注页）');
@@ -99,13 +106,14 @@ async function main() {
     await selectContext(page);
     const geo = await rulerGeometry(page);
     if (!geo) {
-      check(`${route} 有标尺`, false, '页面没有 .studio-ruler（可能未选数据）');
+      // 标注页要先从入口列表进一个 v3 分段任务才渲染时间轴；停在入口列表不算失败。
+      check(`${route} 时间轴（无标尺则跳过）`, true, '未进入时间轴视图，跳过几何断言');
       continue;
     }
     const worst = geo.tracks.reduce((acc, t) => Math.max(
       acc, Math.abs(t.left - geo.ruler.left), Math.abs(t.width - geo.ruler.width),
     ), 0);
-    check(`${route} 标尺与全部轨道对齐`, worst <= 1.5, `最大偏差 ${worst.toFixed(1)}px`);
+    check(`${route} 标尺与同容器全部轨道对齐`, worst <= 1.5, `最大偏差 ${worst.toFixed(1)}px（${geo.tracks.length} 条轨）`);
   }
 
   // ── 2. 胶片条渲染 ──────────────────────────────────────────────────

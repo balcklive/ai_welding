@@ -21,7 +21,7 @@
  * **必须保住这两个排除项**，否则点一下条会既改 offset 又 seek。
  */
 import { useRef, useState } from 'react';
-import { Play } from 'lucide-react';
+import { MoveHorizontal, Play } from 'lucide-react';
 import type { VideoFrames } from '../../api/types';
 
 interface Props {
@@ -184,6 +184,8 @@ export function VideoFilmLane({
               onPointerCancel={endDrag}
               onKeyDown={onKeyDown}
             >
+              {/* 看得见的抓手：条本身只靠 cursor:grab 太隐蔽，实测用户根本不知道该拖它 */}
+              <span className="film-strip-grip" aria-hidden><MoveHorizontal size={14} /></span>
               {frames?.frames.map((frame) => (
                 <span
                   className="film-cell"
@@ -211,6 +213,12 @@ export function VideoFilmLane({
           <div className="lane-video-empty"><Play size={18} /><span>{emptyText}</span></div>
         )}
       </div>
+      {/* 操作说明：不写这一句，用户会去点这条轨（以为像其它轨那样"点一下就定位"），
+          结果什么都不发生——实测就是这个反馈。 */}
+      <small className="lane-note">
+        按住这条帧带<b>左右拖动</b>＝把视频的起点对到信号轴上（右栏数字框同步变）；
+        点标尺或信号轨只是定位时间，<b>不会</b>改对齐。
+      </small>
     </div>
   );
 }
