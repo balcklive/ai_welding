@@ -23,6 +23,7 @@
 - **拖偏移要带着画面一起走**（`handleOffsetDraft`）：草稿一变就把 `<video>` seek 到 `playhead − 新偏移` 并钳在 `[0, duration]`。这是设计 §4.2「拖动 offset 时同屏游标与视频画面同步移动，用户对准起弧时刻即可」——只改读数不动画面，"对比时间戳"就只剩数字，没法目视对准。游标还没落点（`playhead <= 0`）或视频未就绪时不 seek，只更新读数。
 - **标定 UI 两半都落地了（ROI 2026-09-23 / offset 2026-10）**：焊缝图片 ROI 框选在 `SeamRoiEditor`（左键拖拽是唯一手势，无缩放手柄，倾斜焊缝的旋转矩形仍留后续）；视频零点偏移在 `OffsetCalibrationPanel`（反向标定 + 数值/滑块）。**offset 面板挂在 `alignment-aside` 顶部**——aside 是 `.alignment-board` 的**兄弟**，所以点击不会冒进 board 上挂的 seek 事件委托；**别再把它挪进 board 里**。
 - **`videoTime`/`videoDuration` 取自 `<video>` 元素自身**（`onTimeUpdate` / `onLoadedMetadata`），不取对齐产物 `metadata`——未跑过对齐就没有产物，而这两个值本就该是"用户此刻在拖的那个视频"的真值（反向标定用同一元素，两者自洽）。换版本/换焊缝时随 `setVideoUrl(null)` 一起清零，否则读数会显示上一个视频的值。
+- **换算后的信号时刻可能为负，不能喂 `fmt()`**（2026-10 实机踩到）：`t_signal = t_video + offset`，offset 为负或偏移超过视频当前位置时它就是负数。而 `analysis/signals/chartData` 的 `fmt()` 是按**非负时间轴**写的（ruler / 分段页用），`fmt(-5)` 会算成 `Math.floor(-5/60) === -1`、余数 `55` → 渲染出 `-1:55.00`，`fmt(-0.0017)` → `-1:60.00`。面板内用局部 `timecode()`（保留负号 + 先按显示精度取整，`-0.001 → -0` 不印负号）；**不要为了这个去改 `fmt()`**。回归测试钉住了这一点。
 - **"未标定"必须可达**：保存 `offset=0` 也算已标定（`aligned = available && calibrated`），所以给了「清除标定」按钮写 `{video: null}`；否则保存过一次 0 之后系统就一直声称视频已对齐，且状态再也回不去。
 - **「不参与分段」与「还没框 ROI」必须在服务端分开**（`calibration.seam_image.excluded`）：两者都让图片模态在预览/manifest 里记 `available=false`，但**原因与引导不同**——前者不该再催用户去标定。只把 ROI 清成 `null` 会把前者显示成后者，所以不参与走 `excluded`、不清 ROI；想回到"未标定"才用 `{seam_image: null}` 清空整组。
 - 对齐/切分 Job 用 `useJob` 轮询；需先选焊缝（`selectedDatasetId + selectedDataId`），否则 `SelectionRequired`。
