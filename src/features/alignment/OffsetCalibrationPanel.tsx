@@ -55,8 +55,6 @@ interface Props {
   reverseHint: string | null;
 }
 
-/** 滑块行程：覆盖实测那类（≈1s）量级的偏差；更大的手填数字框（后端上限 ±3600）。 */
-const SLIDER_LIMIT = 10;
 /** 覆盖残差超过这个秒数就提示"零点可能未对齐"（默认窗口 2s，0.5s = 四分之一窗）。 */
 const RESIDUAL_TOLERANCE = 0.5;
 
@@ -90,7 +88,11 @@ export function OffsetCalibrationPanel({
   const { signalDuration, videoDuration, videoTime, arcSignal } = readout;
   const derivedSignalTime = videoTime + effectiveOffset;
   const reverseValue = arcSignal != null && videoDuration != null ? round2(arcSignal - videoTime) : null;
-  const residual = videoDuration != null ? effectiveOffset + videoDuration - signalDuration : null;
+  // 信号时长还没读到时不算残差：`signalDuration = 0` 会把残差算成整个视频长度，
+  // 横幅就会在加载期间闪一句"视频覆盖比信号短 18.00 s"的假警告。
+  const residual = videoDuration != null && signalDuration > 0
+    ? effectiveOffset + videoDuration - signalDuration
+    : null;
   const residualOk = residual != null && Math.abs(residual) <= RESIDUAL_TOLERANCE;
 
   const commitText = (raw: string) => {
@@ -130,8 +132,10 @@ export function OffsetCalibrationPanel({
       )}
 
       <p className="preview-summary">
-        在播放器里拖到「画面刚起弧」那一帧，再点「以当前帧对齐起弧」——系统按
-        <b> offset = 起弧信号时刻 − 视频当前时刻 </b>反解，不必猜数值。也可以直接填已知偏差。
+        主操作在左边那条**胶片条**上：拖动它把视频的起点对到信号轴上（靠近起弧标记会吸上去）。
+        这里的手填与按钮用于精确微调，以及"视频从焊缝中间开始录"这种磁吸表达不了的情况——
+        在播放器里拖到「画面刚起弧」那一帧，再点「以当前帧对齐起弧」，系统按
+        <b> offset = 起弧信号时刻 − 视频当前时刻 </b>反解。
       </p>
 
       <label className="split-field-label" htmlFor="offset-value">视频零点偏移（秒）</label>
@@ -146,19 +150,6 @@ export function OffsetCalibrationPanel({
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
       />
-      <div className="pp-slider" style={{ marginTop: 10 }}>
-        <input
-          type="range"
-          min={-SLIDER_LIMIT}
-          max={SLIDER_LIMIT}
-          step={0.01}
-          value={Math.min(SLIDER_LIMIT, Math.max(-SLIDER_LIMIT, effectiveOffset))}
-          aria-label="视频零点偏移（秒）"
-          style={{ width: '100%' }}
-          onChange={(e) => onDraft(round2(Number(e.target.value)))}
-        />
-        <span>{signed(effectiveOffset)}</span>
-      </div>
 
       <div className="seam-roi-meta">
         <span>信号时长：{signalDuration > 0 ? timecode(signalDuration) : '读取中…'}</span>

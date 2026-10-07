@@ -20,6 +20,7 @@ import type {
   FeatureExtractionHistoryItem,
   Job,
   LabelCategory,
+  VideoFrames,
   LabelItem,
   LabelStudioTask,
   Page,
@@ -100,6 +101,19 @@ export async function updateCalibration(
     method: 'PUT',
     body: patch,
   });
+}
+
+/** 胶片条帧（只读，2026-10）：整段视频按固定间隔抽 N 帧 + 短期预签名 URL。
+ *
+ * **帧与标定无关**（服务端 `seek_offset` 恒 0）：每帧的 `t_video` 是它在**视频轴**上的时刻，
+ * 前端按 `left = (t_video + offset) / 信号时长` 摆到统一轴上。所以改 offset 不必重取，
+ * 拖动纯前端零网络。
+ */
+export async function getVideoFrames(
+  weldId: string,
+  versionId: string,
+): Promise<VideoFrames> {
+  return request<VideoFrames>(`/welds/${weldId}/versions/${versionId}/video-frames`);
 }
 
 /** 多通道时域波形。传 `max_points` 时由服务端 min-max 抽稀（含 `times` 坐标，点数

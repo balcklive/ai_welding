@@ -116,8 +116,10 @@ test('seek 写入与 onTimeUpdate 回写成对读同一个瞬时偏移（ref）�
   assert.match(alignmentSource, /effectiveOffsetRef\.current = effectiveOffset/);
   // 拖偏移时画面必须跟着游标走（设计 §4.2 的"同屏游标与视频画面同步移动"）——
   // 只改读数不动画面的话，"对比时间戳"就只剩数字，没法目视对准起弧。
+  // 拖动时 pointermove ~60Hz，seek 走 rAF 合并（读数不节流），故断言落在 scheduleSeek 上。
   assert.match(alignmentSource, /const handleOffsetDraft = /);
-  assert.match(alignmentSource, /Math\.min\(video\.duration, Math\.max\(0, playhead - next\)\)/);
+  assert.match(alignmentSource, /scheduleSeek\(playhead - \(value \?\? videoOffset\)\)/);
+  assert.match(alignmentSource, /element\.currentTime = Math\.min\(element\.duration, Math\.max\(0, target\)\)/);
   assert.match(alignmentSource, /onDraft=\{handleOffsetDraft\}/);
 });
 
@@ -143,6 +145,8 @@ test('时间戳对照读数与未标定语义：读数来自 <video> 元素，�
   assert.doesNotMatch(derived[1], /\bfmt\(/);
   assert.match(offsetPanelSource, /const timecode = /);
   assert.match(offsetPanelSource, /n < 0 \? '-' : ''/);
+  // 信号时长没读到（= 0）不算残差，否则加载期间会闪一句"视频覆盖比信号短 18.00 s"的假警告
+  assert.match(offsetPanelSource, /videoDuration != null && signalDuration > 0[\s\S]{0,80}?effectiveOffset \+ videoDuration - signalDuration/);
   // 两态分得开，且说清「保存 0 也算已标定」——否则用户会以为没标定
   assert.match(offsetPanelSource, /'已标定' : '未标定（按 0 计算）'/);
   assert.match(offsetPanelSource, /保存后（哪怕保存的是 0）即记为已标定/);

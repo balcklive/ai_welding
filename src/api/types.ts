@@ -641,6 +641,36 @@ export interface CalibrationUpdate {
   seam_image?: { roi?: SeamRoi; excluded?: boolean } | null;
 }
 
+/** 胶片条单帧（`GET …/video-frames` 的元素）。 */
+export interface VideoFrame {
+  index: number;
+  /** 该帧在**视频轴**上的时刻（秒）。摆到统一轴上的位置 = `t_video + offset`。 */
+  t_video: number;
+  /** 已落盘的对象键；抽帧失败的那一格为 `null`（**不拿别的格顶替**）。 */
+  object_key: string | null;
+  /** 短期预签名地址（有效期 3600s）；无帧时 `null`。 */
+  url: string | null;
+}
+
+/** `GET …/video-frames`（只读，2026-10）：对齐页把视频画成统一轴上的一段来拖 offset。
+ *
+ * **帧与标定无关**（服务端 `seek_offset` 恒 0）——改 offset 不重抽帧，拖动纯前端零网络。
+ * `available` 只表示"有没有可用的帧图"：抽帧全失败时它 `false` 但 `duration` 照给，
+ * 前端据此仍能画出条并允许拖动（条宽靠时长，不靠帧）。
+ */
+export interface VideoFrames {
+  available: boolean;
+  /** 不可用的原因（无视频 / 对象不可读 / 超限 / 抽帧失败…），服务端给多少显示多少。 */
+  reason: string | null;
+  /** 视频时长（ffmpeg 探测）——**条几何与帧时刻的唯一依据**。 */
+  duration: number | null;
+  fps: number | null;
+  count: number;
+  /** 格数被服务端上限截断过（长视频）；界面应如实提示"后半段没有帧"。 */
+  clamped: boolean;
+  frames: VideoFrame[];
+}
+
 export interface SplitResult {
   sample_count: number;
   rules: SplitRules & { rules_version?: number; event_bounds?: [number, number] };

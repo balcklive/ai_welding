@@ -61,7 +61,9 @@ VALIDATION_RULES: list[str] = [
     "元数据关联关系",
 ]
 
-_VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov")
+# 视频扩展名。**必须与前端 `AlignmentWorkspace.VIDEO_EXTS` 一致**（含 `.webm`）：
+# 少一个后缀，服务端就挑不到视频键——表现是"播放器能放、胶片条却报没有视频"。
+_VIDEO_EXTS = (".mp4", ".avi", ".mkv", ".mov", ".webm")
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 _TS_EXTS = (".csv", ".txt", ".dat")
 _AUDIO_EXTS = (".wav", ".mp3", ".flac", ".m4a")

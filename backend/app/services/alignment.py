@@ -34,6 +34,7 @@ commit 归调用方 的约定，本服务里的 commit 是执行器专用 sessio
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import math
@@ -378,6 +379,225 @@ def latest_alignment_mapping(session: Session, record: DataRecord) -> dict | Non
         .order_by(AlignmentTask.id.desc())
     ).first()
     return row.mapping if row is not None else None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 胶片条抽帧（2026-10，对齐页拖 offset 用）
+#
+# 对齐页要把视频画成**统一轴上的一段**（`[offset, offset + duration]`），拖动它来改 offset。
+# 帧只用来"看大致位置"，精确对齐靠起弧磁吸与数字框，所以密度取 2s/格（与分段页默认窗口同口径）。
+#
+# **核心不变量：帧的内容与 offset 无关**（只做平移时 offset 只改变帧在轴上的位置）。
+# 所以 `seek_offset` 恒 0、对象键里不含 offset/映射哈希 —— 改标定不重抽，拖动纯前端零网络。
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 每格覆盖的秒数。1.0s 太密：30 分钟的视频会变成上千次顺序 ffmpeg（每次 30s 超时）。
+VIDEO_FRAME_SPACING_SECONDS = 2.0
+VIDEO_FRAME_MIN_COUNT = 8
+VIDEO_FRAME_MAX_COUNT = 24
+#: 帧的预签名 URL 有效期（同 `splitting.PREVIEW_FRAME_EXPIRES_SECONDS`）。
+VIDEO_FRAME_EXPIRES_SECONDS = 3600
+
+
+def video_frame_times(
+    duration: float | None,
+    *,
+    spacing: float = VIDEO_FRAME_SPACING_SECONDS,
+    min_count: int = VIDEO_FRAME_MIN_COUNT,
+    max_count: int = VIDEO_FRAME_MAX_COUNT,
+) -> tuple[list[float], bool]:
+    """胶片条每格取哪一刻（**视频轴**秒），返回 `(times, clamped)`。
+
+    取**格中点** `(i + 0.5) * duration / n`（与 `splitting.representative_frame_time` 的
+    "窗口中点抽帧"同口径），顺带避开 `t = duration` 这个越界端点。
+    `clamped=True` 表示按间距算出的格数被 `max_count` 截断了——**调用方必须记日志**，
+    不许静默截断（截断表现为"长视频后半段没有帧"，不记日志就查不出来）。
+    """
+    if duration is None or not math.isfinite(float(duration)) or float(duration) <= 0:
+        return [], False
+    total = float(duration)
+    ideal = int(round(total / spacing)) if spacing > 0 else min_count
+    count = max(min_count, min(max_count, ideal))
+    times = [round((i + 0.5) * total / count, 6) for i in range(count)]
+    return times, ideal > max_count
+
+
+def _video_digest(video_key: str) -> str:
+    return hashlib.sha1(video_key.encode("utf-8")).hexdigest()[:12]
+
+
+def video_frame_key(weld_id: str, video_key: str, index: int) -> str:
+    """胶片条帧的对象键（`.../video-frames/{视频摘要}/{序号:06d}.jpg`）。
+
+    与 `splitting._preview_frame_key` 同一范式（按"这个键的对象在不在"判复用），但鉴别位是
+    **视频键的摘要**而不是映射哈希——因为帧内容只由视频决定、与 offset 无关（`seek_offset` 恒 0）。
+    **不能省掉鉴别位**：换了视频对象（重新登记 / 加工版带新视频）后没有它，`_object_exists`
+    会把上一个视频的帧判成命中复用，页面上就是"换了视频还显示旧画面"。
+    """
+    return f"processed/{weld_id}/video-frames/{_video_digest(video_key)}/{index:06d}.jpg"
+
+
+def video_frames_manifest_key(weld_id: str, video_key: str) -> str:
+    """帧集合的元信息（时长/帧率/每格时刻）——缓存命中路径要靠它，不必再下载视频探时长。"""
+    return f"processed/{weld_id}/video-frames/{_video_digest(video_key)}/manifest.json"
+
+
+def _read_json_object(storage, key: str) -> dict | None:
+    """读一个小 JSON 对象；不存在/不可读/不是 JSON 一律 None（缓存没命中不是错误）。"""
+    read = getattr(storage, "get_object", None)
+    if read is None:
+        return None
+    try:
+        return json.loads(read(key))
+    except Exception:  # noqa: BLE001 - 缓存读失败只当没命中
+        return None
+
+
+def _object_exists(storage, key: str) -> bool:
+    """`stat_object` 只取元数据不拉字节——帧复用的判据。
+
+    与 `splitting._object_exists` 同一实现；**本模块不能模块级 import splitting**
+    （splitting 已经 import alignment，会成环），故在函数内延迟导入取用。
+    """
+    from app.services.splitting import _object_exists as impl  # noqa: PLC0415
+
+    return impl(storage, key)
+
+
+def resolve_video_key(session: Session, record: DataRecord, version: DataVersion) -> str | None:
+    """该焊缝/版本对应的视频对象键（服务端权威口径，前端不再用扩展名启发式猜）。
+
+    优先取**最近一次成功对齐**的映射里的 `object_key`（分段预览的逐段代表帧用的也是它），
+    没有对齐产物时再扫 v1.0 + 当前版本的 `object_keys`，跳过 `/align/` 产物键
+    （上次对齐的 `keyframes/*.jpg`、CSV 都不是原始模态源）。
+    """
+    mapping = latest_alignment_mapping(session, record)
+    if isinstance(mapping, dict):
+        key = (mapping.get("mappings", {}).get("video") or {}).get("object_key")
+        if isinstance(key, str) and key:
+            return key
+    v10 = get_v10_version(session, record.id)
+    for source in (v10, version):
+        if source is None:
+            continue
+        for key in source.object_keys or []:
+            low = key.lower()
+            if "/align/" in low:
+                continue
+            if low.endswith(_VIDEO_EXTS):
+                return key
+    return None
+
+
+def build_video_frames(storage, *, weld_id: str, video_key: str | None) -> dict:
+    """把整段视频按固定间隔抽成 N 帧并挂短期预签名 URL（只读，不建 Job、不写业务表）。
+
+    返回 `{available, reason, duration, fps, count, clamped, frames[]}`：
+
+    - `available` 只表示"**有没有可用的帧图**"。抽帧全失败时 `available=False` 但 `duration`
+      照给——前端据此仍能画出条并允许拖动（条宽靠时长，不靠帧）。
+    - `frames[i] = {index, t_video, object_key, url}`；抽不到的格 `object_key/url` 为 None，
+      **不拿别的格或首帧顶替**（前端渲浅底"无帧"）。
+    - `duration/fps` 来自 ffmpeg 探测，是条几何与帧时刻的**唯一依据**。
+    """
+    base: dict = {
+        "available": False,
+        "reason": None,
+        "duration": None,
+        "fps": None,
+        "count": 0,
+        "clamped": False,
+        "frames": [],
+    }
+    if video_key is None:
+        return {**base, "reason": "未上传视频文件"}
+
+    def payload(meta: dict, found: dict[int, str]) -> dict:
+        rows = []
+        for index, t_video in enumerate(meta["times"]):
+            key = found.get(index)
+            rows.append({
+                "index": index,
+                "t_video": t_video,
+                "object_key": key,
+                "url": storage.presign_get(key, expires=VIDEO_FRAME_EXPIRES_SECONDS) if key else None,
+            })
+        return {
+            "available": bool(found),
+            "reason": None if found else "未能抽出任何视频帧",
+            "duration": meta["duration"],
+            "fps": meta.get("fps"),
+            "count": len(meta["times"]),
+            "clamped": bool(meta.get("clamped")),
+            "frames": rows,
+        }
+
+    # ① 全命中：读一次小 manifest 就能给出全部帧与时刻，**不下载视频、不跑 ffmpeg**。
+    #    没有 manifest 就不知道格数/时长，所以它既是缓存也是元信息载体。
+    cached = _read_json_object(storage, video_frames_manifest_key(weld_id, video_key))
+    if isinstance(cached, dict) and cached.get("times"):
+        found = {
+            index: video_frame_key(weld_id, video_key, index)
+            for index in range(len(cached["times"]))
+            if _object_exists(storage, video_frame_key(weld_id, video_key, index))
+        }
+        if len(found) == len(cached["times"]):
+            return payload(cached, found)
+
+    # ② 需要抽：`_load_video` 已在**下载前**用 stat_object 预检 64MB 上限（比"下载后再判"严格）
+    data, _meta, reason = _load_video(video_key)
+    if data is None:
+        return {**base, "reason": reason}
+    try:
+        # 时长必须先探出来才知道要抽哪几格，所以这里是"探测 + 抽帧"两次调用
+        # （各写一次临时文件）。抽帧本身只一次调用批量抽全部。
+        probe, _ = media_probe.analyze_video(data, [], seek_offset=0.0)
+        times, clamped = video_frame_times(probe.get("duration"))
+        if not times:
+            return {**base, "reason": "未能解析视频时长，无法生成胶片条"}
+        if clamped:
+            logger.warning(
+                "Video frames clamped: weld={} duration={:.1f}s spacing={}s -> {} frames (max {})",
+                weld_id, float(probe["duration"]), VIDEO_FRAME_SPACING_SECONDS,
+                len(times), VIDEO_FRAME_MAX_COUNT,
+            )
+        # `seek_offset=0.0` 是有意的：按**视频时刻**取帧 → 帧内容与 offset 无关（见模块注释）。
+        # `analyze_video` 回填的 `t` 因此就是视频轴时刻，直接当 `t_video` 用。
+        _, extracted = media_probe.analyze_video(
+            data, [(str(i), t) for i, t in enumerate(times)], seek_offset=0.0,
+        )
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Video frame extraction failed: weld={} err={}", weld_id, exc)
+        return {**base, "reason": f"抽帧失败：{exc}"}
+
+    found = {}
+    for frame in extracted:
+        try:
+            index = int(frame["event"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        key = video_frame_key(weld_id, video_key, index)
+        try:
+            data_bytes = frame["bytes"]
+            storage.upload_stream(key, io.BytesIO(data_bytes), len(data_bytes), "image/jpeg")
+        except Exception as exc:  # noqa: BLE001 - 单帧上传失败只让该格缺席，不连坐其余
+            logger.warning("Video frame upload failed: key={} err={}", key, exc)
+            continue
+        found[index] = key
+
+    meta = {"duration": probe.get("duration"), "fps": probe.get("fps"),
+            "times": times, "clamped": clamped}
+    if found:
+        # manifest 写失败不是错误（下次重抽即可），但不能静默——否则每次都重跑 ffmpeg 查不出原因。
+        try:
+            body = json.dumps(meta, ensure_ascii=False).encode("utf-8")
+            storage.upload_stream(
+                video_frames_manifest_key(weld_id, video_key),
+                io.BytesIO(body), len(body), "application/json",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Video frames manifest write failed: weld={} err={}", weld_id, exc)
+    return payload(meta, found)
 
 
 def calibration_offset_seconds(calibration: dict) -> float:

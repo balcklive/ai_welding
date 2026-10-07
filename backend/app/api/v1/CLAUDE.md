@@ -58,6 +58,14 @@ v1 版路由。`/api/v1` 前缀由 `main.py` 挂载时统一添加，各域 rout
     显式 `null` 清除该组），只改 `data_versions.calibration` 一列，写 `update/calibration` 审计。
     **只在本次确实给出 ROI 时**才下载图片取宽高做越界校验（GET 与仅改 offset 的 PUT 不付这个成本）；
     校验失败一律 400（`40000`）+ 面向用户的原因。标定能力见 `services/CLAUDE.md` 的标定段。
+  - `GET /welds/{weld_id}/versions/{version_id}/video-frames`（**胶片条帧，2026-10，只读**）：
+    对齐页把视频画成**统一轴上可拖的一段**（`left = offset`、`width = videoDuration`），拖动改 offset。
+    **与标定无关**——帧按视频时刻抽（`seek_offset` 恒 0），offset 只改变帧的位置、不改变内容，
+    所以改标定不重抽帧、拖动纯前端零网络。业务逻辑 `alignment.resolve_video_key` +
+    `alignment.build_video_frames`：优先取最近一次成功对齐的 `mapping.mappings.video.object_key`，
+    否则扫 v1.0 + 当前版本 `object_keys`；全命中时**不下载视频**（读一次小 manifest + `stat_object`）。
+    **不建 Job、不读 `calibration`、不写业务表**；所有业务性不可用走 `available:false` + **200**
+    （不抛 400），`reason` 面向用户。首行同样过 `_resolve_weld_version`（鉴权 + 归属）。
   - `POST /welds/{weld_id}/versions/{version_id}/alignment-tasks`（**Task 13**）：body
     `{modalities[]}`，同事务建 pending Job（type=alignment）+ `alignment_tasks` 行 →
     **Task 4 修复：写 `create/alignment_task` 审计，且非管理员按焊缝 stable owner(user_id) 做 ownership ACL**；

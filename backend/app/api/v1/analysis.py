@@ -624,6 +624,32 @@ def get_calibration(
     return ok(alignment.calibration_payload(v10, calibration))
 
 
+@router.get("/welds/{weld_id}/versions/{version_id}/video-frames")
+def get_video_frames(
+    weld_id: str,
+    version_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """胶片条帧（**只读**，2026-10）：把整段视频按固定间隔抽成 N 帧，各挂短期预签名 URL。
+
+    对齐页拿它把视频画成**统一轴上的一段**（`[offset, offset + duration]`），拖动那条改 offset。
+
+    **帧与标定无关**（`seek_offset` 恒 0）：帧内容只由视频决定、offset 只改变它在轴上的位置。
+    所以本端点**不读 `calibration`**、不建 Job、不写业务表；产物键按视频键摘要固定，
+    全部帧都已落盘时连视频都不下载（`stat_object` 探一下即可）。
+    """
+    resolved = _resolve_weld_version(session, weld_id, version_id, current_user)
+    if resolved is not None:
+        return resolved
+    record = svc.get_record_by_weld_id(session, weld_id)
+    version = svc.get_version(session, version_id)
+    from app.storage import get_storage  # 延迟导入：测试 monkeypatch app.storage.get_storage
+
+    video_key = alignment.resolve_video_key(session, record, version)
+    return ok(alignment.build_video_frames(get_storage(), weld_id=weld_id, video_key=video_key))
+
+
 @router.put("/welds/{weld_id}/versions/{version_id}/calibration")
 def put_calibration(
     weld_id: str,
